@@ -1,0 +1,150 @@
+import Foundation
+import Logging
+import MCP
+import BridgeAuth
+import BridgePolicy
+
+/// Builds a configured MCP `Server` and registers tools through the policy pipeline.
+///
+/// One host per transport instance. Stdio and HTTP each get their own Server with
+/// the same tool set. The `AuthContext` passed in becomes the audit-log identity
+/// for every call routed through this server.
+public struct MCPHostBuilder: Sendable {
+    public let serverName: String
+    public let serverVersion: String
+    private let providers: [any ToolProvider]
+    private let policy: PolicyPipeline
+    private let middleware: [any ResultMiddleware]
+    private let approval: any ApprovalGate
+    private let logger: Logger
+
+    public init(
+        serverName: String = "icloud-bridge",
+        serverVersion: String = BridgeCore.version,
+        providers: [any ToolProvider],
+        policy: PolicyPipeline,
+        middleware: [any ResultMiddleware] = [],
+        approval: any ApprovalGate = OsaScriptApprovalGate(),
+        logger: Logger = Logger(label: "bridge.host")
+    ) {
+        self.serverName = serverName
+        self.serverVersion = serverVersion
+        self.providers = providers
+        self.policy = policy
+        self.middleware = middleware
+        self.approval = approval
+        self.logger = logger
+    }
+
+    /// Build a Server (not yet started) with all tools registered through the
+    /// policy pipeline. The `auth` describes the caller for audit purposes.
+    public func build(auth: AuthContext) async -> Server {
+        let server = Server(
+            name: serverName,
+            version: serverVersion,
+            capabilities: .init(tools: .init(listChanged: false))
+        )
+
+        let allHandlers = providers.flatMap { $0.handlers }
+        let byName = Dictionary(uniqueKeysWithValues: allHandlers.map { ($0.name, $0) })
+        let specs = allHandlers.map { $0.spec }
+
+        await server.withMethodHandler(ListTools.self) { _ in
+            ListTools.Result(tools: specs)
+        }
+
+        let policy = self.policy
+        let logger = self.logger
+        let middleware = self.middleware
+        let approval = self.approval
+        await server.withMethodHandler(CallTool.self) { params in
+            await Self.dispatch(
+                params: params,
+                handlers: byName,
+                auth: auth,
+                policy: policy,
+                middleware: middleware,
+                approval: approval,
+                logger: logger
+            )
+        }
+
+        return server
+    }
+
+    private static func dispatch(
+        params: CallTool.Parameters,
+        handlers: [String: any ToolHandler],
+        auth: AuthContext,
+        policy: PolicyPipeline,
+        middleware: [any ResultMiddleware],
+        approval: any ApprovalGate,
+        logger: Logger
+    ) async -> CallTool.Result {
+        let argKeys = params.arguments.map { Array($0.keys) } ?? []
+        let request = PolicyRequest(auth: auth, tool: params.name, argKeys: argKeys)
+
+        guard let handler = handlers[params.name] else {
+            // Audit-log unknown tool calls before short-circuiting.
+            await policy.recordResult(request, latencyMs: 0, resultBytes: nil, error: "unknown tool")
+            return CallTool.Result(
+                content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)],
+                isError: true
+            )
+        }
+
+        let outcome = await policy.preflight(request)
+        switch outcome {
+        case .deny(let reason):
+            return CallTool.Result(content: [.text(text: reason, annotations: nil, _meta: nil)], isError: true)
+        case .requireApproval(let reason):
+            let summary = handler.approvalSummary(for: params.arguments)
+            let decision = await approval.request(ApprovalRequest(
+                tool: params.name, caller: auth, reason: reason, summary: summary
+            ))
+            switch decision {
+            case .approved:
+                await policy.recordApprovalDecision(request, decision: "approved")
+            case .denied:
+                await policy.recordApprovalDecision(request, decision: "denied")
+                return CallTool.Result(content: [.text(text: "Action denied by user.", annotations: nil, _meta: nil)], isError: true)
+            case .timeout:
+                await policy.recordApprovalDecision(request, decision: "timeout")
+                return CallTool.Result(content: [.text(text: "Approval prompt timed out.", annotations: nil, _meta: nil)], isError: true)
+            }
+        case .allow:
+            break
+        }
+
+        let start = ContinuousClock().now
+        do {
+            let raw = try await handler.call(arguments: params.arguments)
+            // Apply middleware in order: redaction first, then injection tagging.
+            // Redaction operates on raw secrets; tagging wraps the redacted text.
+            var processed = raw
+            for mw in middleware {
+                processed = mw.transform(result: processed, tool: handler, request: request)
+            }
+            let ms = elapsedMs(since: start)
+            let bytes = processed.content.reduce(0) { acc, item in
+                if case .text(text: let s, annotations: _, _meta: _) = item {
+                    return acc + s.utf8.count
+                }
+                return acc
+            }
+            await policy.recordResult(request, latencyMs: ms, resultBytes: bytes, error: nil)
+            return processed
+        } catch {
+            let ms = elapsedMs(since: start)
+            await policy.recordResult(request, latencyMs: ms, resultBytes: nil, error: "\(error)")
+            logger.error("Tool '\(params.name)' threw: \(error)")
+            return CallTool.Result(content: [.text(text: "Tool error: \(error)", annotations: nil, _meta: nil)], isError: true)
+        }
+    }
+
+    private static func elapsedMs(since start: ContinuousClock.Instant) -> Int {
+        let d = ContinuousClock().now - start
+        return Int(d.components.seconds * 1000) +
+            Int(d.components.attoseconds / 1_000_000_000_000_000)
+    }
+}
