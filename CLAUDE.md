@@ -12,7 +12,7 @@ Read this file before making changes. Read README.md for end-user setup; this fi
 | 1 | Mail (list/search/get/send), redaction, injection-tag, approval gate | Done — verified live |
 | 2 | Calendar via EventKit (read + write) | Done |
 | 3 | iCloud Drive (read + write + materialize) | Done |
-| 4 | Voice Memos (CloudRecordings.db read, transcripts) | Not started |
+| 4 | Voice Memos (read-only metadata + audio bytes) | Done |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
 Codesigned with Developer ID Application (`com.lapidakis.icloud-bridge`, team `NZL3HS8AH4`). Use `make build` / `make release` so the post-build `scripts/codesign.sh` runs; bare `swift build` produces an adhoc binary that will lose TCC grants.
@@ -29,6 +29,8 @@ BridgePolicy         — ACLEvaluator, AuditSink (JSONL), PolicyPipeline
 ServiceMail          — Mail.app via NSAppleScript; tool handlers
 ServiceCalendar      — EventKit (EKEventStore actor); tool handlers
 ServiceDrive         — iCloud Drive filesystem; DrivePath traversal guard
+ServiceVoiceMemo     — Voice Memos CloudRecordings.db reader (sqlite3 C API);
+                       audio file pull as base64
 ```
 
 Dependency direction (import-only):
@@ -102,7 +104,15 @@ Audit at `~/Library/Logs/iCloud-Bridge/audit.jsonl`.
 - **DrivePath canonicalization is component-walk, not NSString.** `NSString.standardizingPath` / `URL.standardizedFileURL` have edge cases that vary across macOS versions — `Documents/..` was *not* collapsed to root reliably. `DrivePath.resolve()` walks the path components by hand, popping on `..` and erroring if the stack is empty. Any future Drive features must keep this canonicalization; do NOT switch to URL/NSString-based shortcuts.
 - **`.icloud` placeholders are stub files named `.<basename>.icloud`** in the parent directory. `drive.list` strips the leading dot and trailing `.icloud` and surfaces the visible name with `is_placeholder=true`. `drive.read` errors on placeholders unless `auto_materialize=true`. The materialization tool shells `/usr/bin/brctl download <abs-path>`.
 - **`attendee_count` is best-effort.** EventKit's `event.attendees` returns participants only when the calendar source carries them. iCloud-CalDAV self-authored events, subscription feeds, and many shared-iCloud events return empty even when the user "shared" or "invited" via the iOS UI. Don't assume zero means "no one else is on this." If the user reports surprising zeros, suggest verifying via Calendar.app's own inspector.
-- **Voice Memos data lives in a Group Container.** Path: `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db`. CoreData/SQLite hybrid — column names are Z-prefixed (`ZCUSTOMLABEL`, `ZDATE`, `ZDURATION`, `ZPATH`, `ZUUID`, `ZEVALUATEDTRANSCRIPTION`). Dates use Core Data epoch (2001-01-01). Audio is alongside as `.m4a`. Read needs Full Disk Access. Container exists empty if Voice Memos hasn't synced — service should error cleanly when DB is missing rather than crashing.
+- **Voice Memos schema notes (verified empirically on macOS 26).** Path: `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db`. Group Container is mode 644 — **Full Disk Access NOT needed**. Per-recording fields on `ZCLOUDRECORDING`:
+  - `ZUNIQUEID` — UUID, stable across iCloud sync (use as tool id)
+  - `ZDATE` — seconds since Core Data epoch (2001-01-01 UTC). Add 978307200 for unix.
+  - `ZDURATION` — seconds (float)
+  - `ZPATH` — filename relative to Recordings dir
+  - `ZENCRYPTEDTITLE` — **plaintext on macOS despite the name.** User-provided title.
+  - `ZCUSTOMLABEL` — auto-generated date-shaped label fallback
+  - **No transcripts stored** anywhere in the SQLite. Voice Memos.app computes them at view time via Speech framework. Agents that want transcripts must pull audio and run their own STT.
+  - Container exists empty until iCloud Voice Memos sync is enabled and at least one recording lands.
 - **`StatefulHTTPServerTransport`** is framework-agnostic — Hummingbird is the wrapper. The transport ships an `OriginValidator.localhost()` by default, but that only checks the `Origin` header, not the bind address. Loopback bind is enforced separately in `HTTPRunner`.
 - **Two daemons fighting over port 8787.** `pkill -f "icloud-bridge serve"` doesn't always kill instantly; `sleep 0.7` after, or `kill -9` if you've already nudged it. The LaunchAgent binds with `SO_REUSEADDR`, so a stuck orphan can co-exist invisibly.
 - **stdout is reserved in stdio mode** for MCP frames. All logs MUST go to stderr (`LoggingSetup.bootstrap` configures this).

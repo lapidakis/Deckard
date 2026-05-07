@@ -2,7 +2,7 @@
 
 A Mac-resident MCP server that proxies iCloud-bound services to AI agents over stdio or HTTP. One trust boundary: ACLs, redaction, prompt-injection tagging, and audit logging in one place. Loopback-only by default; opt-in Tailscale.
 
-**Status:** Phases 1 (Mail), 2 (Calendar), and 3 (iCloud Drive) complete. Mail and Calendar verified end-to-end on macOS 26. Phase 4 (Voice Memos) next.
+**Status:** Phases 1 (Mail), 2 (Calendar), 3 (iCloud Drive), and 4 (Voice Memos) complete. Mail/Calendar/Drive verified end-to-end on macOS 26. Phase 5 (iMessage) next.
 
 ---
 
@@ -133,6 +133,11 @@ default = "deny"
 "drive.read"              = "allow"
 "drive.materialize"       = "allow"
 "drive.write"             = "approve"
+
+# Voice Memos (Phase 4)
+"voice_memo.list_recordings" = "allow"
+"voice_memo.get_recording"   = "allow"
+"voice_memo.read_audio"      = "allow"
 ```
 
 Restart `serve` after edits. The bridge re-reads `config.toml` only at startup.
@@ -346,6 +351,13 @@ tccutil reset AppleEvents com.lapidakis.icloud-bridge
 - `mail.create_draft` — safe — opens draft in Mail.app for user to send manually
 - `mail.send` — destructive; gated by approval dialog (when ACL = `approve`)
 
+**Voice Memos (Phase 4)** — read-only access to recordings + audio bytes
+- `voice_memo.list_recordings` — id (UUID), title, recorded_at, duration, file size, has_local_file
+- `voice_memo.get_recording` — same + absolute_path + folder_uuid
+- `voice_memo.read_audio` — base64-encoded `.m4a` bytes, default 5 MiB cap, hard max 25 MiB
+
+Voice Memos doesn't persist transcripts in its SQLite store — agents that want transcripts pull the audio and run their own STT. The `ZENCRYPTEDTITLE` column is misleadingly named: it's plaintext on macOS.
+
 **Drive (Phase 3)** — filesystem under `~/Library/Mobile Documents/com~apple~CloudDocs`
 - `drive.list` — directory listing; placeholders surface with `is_placeholder: true`
 - `drive.stat` — single-path metadata (size, modified, created, uti_type)
@@ -382,8 +394,8 @@ Audit: every call recorded as JSONL with caller, transport, tool, arg-keys (no v
 
 ## What's coming
 
-- Phase 4: Voice Memos (read-only — list / search transcripts / get transcript by id)
 - Phase 5: iMessage (chat.db reads, AppleScript send, sender allowlist)
+- Voice memo on-device transcription via Speech framework (currently agent-side only)
 - Notarization (for distribution to other Macs without Gatekeeper warnings)
 - Per-peer Tailscale WhoIs identity (currently bearer-only on tailnet)
 - Menu-bar UI for approvals + ACL toggles (config file stays the source of truth)

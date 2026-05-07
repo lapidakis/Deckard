@@ -6,6 +6,7 @@ import BridgeCore
 import ServiceMail
 import ServiceCalendar
 import ServiceDrive
+import ServiceVoiceMemo
 
 struct Serve: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -40,6 +41,7 @@ struct Serve: AsyncParsableCommand {
             MailTools(),
             CalendarTools(),
             DriveTools(adapter: DriveAdapter(settings: cfg.drive, logger: logger)),
+            VoiceMemoTools(),
         ]
 
         let mode: BridgeServer.Mode = stdio ? .stdio : .daemon
