@@ -49,9 +49,10 @@ public actor MailAdapter {
         filter.sinceISO = sinceISO
         filter.beforeISO = beforeISO
         filter.unreadOnly = unreadOnly
-        filter.limit = limit
+        filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
-        return parseSummaries(out)
+        let raw = parseSummaries(out)
+        return Self.sortByMostRecent(raw).prefix(limit).map { $0 }
     }
 
     /// Searches messages with a text filter (and optional structural filters).
@@ -74,9 +75,37 @@ public actor MailAdapter {
         filter.sinceISO = sinceISO
         filter.beforeISO = beforeISO
         filter.unreadOnly = unreadOnly
-        filter.limit = limit
+        filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
-        return parseSummaries(out)
+        let raw = parseSummaries(out)
+        return Self.sortByMostRecent(raw).prefix(limit).map { $0 }
+    }
+
+    /// Single-mailbox queries can use a tight per-mailbox cap (= caller's limit)
+    /// since the only mailbox walked IS the one the user specified. Multi-mailbox
+    /// queries need more headroom: each mailbox contributes up to N candidates,
+    /// and Swift sorts globally before truncating to `limit`. Without this,
+    /// `mailbox=""` returned the earliest N from the first walked mailbox and
+    /// missed newer matches in mailboxes that came later in iteration order.
+    private func perMailboxCapFor(limit: Int, mailbox: String) -> Int {
+        let baseFloor = 50
+        if mailbox.isEmpty {
+            return max(limit, baseFloor)
+        }
+        return max(1, limit)
+    }
+
+    /// ISO 8601 strings sort lexically the same as chronologically when format
+    /// is uniform (always emit Z, fractional seconds, etc.). We use date_received
+    /// as the primary key (matches "what's new" intent), falling back to
+    /// date_sent when receive time is missing (rare, but possible for
+    /// poorly-set-up CalDAV / IMAP servers).
+    static func sortByMostRecent(_ items: [MessageSummary]) -> [MessageSummary] {
+        items.sorted { a, b in
+            let aKey = a.dateReceived ?? a.dateSent ?? ""
+            let bKey = b.dateReceived ?? b.dateSent ?? ""
+            return aKey > bKey
+        }
     }
 
     public func getMessage(account: String, mailbox: String, id: String) async throws -> Message {

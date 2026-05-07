@@ -14,6 +14,13 @@ enum MailScripts {
     /// Filter spec used by both `list` and `search` script generation. Text
     /// match is optional; structural filters (mailbox, date range, unread) work
     /// independently.
+    ///
+    /// `perMailboxCap` bounds how many records a single mailbox contributes,
+    /// not a global limit. Final ordering and truncation happens in Swift
+    /// after the script returns — necessary for correctness on multi-mailbox
+    /// queries (the previous global-break implementation returned old messages
+    /// from the first walked mailbox while never seeing newer matches in
+    /// later-walked mailboxes).
     struct MessageFilter {
         var account: String = ""
         var mailbox: String = ""
@@ -22,7 +29,7 @@ enum MailScripts {
         var sinceISO: String? = nil
         var beforeISO: String? = nil
         var unreadOnly: Bool = false
-        var limit: Int = 25
+        var perMailboxCap: Int = 50
     }
 
     /// Lists every mailbox across every Mail.app account.
@@ -80,8 +87,7 @@ enum MailScripts {
         set theQ to "\(qEsc)"
         set theAcct to "\(acctEsc)"
         set theMbox to "\(mboxEsc)"
-        set theLimit to \(max(1, filter.limit))
-        set count_taken to 0
+        set perMboxCap to \(max(1, filter.perMailboxCap))
         \(sinceSetup)
         \(beforeSetup)
         tell application "Mail"
@@ -94,8 +100,9 @@ enum MailScripts {
                             on error
                                 set msgs to {}
                             end try
+                            set mboxCount to 0
                             repeat with m in msgs
-                                if count_taken ≥ theLimit then exit repeat
+                                if mboxCount ≥ perMboxCap then exit repeat
                                 set msgID to (id of m as string)
                                 set msgSubj to (subject of m as string)
                                 set msgFrom to (sender of m as string)
@@ -115,13 +122,11 @@ enum MailScripts {
                                     set msgRead to false
                                 end try
                                 set out to out & msgID & FS & (name of a as string) & FS & (name of mbox as string) & FS & msgSubj & FS & msgFrom & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
-                                set count_taken to count_taken + 1
+                                set mboxCount to mboxCount + 1
                             end repeat
                         end if
-                        if count_taken ≥ theLimit then exit repeat
                     end repeat
                 end if
-                if count_taken ≥ theLimit then exit repeat
             end repeat
         end tell
         return out

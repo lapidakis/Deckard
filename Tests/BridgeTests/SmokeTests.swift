@@ -4,6 +4,7 @@ import Foundation
 @testable import BridgeConfig
 @testable import BridgePolicy
 @testable import BridgeAuth
+@testable import ServiceMail
 
 @Test func bridgeCoreVersionIsSet() {
     #expect(!BridgeCore.version.isEmpty)
@@ -101,6 +102,43 @@ import Foundation
     #expect(lines.count == 2)
     let decoded = try JSONDecoder().decode(AuditEvent.self, from: Data(lines[0].utf8))
     #expect(decoded.tool == "health.ping")
+}
+
+@Test func mailSortMostRecentFirstAcrossMailboxes() {
+    // Simulates the cross-mailbox bug: items collected from multiple mailboxes
+    // arrive in walk order, but the agent expects most-recent-first globally.
+    // Walk order here is "Archive" (old hits first) then "INBOX" (new hits last).
+    let items: [MessageSummary] = [
+        // Archive mailbox — walked first, contains old matches
+        MessageSummary(id: "1", account: "iCloud", mailbox: "Archive",
+                       subject: "old A", sender: "h@x",
+                       dateSent: nil, dateReceived: "2026-01-15T10:00:00.000Z", isRead: true),
+        MessageSummary(id: "2", account: "iCloud", mailbox: "Archive",
+                       subject: "old B", sender: "h@x",
+                       dateSent: nil, dateReceived: "2026-02-20T10:00:00.000Z", isRead: true),
+        // INBOX — walked second, contains the message the user actually wanted
+        MessageSummary(id: "3", account: "iCloud", mailbox: "INBOX",
+                       subject: "the new one", sender: "h@x",
+                       dateSent: nil, dateReceived: "2026-05-05T10:00:00.000Z", isRead: false),
+    ]
+    let sorted = MailAdapter.sortByMostRecent(items)
+    #expect(sorted.first?.subject == "the new one")  // most recent first
+    #expect(sorted.last?.subject == "old A")          // oldest last
+    let ids = sorted.map { $0.id }
+    #expect(ids == ["3", "2", "1"])
+}
+
+@Test func mailSortFallsBackToSentWhenReceivedMissing() {
+    let items: [MessageSummary] = [
+        MessageSummary(id: "1", account: "x", mailbox: "x", subject: "older",
+                       sender: "x", dateSent: "2026-01-01T00:00:00.000Z",
+                       dateReceived: nil, isRead: true),
+        MessageSummary(id: "2", account: "x", mailbox: "x", subject: "newer",
+                       sender: "x", dateSent: "2026-05-01T00:00:00.000Z",
+                       dateReceived: nil, isRead: true),
+    ]
+    let sorted = MailAdapter.sortByMostRecent(items)
+    #expect(sorted.first?.id == "2")
 }
 
 @Test func authContextRendersStableCallerStrings() {
