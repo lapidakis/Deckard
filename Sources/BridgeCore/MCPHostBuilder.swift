@@ -45,10 +45,20 @@ public struct MCPHostBuilder: Sendable {
 
         let allHandlers = providers.flatMap { $0.handlers }
         let byName = Dictionary(uniqueKeysWithValues: allHandlers.map { ($0.name, $0) })
-        let specs = allHandlers.map { $0.spec }
+
+        // Per-token tools/list: hide tools whose ACL decision is `deny` so the
+        // agent doesn't waste context space on tools it can't call. Tools with
+        // `allow` and `approve` both surface — `approve` ones simply route
+        // through the approval gate when invoked.
+        let visibleSpecs = allHandlers.compactMap { handler -> Tool? in
+            switch policy.decision(for: handler.name) {
+            case .deny:               return nil
+            case .allow, .approve:    return handler.spec
+            }
+        }
 
         await server.withMethodHandler(ListTools.self) { _ in
-            ListTools.Result(tools: specs)
+            ListTools.Result(tools: visibleSpecs)
         }
 
         let logger = self.logger

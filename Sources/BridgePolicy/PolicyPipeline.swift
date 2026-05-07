@@ -32,6 +32,17 @@ public struct PolicyPipeline: Sendable {
         self.logger = logger
     }
 
+    /// Decision-only lookup (no audit side effect). Used by tool-list
+    /// filtering so denied tools are hidden from `tools/list` rather than
+    /// surfacing-then-denying.
+    public func decision(for tool: String) -> ACLDecision {
+        switch acl.evaluate(tool: tool) {
+        case .allow:           return .allow
+        case .deny:            return .deny
+        case .requireApproval: return .approve
+        }
+    }
+
     /// Pre-call gate: returns the outcome and records a deny/approval-required
     /// audit row immediately. On `.allow` the caller must call `recordResult`
     /// once the tool returns.
