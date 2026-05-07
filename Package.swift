@@ -59,6 +59,7 @@ let package = Package(
             name: "ServiceDrive",
             dependencies: [
                 "BridgeCore",
+                "BridgeConfig",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
             ],

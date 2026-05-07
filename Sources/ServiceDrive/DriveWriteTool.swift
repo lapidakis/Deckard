@@ -12,11 +12,16 @@ struct DriveWriteTool: ToolHandler, ApprovalSummarizing {
         description: """
         Write a file at `path`. Modes: create (fail if exists), overwrite,
         append. Encoding: utf-8 or base64. Pass create_dirs=true to auto-make
-        missing parent directories. Returns drive.stat-shaped metadata for
-        the resulting file.
+        missing parent directories. Returns drive.stat-shaped metadata.
 
         Capped at 64 MiB per call. The write goes straight into iCloud Drive
-        and will sync to all the user's devices.
+        and syncs to all the user's devices.
+
+        Sandbox: when `[drive] write_allowed_prefixes` is set in config, the
+        target path must fall under one of those prefixes; otherwise the
+        write is refused. With no prefixes set, writes are allowed anywhere
+        under the iCloud root. Path-safety rules (no `..` escape, no
+        absolute paths) always apply.
         """,
         inputSchema: .object([
             "type": .string("object"),

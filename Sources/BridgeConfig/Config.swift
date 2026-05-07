@@ -12,6 +12,7 @@ public struct Config: Codable, Sendable, Equatable {
     public var acl: ACLConfig
     public var redaction: RedactionConfig
     public var injection: InjectionConfig
+    public var drive: DriveConfig
 
     public init(
         server: ServerConfig = .init(),
@@ -19,7 +20,8 @@ public struct Config: Codable, Sendable, Equatable {
         auth: AuthConfig = .init(),
         acl: ACLConfig = .init(),
         redaction: RedactionConfig = .init(),
-        injection: InjectionConfig = .init()
+        injection: InjectionConfig = .init(),
+        drive: DriveConfig = .init()
     ) {
         self.server = server
         self.tailscale = tailscale
@@ -27,10 +29,11 @@ public struct Config: Codable, Sendable, Equatable {
         self.acl = acl
         self.redaction = redaction
         self.injection = injection
+        self.drive = drive
     }
 
     enum CodingKeys: String, CodingKey {
-        case server, tailscale, auth, acl, redaction, injection
+        case server, tailscale, auth, acl, redaction, injection, drive
     }
 
     public init(from decoder: Decoder) throws {
@@ -41,6 +44,30 @@ public struct Config: Codable, Sendable, Equatable {
         self.acl = try c.decodeIfPresent(ACLConfig.self, forKey: .acl) ?? .init()
         self.redaction = try c.decodeIfPresent(RedactionConfig.self, forKey: .redaction) ?? .init()
         self.injection = try c.decodeIfPresent(InjectionConfig.self, forKey: .injection) ?? .init()
+        self.drive = try c.decodeIfPresent(DriveConfig.self, forKey: .drive) ?? .init()
+    }
+}
+
+/// Controls for the iCloud Drive surface. The default is permissive (no
+/// restriction) so first-run users see sensible behavior; tighten as needed.
+public struct DriveConfig: Codable, Sendable, Equatable {
+    /// Relative-path prefixes (under iCloud root) that `drive.write` may
+    /// target. Empty list = unrestricted. Example: `["agent-drafts/"]`
+    /// confines all agent file authoring to that subtree.
+    public var writeAllowedPrefixes: [String]
+
+    public init(writeAllowedPrefixes: [String] = []) {
+        self.writeAllowedPrefixes = writeAllowedPrefixes
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case writeAllowedPrefixes = "write_allowed_prefixes"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = DriveConfig()
+        self.writeAllowedPrefixes = try c.decodeIfPresent([String].self, forKey: .writeAllowedPrefixes) ?? d.writeAllowedPrefixes
     }
 }
 

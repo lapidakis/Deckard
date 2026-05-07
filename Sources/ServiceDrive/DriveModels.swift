@@ -84,3 +84,30 @@ public struct DriveContent: Codable, Sendable {
         case totalBytes = "total_bytes"
     }
 }
+
+/// Disk usage for the volume backing iCloud Drive. Note: this is the local
+/// macOS filesystem's free/used space, not the user's iCloud account quota
+/// (which is exposed via separate Apple APIs we haven't wired up). Usable as
+/// a "is the agent about to fill the disk before writing" sanity check.
+public struct DriveUsage: Codable, Sendable {
+    public let totalBytes: Int64
+    public let availableBytes: Int64
+    public let usedBytes: Int64
+    /// What the numbers describe — set to "local_volume" to make the caveat
+    /// explicit in the response itself.
+    public let scope: String
+
+    public init(totalBytes: Int64, availableBytes: Int64, usedBytes: Int64, scope: String = "local_volume") {
+        self.totalBytes = totalBytes
+        self.availableBytes = availableBytes
+        self.usedBytes = usedBytes
+        self.scope = scope
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case totalBytes = "total_bytes"
+        case availableBytes = "available_bytes"
+        case usedBytes = "used_bytes"
+        case scope
+    }
+}

@@ -39,7 +39,7 @@ struct Serve: AsyncParsableCommand {
             BuiltinTools(),
             MailTools(),
             CalendarTools(),
-            DriveTools(),
+            DriveTools(adapter: DriveAdapter(settings: cfg.drive, logger: logger)),
         ]
 
         let mode: BridgeServer.Mode = stdio ? .stdio : .daemon

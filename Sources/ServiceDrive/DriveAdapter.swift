@@ -1,14 +1,18 @@
 import Foundation
 import Logging
+import BridgeConfig
 #if canImport(UniformTypeIdentifiers)
 import UniformTypeIdentifiers
 #endif
+import Darwin  // fnmatch for glob search
 
 /// Filesystem operations on the iCloud Drive root, with safety rails.
 ///
 /// All paths run through `DrivePath.resolve(...)` so traversal is impossible.
 /// Reads are size-capped. Placeholder (.icloud) files are detected and
-/// surfaced rather than silently returned as empty stubs.
+/// surfaced rather than silently returned as empty stubs. Recursive listing
+/// does NOT follow symlinks (FileManager.enumerator default), avoiding loops
+/// at Desktop/Documents which are symlinks back into iCloud-synced storage.
 public actor DriveAdapter {
     public enum DriveError: Error, CustomStringConvertible {
         case notFound(String)
@@ -17,6 +21,7 @@ public actor DriveAdapter {
         case isPlaceholder(String)
         case decodingFailed(String)
         case writeRefused(String)
+        case writeOutsideSandbox(path: String, allowed: [String])
         case alreadyExists(String)
         case brctlFailed(exitCode: Int32, output: String)
 
@@ -28,6 +33,8 @@ public actor DriveAdapter {
             case .isPlaceholder(let p):  return "File is an iCloud placeholder (not downloaded). Call drive.materialize on '\(p)' first, or set drive.auto_materialize = true in config."
             case .decodingFailed(let m): return "Decoding failed: \(m)"
             case .writeRefused(let m):   return m
+            case .writeOutsideSandbox(let path, let allowed):
+                return "Write to '\(path)' refused: outside [drive] write_allowed_prefixes. Allowed prefixes: \(allowed.joined(separator: ", "))"
             case .alreadyExists(let p):  return "File already exists at '\(p)'. Pass mode='overwrite' to replace."
             case .brctlFailed(let code, let out): return "brctl exited \(code): \(out)"
             }
@@ -38,11 +45,15 @@ public actor DriveAdapter {
     public static let defaultMaxReadBytes: Int = 1 * 1024 * 1024
     public static let absoluteMaxReadBytes: Int = 16 * 1024 * 1024
     public static let absoluteMaxWriteBytes: Int = 64 * 1024 * 1024
+    public static let defaultMaxDepth: Int = 5
+    public static let absoluteMaxDepth: Int = 32
 
+    private let settings: DriveConfig
     private let logger: Logger
     private let isoFormatter: ISO8601DateFormatter
 
-    public init(logger: Logger = Logger(label: "bridge.drive")) {
+    public init(settings: DriveConfig = .init(), logger: Logger = Logger(label: "bridge.drive")) {
+        self.settings = settings
         self.logger = logger
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -55,7 +66,8 @@ public actor DriveAdapter {
         path relative: String,
         includeHidden: Bool = false,
         recursive: Bool = false,
-        limit: Int = 200
+        limit: Int = 200,
+        maxDepth: Int = DriveAdapter.defaultMaxDepth
     ) async throws -> [DriveItem] {
         let dp = try DrivePath.resolve(relative)
         var isDir: ObjCBool = false
@@ -68,6 +80,7 @@ public actor DriveAdapter {
 
         var out: [DriveItem] = []
         if recursive {
+            let cappedDepth = max(0, min(maxDepth, Self.absoluteMaxDepth))
             let enumerator = FileManager.default.enumerator(
                 at: dp.url,
                 includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey],
@@ -75,6 +88,12 @@ public actor DriveAdapter {
             )
             while let url = enumerator?.nextObject() as? URL {
                 if out.count >= limit { break }
+                // FileManager.DirectoryEnumerator.level is 0-based (root=0).
+                // Skip descendants once we've hit the depth cap so we still
+                // include items AT max depth but don't recurse beyond.
+                if let level = enumerator?.level, level >= cappedDepth {
+                    enumerator?.skipDescendants()
+                }
                 if let item = makeItem(from: url, parent: dp.url, includePlaceholders: true) {
                     out.append(item)
                 }
@@ -220,6 +239,12 @@ public actor DriveAdapter {
             throw DriveError.writeRefused("cannot write to the iCloud Drive root")
         }
 
+        // Sandbox check: when [drive] write_allowed_prefixes is non-empty, the
+        // resolved path must fall under one of them. This is the file analog
+        // of the mail.send approval guard — limits the blast radius of any
+        // agent with drive.write enabled.
+        try checkWriteAllowed(path: dp.relativePath)
+
         let fm = FileManager.default
         let parent = dp.url.deletingLastPathComponent()
 
@@ -271,6 +296,67 @@ public actor DriveAdapter {
         return try await stat(path: dp.relativePath)
     }
 
+    // MARK: - Search
+
+    public enum SearchMatchType: String, Sendable {
+        case substring, glob
+    }
+
+    public func search(
+        path relative: String,
+        pattern: String,
+        matchType: SearchMatchType = .substring,
+        fileTypeFilter: String? = nil,    // "file" | "directory" | nil
+        includeHidden: Bool = false,
+        limit: Int = 100,
+        maxDepth: Int = 8
+    ) async throws -> [DriveItem] {
+        let dp = try DrivePath.resolve(relative)
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dp.url.path, isDirectory: &isDir),
+              isDir.boolValue else {
+            throw DriveError.notDirectory(dp.relativePath)
+        }
+        let cappedDepth = max(0, min(maxDepth, Self.absoluteMaxDepth))
+        let enumerator = FileManager.default.enumerator(
+            at: dp.url,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey, .isSymbolicLinkKey],
+            options: includeHidden ? [] : [.skipsHiddenFiles]
+        )
+
+        let lowerPattern = pattern.lowercased()
+        var out: [DriveItem] = []
+        while let url = enumerator?.nextObject() as? URL {
+            if out.count >= limit { break }
+            if let level = enumerator?.level, level >= cappedDepth {
+                enumerator?.skipDescendants()
+            }
+            guard let item = makeItem(from: url, parent: dp.url, includePlaceholders: true) else { continue }
+            if let filter = fileTypeFilter, item.type != filter { continue }
+            let nameMatches: Bool
+            switch matchType {
+            case .substring:
+                nameMatches = item.name.lowercased().contains(lowerPattern)
+            case .glob:
+                nameMatches = globMatch(pattern: pattern, name: item.name)
+            }
+            if nameMatches {
+                out.append(item)
+            }
+        }
+        return out
+    }
+
+    // MARK: - Usage
+
+    public func usage() async throws -> DriveUsage {
+        let attrs = try FileManager.default.attributesOfFileSystem(forPath: DrivePath.iCloudRoot.path)
+        let total = (attrs[.systemSize] as? NSNumber)?.int64Value ?? 0
+        let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+        let used = max(0, total - free)
+        return DriveUsage(totalBytes: total, availableBytes: free, usedBytes: used, scope: "local_volume")
+    }
+
     // MARK: - Materialize
 
     public func materialize(path relative: String, waitSeconds: Double = 0) async throws {
@@ -294,6 +380,27 @@ public actor DriveAdapter {
     }
 
     // MARK: - Helpers
+
+    private func checkWriteAllowed(path: String) throws {
+        let prefixes = settings.writeAllowedPrefixes
+        if prefixes.isEmpty { return }
+        for raw in prefixes {
+            let prefix = raw.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if prefix.isEmpty { continue }
+            if path == prefix || path.hasPrefix(prefix + "/") {
+                return
+            }
+        }
+        throw DriveError.writeOutsideSandbox(path: path, allowed: prefixes)
+    }
+
+    private func globMatch(pattern: String, name: String) -> Bool {
+        return pattern.withCString { p in
+            name.withCString { n in
+                fnmatch(p, n, 0) == 0
+            }
+        }
+    }
 
     private func makeItem(from url: URL, parent: URL, includePlaceholders: Bool) -> DriveItem? {
         let name = url.lastPathComponent
