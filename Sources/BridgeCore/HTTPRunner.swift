@@ -92,6 +92,14 @@ public struct HTTPRunner: Sendable {
             )
         }
 
+        // Catch-all for unrouted paths (OAuth discovery probes, etc.).
+        // Returns a JSON 404 so client SDKs that JSON-parse the body don't
+        // explode with "Unexpected EOF". Path "/**" matches everything not
+        // already routed above.
+        router.on("/**", method: .get) { _, _ -> Response in
+            Self.notFoundJSON()
+        }
+
         let app = Application(
             router: router,
             configuration: .init(
@@ -114,12 +122,12 @@ public struct HTTPRunner: Sendable {
     ) async throws -> Response {
         if requireToken {
             guard let token = extractBearer(from: req.headers) else {
-                return jsonError(status: .unauthorized, message: "Missing bearer token")
+                return unauthorized(reason: "missing_token", message: "Missing bearer token")
             }
             let ok: Bool
             do { ok = try await tokenStore.verify(token) } catch { ok = false }
             guard ok else {
-                return jsonError(status: .unauthorized, message: "Invalid bearer token")
+                return unauthorized(reason: "invalid_token", message: "Invalid bearer token")
             }
         }
 
@@ -191,5 +199,30 @@ public struct HTTPRunner: Sendable {
         var fields = HTTPFields()
         fields.append(HTTPField(name: .contentType, value: "application/json"))
         return Response(status: status, headers: fields, body: .init(byteBuffer: ByteBuffer(string: json)))
+    }
+
+    /// 401 with a `WWW-Authenticate: Bearer` header so MCP clients fall back to
+    /// the bearer token in their config instead of attempting OAuth discovery
+    /// (RFC 6750). Without this, Claude Code's MCP SDK probes
+    /// `/.well-known/oauth-protected-resource`, parses the empty 404 body as a
+    /// JSON OAuth error, and surfaces a confusing "JSON Parse error" auth failure.
+    private static func unauthorized(reason: String, message: String) -> Response {
+        let json = #"{"error":"\#(message)"}"#
+        var fields = HTTPFields()
+        fields.append(HTTPField(name: .contentType, value: "application/json"))
+        fields.append(HTTPField(
+            name: .wwwAuthenticate,
+            value: #"Bearer realm="icloud-bridge", error="\#(reason)""#
+        ))
+        return Response(status: .unauthorized, headers: fields, body: .init(byteBuffer: ByteBuffer(string: json)))
+    }
+
+    /// JSON 404 for any unrouted path (e.g. OAuth discovery probes). Empty
+    /// bodies trip MCP clients that try to parse the response as JSON.
+    static func notFoundJSON() -> Response {
+        let json = #"{"error":"not_found","auth":"bearer","oauth":false}"#
+        var fields = HTTPFields()
+        fields.append(HTTPField(name: .contentType, value: "application/json"))
+        return Response(status: .notFound, headers: fields, body: .init(byteBuffer: ByteBuffer(string: json)))
     }
 }
