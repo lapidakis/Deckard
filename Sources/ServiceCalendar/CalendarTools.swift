@@ -27,6 +27,7 @@ public struct CalendarTools: ToolProvider {
 
 struct ListCalendarsTool: ToolHandler {
     let name = "calendar.list_calendars"
+    let returnsUntrustedContent = true   // calendar titles can come from subscriptions / shared cals
     let spec = Tool(
         name: "calendar.list_calendars",
         description: "List every event calendar (excludes Reminders lists). Returns id, title, source, type, write status, and color. Pass writable_only=true to filter to calendars you can create/update/delete in.",
@@ -51,6 +52,7 @@ struct ListCalendarsTool: ToolHandler {
 
 struct ListEventsTool: ToolHandler {
     let name = "calendar.list_events"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "calendar.list_events",
         description: """
@@ -104,6 +106,7 @@ struct ListEventsTool: ToolHandler {
 
 struct SearchEventsTool: ToolHandler {
     let name = "calendar.search_events"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "calendar.search_events",
         description: """
@@ -150,6 +153,7 @@ struct SearchEventsTool: ToolHandler {
 
 struct GetEventTool: ToolHandler {
     let name = "calendar.get_event"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "calendar.get_event",
         description: "Fetch one event with full detail (notes, attendees, organizer, url, recurrence, time zone). EventKit identifiers are globally unique — no calendar_id required. Pass `tz` to format start/end in a specific zone.",
@@ -179,6 +183,7 @@ struct GetEventTool: ToolHandler {
 
 struct CalendarNowTool: ToolHandler {
     let name = "calendar.now"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "calendar.now",
         description: """
