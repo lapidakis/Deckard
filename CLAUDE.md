@@ -54,6 +54,8 @@ The agent is **semi-trusted**. The bridge's job:
 
 When you add a tool that returns data from external sources (mail, messages, fetched URLs, etc.), set `returnsUntrustedContent = true` on the `ToolHandler` so the injection tagger wraps its output.
 
+**Default to true for any read tool that surfaces text the user didn't author themselves.** Calendar invitations, subscription calendars, shared calendars, fetched RSS, iMessage from non-self handles — all untrusted. Only mark `false` for tools that echo back caller input or return purely structural metadata the user fully controls. Phase 2 originally shipped Calendar without these flags and we patched it after the fact — don't repeat the mistake.
+
 ## Common workflows
 
 ```sh
