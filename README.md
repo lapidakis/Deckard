@@ -2,7 +2,7 @@
 
 A Mac-resident MCP server that proxies iCloud-bound services to AI agents over stdio or HTTP. One trust boundary: ACLs, redaction, prompt-injection tagging, and audit logging in one place. Loopback-only by default; opt-in Tailscale.
 
-**Status:** Phase 1 complete (Mail) — verified end-to-end against Mail.app on macOS 26. Phase 2 (Calendar via EventKit) next.
+**Status:** Phases 1 (Mail) and 2 (Calendar) complete. Mail verified end-to-end against Mail.app on macOS 26. Phase 3 (iCloud Drive) next.
 
 ---
 
@@ -50,11 +50,24 @@ Default-deny. Tools must be listed explicitly. Edit `config.toml`:
 default = "deny"
 
 [acl.tools]
-"health.ping"          = "allow"
-"mail.list_mailboxes"  = "allow"
-"mail.search"          = "allow"
-"mail.get_message"     = "allow"
-"mail.send"            = "approve"   # pops a confirmation dialog per send
+"health.ping"             = "allow"
+
+# Mail (Phase 1)
+"mail.list_mailboxes"     = "allow"
+"mail.list_messages"      = "allow"
+"mail.search"             = "allow"
+"mail.get_message"        = "allow"
+"mail.create_draft"       = "allow"   # safe — opens draft in Mail.app
+"mail.send"               = "approve" # destructive — confirmation dialog
+
+# Calendar (Phase 2)
+"calendar.list_calendars" = "allow"
+"calendar.list_events"    = "allow"
+"calendar.search_events"  = "allow"
+"calendar.get_event"      = "allow"
+"calendar.create_event"   = "approve"
+"calendar.update_event"   = "approve"
+"calendar.delete_event"   = "approve"
 ```
 
 Restart `serve` after edits. The bridge re-reads `config.toml` only at startup.
@@ -233,6 +246,7 @@ icloud-bridge uninstall                            # removes LaunchAgent
 | `ACL: tool '…' is not allowed` | Default-deny + tool not in allowlist | Add to `[acl.tools]` and restart |
 | `AppleScript timed out after 30.0s` | TCC prompt waiting for click, or Mail.app not running | Approve the dialog; launch Mail |
 | `AppleScript was blocked by macOS privacy` | Automation TCC previously denied | Settings → Privacy & Security → Automation → enable Mail under icloud-bridge |
+| `Calendar access denied` | Full Calendar Access not granted | Settings → Privacy & Security → Calendar → enable icloud-bridge |
 | HTTP 401 | Wrong/missing bearer token | `cat "$HOME/Library/Application Support/iCloud-Bridge/token"` |
 | HTTP 400 "missing required header" | Forgot `Accept: application/json, text/event-stream` | Add it; SSE responses require it |
 | Tailscale listener never starts | `tailscale` CLI not in PATH or not logged in | `which tailscale && tailscale status`; install or `tailscale up` |
@@ -254,13 +268,27 @@ tccutil reset AppleEvents com.lapidakis.icloud-bridge
 
 ---
 
-## What works today (Phase 1)
+## What works today (Phases 0-2)
 
-- `health.ping` — built-in liveness probe
+**Built-in**
+- `health.ping` — liveness probe
+
+**Mail (Phase 1)**
 - `mail.list_mailboxes` — every mailbox across every account, with unread counts
-- `mail.search` — substring search by subject / sender / body / any
-- `mail.get_message` — full message body + recipients by id
-- `mail.send` — gated by approval dialog (when ACL = `approve`)
+- `mail.list_messages` — list w/o text query; filters: account, mailbox, since, before, unread_only
+- `mail.search` — substring search by subject/sender/body/any; same filters as list_messages
+- `mail.get_message` — full message body + recipients
+- `mail.create_draft` — safe — opens draft in Mail.app for user to send manually
+- `mail.send` — destructive; gated by approval dialog (when ACL = `approve`)
+
+**Calendar (Phase 2)** — native EventKit, not AppleScript
+- `calendar.list_calendars` — id, title, source, type, write status, color
+- `calendar.list_events` — events in [since, before) date range, optional calendar filter
+- `calendar.search_events` — substring search across title/location/notes within a date range
+- `calendar.get_event` — full event detail (notes, attendees, organizer, url, time zone)
+- `calendar.create_event` — gated by approval (shows what/when/where)
+- `calendar.update_event` — gated by approval (shows changed fields)
+- `calendar.delete_event` — gated by approval (irreversible)
 
 Outbound: secret-shaped substrings (AWS/OpenAI/Anthropic/GitHub/Slack tokens, SSN, RSA private keys) replaced with `[REDACTED:<rule>]` in tool results.
 
@@ -272,7 +300,6 @@ Audit: every call recorded as JSONL with caller, transport, tool, arg-keys (no v
 
 ## What's coming
 
-- Phase 2: Calendar (EventKit, native — no AppleScript)
 - Phase 3: iCloud Drive (filesystem + `brctl` for placeholders)
 - Phase 4: Voice Memos (read-only — list / search transcripts / get transcript by id)
 - Phase 5: iMessage (chat.db reads, AppleScript send, sender allowlist)

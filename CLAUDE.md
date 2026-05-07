@@ -10,7 +10,7 @@ Read this file before making changes. Read README.md for end-user setup; this fi
 |---|---|---|
 | 0 | Skeleton, transports, auth, ACL, audit | Done |
 | 1 | Mail (list/search/get/send), redaction, injection-tag, approval gate | Done — verified live |
-| 2 | Calendar via EventKit | Not started |
+| 2 | Calendar via EventKit (read + write) | Done |
 | 3 | iCloud Drive | Not started |
 | 4 | Voice Memos (CloudRecordings.db read, transcripts) | Not started |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
@@ -27,6 +27,7 @@ BridgeAuth           — TokenStore (bearer), AuthContext, TailscaleProbe (CLI-b
 BridgeConfig         — TOML schema, defaults, on-disk persistence
 BridgePolicy         — ACLEvaluator, AuditSink (JSONL), PolicyPipeline
 ServiceMail          — Mail.app via NSAppleScript; tool handlers
+ServiceCalendar      — EventKit (EKEventStore actor); tool handlers
 ```
 
 Dependency direction (import-only):
@@ -92,7 +93,7 @@ Audit at `~/Library/Logs/iCloud-Bridge/audit.jsonl`.
 ## Pitfalls
 
 - **Always build via `make build`.** Bare `swift build` overwrites the signed binary with an adhoc one and TCC grants disappear silently until you re-sign. The Makefile chains `swift build` → `scripts/codesign.sh` so this is one command, not two.
-- **Calendar AppleScript is broken on macOS 14+.** Phase 2 must use `EventKit` directly with `requestFullAccessToEvents`. Don't try to extend `MailScripts` to drive Calendar.
+- **Calendar uses EventKit, not AppleScript** — Calendar AppleScript is broken on macOS 14+. `CalendarAdapter` wraps `EKEventStore` in an actor (it's not Sendable) and lazily calls `requestFullAccessToEvents` on first use. The `com.apple.security.personal-information.calendars` entitlement is in `Resources/icloud-bridge.entitlements`. EventKit's `event(withIdentifier:)` IDs are globally unique — no need to scope `calendar.get_event` by calendar.
 - **Voice Memos data lives in a Group Container.** Path: `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db`. CoreData/SQLite hybrid — column names are Z-prefixed (`ZCUSTOMLABEL`, `ZDATE`, `ZDURATION`, `ZPATH`, `ZUUID`, `ZEVALUATEDTRANSCRIPTION`). Dates use Core Data epoch (2001-01-01). Audio is alongside as `.m4a`. Read needs Full Disk Access. Container exists empty if Voice Memos hasn't synced — service should error cleanly when DB is missing rather than crashing.
 - **`StatefulHTTPServerTransport`** is framework-agnostic — Hummingbird is the wrapper. The transport ships an `OriginValidator.localhost()` by default, but that only checks the `Origin` header, not the bind address. Loopback bind is enforced separately in `HTTPRunner`.
 - **Two daemons fighting over port 8787.** `pkill -f "icloud-bridge serve"` doesn't always kill instantly; `sleep 0.7` after, or `kill -9` if you've already nudged it. The LaunchAgent binds with `SO_REUSEADDR`, so a stuck orphan can co-exist invisibly.
