@@ -21,9 +21,12 @@ public struct ACLEvaluator: Sendable {
         case .allow:
             return .allow
         case .deny:
-            return .deny(reason: "ACL: tool '\(tool)' is not allowed")
+            // Use the same opaque message as "unknown tool" elsewhere in the
+            // dispatch path, so a malicious agent can't enumerate which tools
+            // exist behind the ACL by comparing error strings.
+            return .deny(reason: "Tool not available.")
         case .approve:
-            return .requireApproval(reason: "ACL: tool '\(tool)' requires per-call approval")
+            return .requireApproval(reason: "Tool requires per-call approval.")
         }
     }
 }

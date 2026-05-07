@@ -280,8 +280,11 @@ public struct ACLConfig: Codable, Sendable, Equatable {
         tools[tool] ?? `default`
     }
 
-    /// Returns the profile-specific ACL when name resolves; nil otherwise so
-    /// caller can fall back to this `ACLConfig`.
+    /// Returns the profile-specific ACL when name resolves. Returns nil for
+    /// nil/empty name (caller should use this `ACLConfig` directly) AND for
+    /// unknown name — but callers must distinguish these cases themselves.
+    /// `BridgeServer` treats unknown name as fail-closed (deny-all profile)
+    /// rather than falling back to the global ACL.
     public func profile(named name: String?) -> ProfileConfig? {
         guard let name, !name.isEmpty else { return nil }
         return profiles[name]

@@ -92,10 +92,12 @@ public struct MCPHostBuilder: Sendable {
         let request = PolicyRequest(auth: auth, tool: params.name, argKeys: argKeys)
 
         guard let handler = handlers[params.name] else {
-            // Audit-log unknown tool calls before short-circuiting.
+            // Audit-log unknown tool calls before short-circuiting. Return the
+            // same opaque message as the ACL deny path so the two cases can't
+            // be distinguished from outside.
             await policy.recordResult(request, latencyMs: 0, resultBytes: nil, error: "unknown tool")
             return CallTool.Result(
-                content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)],
+                content: [.text(text: "Tool not available.", annotations: nil, _meta: nil)],
                 isError: true
             )
         }

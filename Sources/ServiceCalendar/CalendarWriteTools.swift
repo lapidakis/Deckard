@@ -107,13 +107,17 @@ struct UpdateEventTool: ToolHandler, ApprovalSummarizing {
         }
 
         // Distinguish "field not present" from "field present but empty/null".
-        // For optional clears, .some(nil) (i.e. JSON null) clears the field.
+        // For optional clears, both JSON null AND empty string clear the field
+        // — the docstring promised "empty string to clear" and historically
+        // only null worked. Empty-string-as-set has no real use case for these
+        // optional text fields, so collapsing them to "clear" is safe.
         let location: String??
         if let v = arguments?["location"] {
             switch v {
-            case .null:                 location = .some(nil)
-            case .string(let s):        location = .some(s)
-            default:                    location = nil
+            case .null:                                  location = .some(nil)
+            case .string(let s) where s.isEmpty:         location = .some(nil)
+            case .string(let s):                         location = .some(s)
+            default:                                     location = nil
             }
         } else {
             location = nil
@@ -121,9 +125,10 @@ struct UpdateEventTool: ToolHandler, ApprovalSummarizing {
         let notes: String??
         if let v = arguments?["notes"] {
             switch v {
-            case .null:                 notes = .some(nil)
-            case .string(let s):        notes = .some(s)
-            default:                    notes = nil
+            case .null:                                  notes = .some(nil)
+            case .string(let s) where s.isEmpty:         notes = .some(nil)
+            case .string(let s):                         notes = .some(s)
+            default:                                     notes = nil
             }
         } else {
             notes = nil

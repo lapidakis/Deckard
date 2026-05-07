@@ -31,6 +31,10 @@ public struct MailboxRef: Codable, Sendable, Hashable {
         self.name = name
         self.unreadCount = unreadCount
     }
+    enum CodingKeys: String, CodingKey {
+        case account, name
+        case unreadCount = "unread_count"
+    }
 }
 
 public struct MessageSummary: Codable, Sendable, Hashable {
@@ -57,6 +61,12 @@ public struct MessageSummary: Codable, Sendable, Hashable {
         self.dateReceived = dateReceived
         self.isRead = isRead
     }
+    enum CodingKeys: String, CodingKey {
+        case id, account, mailbox, subject, sender
+        case dateSent = "date_sent"
+        case dateReceived = "date_received"
+        case isRead = "is_read"
+    }
 }
 
 public struct Message: Codable, Sendable {
@@ -81,5 +91,9 @@ public struct Message: Codable, Sendable {
         self.recipients = recipients
         self.dateSent = dateSent
         self.body = body
+    }
+    enum CodingKeys: String, CodingKey {
+        case id, account, mailbox, subject, sender, recipients, body
+        case dateSent = "date_sent"
     }
 }

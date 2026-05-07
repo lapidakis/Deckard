@@ -42,7 +42,7 @@ codesign --force --sign "$IDENTITY" \
     --identifier "$BUNDLE_ID" \
     --options runtime \
     --entitlements "$ENTITLEMENTS" \
-    "${EXTRA_FLAGS[@]}" \
+    ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"} \
     "$BIN"
 
 echo "signed: $BIN"

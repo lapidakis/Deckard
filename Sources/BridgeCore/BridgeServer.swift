@@ -69,7 +69,23 @@ public struct BridgeServer: Sendable {
             let entries = await registry.allEntries()
             var bySecret: [String: TokenSessions.Entry] = [:]
             for (label, entry) in entries {
-                let profile = config.acl.profile(named: entry.profile)
+                // Fail-closed on unknown profile name. A typo in a token's
+                // `profile` field used to silently fall back to the global
+                // [acl], which is usually broader than the intended profile —
+                // the inverse of the safety prior we want. Now: unknown name
+                // becomes deny-all and we log a loud warning so the operator
+                // notices the registration is degraded.
+                let profile: ProfileConfig?
+                if let profileName = entry.profile, !profileName.isEmpty {
+                    if let p = config.acl.profiles[profileName] {
+                        profile = p
+                    } else {
+                        logger.error("Token '\(label)' references unknown profile '\(profileName)' — refusing all tools (deny-all). Add an [acl.profiles.\(profileName)] section in config.toml or update the token's profile field.")
+                        profile = ProfileConfig(default: .deny, tools: [:])
+                    }
+                } else {
+                    profile = nil  // intentional: use global [acl]
+                }
                 let policy = PolicyPipeline(
                     acl: config.acl, profile: profile,
                     audit: audit, logger: logger

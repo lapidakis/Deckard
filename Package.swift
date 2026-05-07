@@ -133,6 +133,7 @@ let package = Package(
             name: "BridgePolicy",
             dependencies: [
                 "BridgeConfig",
+                "BridgeAuth",
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/BridgePolicy"

@@ -85,7 +85,10 @@ public actor TokenRegistry {
             )
             entries["default"] = entry
             try persist()
-            logger.info("Bootstrap token created. Label: default. Secret: \(entry.secret)")
+            // Do NOT log the secret. Same threat model as tokens.toml (mode 0600);
+            // stderr.log is created with the user's umask (typically 0644) so
+            // anything emitted here is more world-readable than the registry.
+            logger.info("Bootstrap token created with label 'default'. Run `icloud-bridge auth show default` to retrieve.")
         }
         loaded = true
     }

@@ -13,14 +13,16 @@ import Foundation
 @Test func aclDefaultDeny() {
     let cfg = ACLConfig() // default deny, no overrides
     let evaluator = ACLEvaluator(acl: cfg)
-    #expect(evaluator.evaluate(tool: "anything") == .deny(reason: "ACL: tool 'anything' is not allowed"))
+    // Deny + unknown-tool error messages are intentionally identical to
+    // prevent name-enumeration probing — see MCPHostBuilder.dispatch.
+    #expect(evaluator.evaluate(tool: "anything") == .deny(reason: "Tool not available."))
 }
 
 @Test func aclPerToolAllow() {
     let cfg = ACLConfig(default: .deny, tools: ["mail.search": .allow])
     let evaluator = ACLEvaluator(acl: cfg)
     #expect(evaluator.evaluate(tool: "mail.search") == .allow)
-    #expect(evaluator.evaluate(tool: "mail.send") == .deny(reason: "ACL: tool 'mail.send' is not allowed"))
+    #expect(evaluator.evaluate(tool: "mail.send") == .deny(reason: "Tool not available."))
 }
 
 @Test func aclApprovalGate() {

@@ -63,14 +63,24 @@ public struct Redactor: ResultMiddleware {
     /// Patterns are intentionally conservative — false positives cost the agent
     /// information; false negatives cost Mike a secret.
     public static let defaultRules: [(name: String, pattern: String)] = [
-        ("aws_access_key", #"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])"#),
-        ("aws_secret",     #"(?i)aws_secret_access_key\s*[:=]\s*[A-Za-z0-9/+=]{30,}"#),
-        ("openai_key",     #"(?<!\w)sk-[A-Za-z0-9_-]{20,}(?!\w)"#),
-        ("anthropic_key",  #"(?<!\w)sk-ant-[A-Za-z0-9_-]{20,}(?!\w)"#),
-        ("github_pat",     #"(?<!\w)(ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}(?!\w)"#),
-        ("slack_token",    #"(?<!\w)xox[baprs]-[A-Za-z0-9-]{10,}(?!\w)"#),
-        ("bearer_header",  #"(?i)\b(authorization|bearer)\s*[:= ]\s*[A-Za-z0-9_\.\-]{20,}"#),
-        ("ssn",            #"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)"#),
-        ("private_key",    #"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"#),
+        ("aws_access_key",   #"(?<![A-Z0-9])AKIA[0-9A-Z]{16}(?![A-Z0-9])"#),
+        ("aws_secret",       #"(?i)aws_secret_access_key\s*[:=]\s*[A-Za-z0-9/+=]{30,}"#),
+        ("aws_session",      #"(?i)aws_session_token\s*[:=]\s*[A-Za-z0-9/+=]{100,}"#),
+        ("openai_key",       #"(?<!\w)sk-[A-Za-z0-9_-]{20,}(?!\w)"#),
+        ("anthropic_key",    #"(?<!\w)sk-ant-[A-Za-z0-9_-]{20,}(?!\w)"#),
+        ("github_pat",       #"(?<!\w)(ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{20,}(?!\w)"#),
+        ("slack_token",      #"(?<!\w)xox[baprs]-[A-Za-z0-9-]{10,}(?!\w)"#),
+        ("bearer_header",    #"(?i)\b(authorization|bearer|x-api-key|api[_-]?key)\s*[:= ]\s*[A-Za-z0-9_\.\-]{20,}"#),
+        ("ssn",              #"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)"#),
+        ("private_key",      #"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"#),
+        ("jwt",              #"\beyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b"#),
+        ("google_api_key",   #"\bAIza[0-9A-Za-z_-]{35}\b"#),
+        ("gcp_service_acct", #""type"\s*:\s*"service_account""#),
+        ("stripe_key",       #"\b(sk|pk|rk)_(live|test)_[0-9A-Za-z]{20,}\b"#),
+        ("stripe_webhook",   #"\bwhsec_[0-9A-Za-z]{32,}\b"#),
+        ("twilio_sid",       #"\b(AC|SK)[0-9a-f]{32}\b"#),
+        ("npm_token",        #"\bnpm_[A-Za-z0-9]{32,}\b"#),
+        ("digitalocean",     #"\bdop_v1_[a-f0-9]{60,}\b"#),
+        ("azure_sharedkey",  #"SharedKey\s+[A-Za-z0-9._-]+:[A-Za-z0-9+/=]{20,}"#),
     ]
 }
