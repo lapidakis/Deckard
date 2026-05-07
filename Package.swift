@@ -37,6 +37,8 @@ let package = Package(
             ],
             path: "Sources/icloud-bridge"
         ),
+        // BridgePolicy already a transitive dep through BridgeCore; explicit
+        // here so Audit subcommand can call AuditSink directly.
         .target(
             name: "ServiceMail",
             dependencies: [

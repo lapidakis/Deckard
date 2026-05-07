@@ -13,6 +13,7 @@ public struct Config: Codable, Sendable, Equatable {
     public var redaction: RedactionConfig
     public var injection: InjectionConfig
     public var drive: DriveConfig
+    public var audit: AuditConfig
 
     public init(
         server: ServerConfig = .init(),
@@ -21,7 +22,8 @@ public struct Config: Codable, Sendable, Equatable {
         acl: ACLConfig = .init(),
         redaction: RedactionConfig = .init(),
         injection: InjectionConfig = .init(),
-        drive: DriveConfig = .init()
+        drive: DriveConfig = .init(),
+        audit: AuditConfig = .init()
     ) {
         self.server = server
         self.tailscale = tailscale
@@ -30,10 +32,11 @@ public struct Config: Codable, Sendable, Equatable {
         self.redaction = redaction
         self.injection = injection
         self.drive = drive
+        self.audit = audit
     }
 
     enum CodingKeys: String, CodingKey {
-        case server, tailscale, auth, acl, redaction, injection, drive
+        case server, tailscale, auth, acl, redaction, injection, drive, audit
     }
 
     public init(from decoder: Decoder) throws {
@@ -45,6 +48,46 @@ public struct Config: Codable, Sendable, Equatable {
         self.redaction = try c.decodeIfPresent(RedactionConfig.self, forKey: .redaction) ?? .init()
         self.injection = try c.decodeIfPresent(InjectionConfig.self, forKey: .injection) ?? .init()
         self.drive = try c.decodeIfPresent(DriveConfig.self, forKey: .drive) ?? .init()
+        self.audit = try c.decodeIfPresent(AuditConfig.self, forKey: .audit) ?? .init()
+    }
+}
+
+/// Durable-audit settings. The bridge is intended to be a long-lived component;
+/// log retention is a first-class config knob rather than relying on user
+/// cron / shell scripts.
+public struct AuditConfig: Codable, Sendable, Equatable {
+    /// If false, the audit sink silently drops writes. Useful only for ephemeral
+    /// debugging — leave true in any deployment.
+    public var enabled: Bool
+    /// Days to keep audit entries. 0 = keep forever (still subject to disk).
+    public var retentionDays: Int
+    /// How often the pruner sweeps the log. The first sweep runs on daemon
+    /// startup; subsequent ones at this cadence. Set to 0 to disable
+    /// recurring sweeps (startup-only).
+    public var pruneIntervalHours: Int
+
+    public init(
+        enabled: Bool = true,
+        retentionDays: Int = 30,
+        pruneIntervalHours: Int = 6
+    ) {
+        self.enabled = enabled
+        self.retentionDays = retentionDays
+        self.pruneIntervalHours = pruneIntervalHours
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+        case retentionDays = "retention_days"
+        case pruneIntervalHours = "prune_interval_hours"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AuditConfig()
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        self.retentionDays = try c.decodeIfPresent(Int.self, forKey: .retentionDays) ?? d.retentionDays
+        self.pruneIntervalHours = try c.decodeIfPresent(Int.self, forKey: .pruneIntervalHours) ?? d.pruneIntervalHours
     }
 }
 

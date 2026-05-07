@@ -104,6 +104,61 @@ import Foundation
     #expect(decoded.tool == "health.ping")
 }
 
+@Test func auditPruneDropsOldEntries() async throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).jsonl")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let sink = AuditSink(url: tmp)
+    let fmt = ISO8601DateFormatter()
+    fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let now = Date()
+    let day: TimeInterval = 86_400
+    // Three entries: 60 days old, 10 days old, today.
+    for offsetDays in [60.0, 10.0, 0.0] {
+        let ts = fmt.string(from: now.addingTimeInterval(-offsetDays * day))
+        await sink.record(AuditEvent(
+            ts: ts, caller: "x", transport: "stdio", tool: "t",
+            argKeys: [], decision: "allow", latencyMs: 1, resultBytes: 1, error: nil
+        ))
+    }
+    // Retain 30 days → 60-day entry dropped, 10-day + today kept.
+    let result = await sink.prune(retentionDays: 30)
+    #expect(result.kept == 2)
+    #expect(result.removed == 1)
+    let after = try String(contentsOf: tmp, encoding: .utf8)
+    let lines = after.split(separator: "\n", omittingEmptySubsequences: true)
+    #expect(lines.count == 2)
+}
+
+@Test func auditPruneIsNoOpWhenNothingExpired() async throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).jsonl")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let sink = AuditSink(url: tmp)
+    let fmt = ISO8601DateFormatter()
+    fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    await sink.record(AuditEvent(
+        ts: fmt.string(from: Date()), caller: "x", transport: "stdio", tool: "t",
+        argKeys: [], decision: "allow", latencyMs: 1, resultBytes: 1, error: nil
+    ))
+    let r = await sink.prune(retentionDays: 30)
+    #expect(r.kept == 1)
+    #expect(r.removed == 0)
+}
+
+@Test func auditPruneNoOpWhenRetentionZero() async throws {
+    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).jsonl")
+    defer { try? FileManager.default.removeItem(at: tmp) }
+    let sink = AuditSink(url: tmp)
+    await sink.record(AuditEvent(
+        ts: "2024-01-01T00:00:00.000Z", caller: "x", transport: "stdio", tool: "t",
+        argKeys: [], decision: "allow", latencyMs: 1, resultBytes: 1, error: nil
+    ))
+    let r = await sink.prune(retentionDays: 0)
+    #expect(r.kept == 0 && r.removed == 0)
+    // Original entry preserved.
+    let after = try String(contentsOf: tmp, encoding: .utf8)
+    #expect(after.contains("2024-01-01"))
+}
+
 @Test func mailSortMostRecentFirstAcrossMailboxes() {
     // Simulates the cross-mailbox bug: items collected from multiple mailboxes
     // arrive in walk order, but the agent expects most-recent-first globally.

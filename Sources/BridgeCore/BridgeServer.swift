@@ -35,6 +35,14 @@ public struct BridgeServer: Sendable {
 
     public func run() async throws {
         let audit = AuditSink(logger: logger)
+        // Sweep the log on startup so a long-stopped daemon doesn't hold onto
+        // stale entries past the retention window.
+        if config.audit.enabled, config.audit.retentionDays > 0 {
+            let result = await audit.prune(retentionDays: config.audit.retentionDays)
+            if result.removed > 0 {
+                logger.info("Audit startup sweep: kept=\(result.kept) removed=\(result.removed)")
+            }
+        }
         let policy = PolicyPipeline(config: config, audit: audit, logger: logger)
         let middleware: [any ResultMiddleware] = [
             Redactor(config: config.redaction),
@@ -56,6 +64,27 @@ public struct BridgeServer: Sendable {
             _ = try await tokens.ensureToken()
 
             try await withThrowingTaskGroup(of: Void.self) { group in
+                // Background pruner: re-sweeps the audit log every
+                // [audit] prune_interval_hours. Cheap (parses just the ts
+                // field per line) and serialized through AuditSink.
+                if config.audit.enabled,
+                   config.audit.retentionDays > 0,
+                   config.audit.pruneIntervalHours > 0 {
+                    let intervalSec = UInt64(config.audit.pruneIntervalHours) * 3600
+                    let retention = config.audit.retentionDays
+                    let auditRef = audit
+                    let auditLogger = logger
+                    group.addTask {
+                        while !Task.isCancelled {
+                            try await Task.sleep(nanoseconds: intervalSec * 1_000_000_000)
+                            let r = await auditRef.prune(retentionDays: retention)
+                            if r.removed > 0 {
+                                auditLogger.info("Audit periodic sweep: kept=\(r.kept) removed=\(r.removed)")
+                            }
+                        }
+                    }
+                }
+
                 if config.server.bindLoopback {
                     let bind = HTTPRunner.Bind(
                         host: "127.0.0.1",
