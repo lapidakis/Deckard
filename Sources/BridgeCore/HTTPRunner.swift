@@ -44,17 +44,16 @@ public struct HTTPRunner: Sendable {
     }
 
     public func run() async throws {
-        // One Server + one HTTP transport per HTTPRunner instance.
-        // AuthContext is "bearer:default" for now; per-peer Tailscale identity
-        // is wired in Phase 0 task #8.
         let auth = AuthContext(
             transport: bind.transportLabel,
             identity: .bearer(tokenLabel: "default"),
             remoteDescription: "\(bind.host):\(bind.port)"
         )
-        let server = await builder.build(auth: auth)
-        let transport = StatefulHTTPServerTransport(logger: logger)
-        try await server.start(transport: transport)
+        // SessionHolder owns the transport+server pair and can recreate it
+        // when the SDK refuses a fresh `initialize` because a stale session
+        // is still in memory. Without this, every Claude Code restart on the
+        // client side requires a daemon bounce.
+        let holder = try await SessionHolder(builder: builder, auth: auth, logger: logger)
 
         let runnerLogger = logger
         let tokenStore = self.tokenStore
@@ -63,31 +62,22 @@ public struct HTTPRunner: Sendable {
         let router = Router()
         router.on("/mcp", method: .post) { req, ctx -> Response in
             try await Self.handle(
-                req: req,
-                ctx: ctx,
-                transport: transport,
-                tokenStore: tokenStore,
-                requireToken: requireToken,
+                req: req, ctx: ctx, holder: holder,
+                tokenStore: tokenStore, requireToken: requireToken,
                 logger: runnerLogger
             )
         }
         router.on("/mcp", method: .get) { req, ctx -> Response in
             try await Self.handle(
-                req: req,
-                ctx: ctx,
-                transport: transport,
-                tokenStore: tokenStore,
-                requireToken: requireToken,
+                req: req, ctx: ctx, holder: holder,
+                tokenStore: tokenStore, requireToken: requireToken,
                 logger: runnerLogger
             )
         }
         router.on("/mcp", method: .delete) { req, ctx -> Response in
             try await Self.handle(
-                req: req,
-                ctx: ctx,
-                transport: transport,
-                tokenStore: tokenStore,
-                requireToken: requireToken,
+                req: req, ctx: ctx, holder: holder,
+                tokenStore: tokenStore, requireToken: requireToken,
                 logger: runnerLogger
             )
         }
@@ -115,7 +105,7 @@ public struct HTTPRunner: Sendable {
     private static func handle(
         req: Request,
         ctx: BasicRequestContext,
-        transport: StatefulHTTPServerTransport,
+        holder: SessionHolder,
         tokenStore: TokenStore,
         requireToken: Bool,
         logger: Logger
@@ -151,8 +141,33 @@ public struct HTTPRunner: Sendable {
             path: req.uri.path
         )
 
-        let mcpResponse = await transport.handleRequest(mcpRequest)
+        let transport = await holder.currentTransport()
+        var mcpResponse = await transport.handleRequest(mcpRequest)
+
+        // Self-heal: the SDK's StatefulHTTPServerTransport keeps a session in
+        // memory across MCP-client reconnects and rejects fresh initialize
+        // calls with 400 "Session already initialized." When we see that, tear
+        // down and recreate the transport+server pair, then retry once.
+        if isStaleSessionError(mcpResponse, request: mcpRequest) {
+            logger.info("Stale MCP session detected; recreating transport in place")
+            do {
+                try await holder.recreate()
+                let fresh = await holder.currentTransport()
+                mcpResponse = await fresh.handleRequest(mcpRequest)
+            } catch {
+                logger.error("Failed to recreate transport: \(error)")
+            }
+        }
+
         return convert(mcpResponse, logger: logger)
+    }
+
+    private static func isStaleSessionError(_ response: MCP.HTTPResponse, request: MCP.HTTPRequest) -> Bool {
+        guard response.statusCode == 400 else { return false }
+        guard request.method.uppercased() == "POST" else { return false }
+        guard let body = response.bodyData,
+              let s = String(data: body, encoding: .utf8) else { return false }
+        return s.contains("Session already initialized")
     }
 
     private static func extractBearer(from headers: HTTPFields) -> String? {
@@ -224,5 +239,35 @@ public struct HTTPRunner: Sendable {
         var fields = HTTPFields()
         fields.append(HTTPField(name: .contentType, value: "application/json"))
         return Response(status: .notFound, headers: fields, body: .init(byteBuffer: ByteBuffer(string: json)))
+    }
+}
+
+/// Holds the MCP transport+server pair and recreates them when the SDK's
+/// session state becomes stale. Actor-isolated so concurrent requests racing
+/// to recreate end up with a single fresh pair.
+private actor SessionHolder {
+    private var transport: StatefulHTTPServerTransport
+    private var server: Server
+    private let builder: MCPHostBuilder
+    private let auth: AuthContext
+    private let logger: Logger
+
+    init(builder: MCPHostBuilder, auth: AuthContext, logger: Logger) async throws {
+        self.builder = builder
+        self.auth = auth
+        self.logger = logger
+        self.transport = StatefulHTTPServerTransport(logger: logger)
+        self.server = await builder.build(auth: auth)
+        try await self.server.start(transport: self.transport)
+    }
+
+    func currentTransport() -> StatefulHTTPServerTransport { transport }
+
+    func recreate() async throws {
+        await server.stop()
+        await transport.disconnect()
+        self.transport = StatefulHTTPServerTransport(logger: logger)
+        self.server = await builder.build(auth: auth)
+        try await self.server.start(transport: transport)
     }
 }
