@@ -30,6 +30,21 @@ public actor RemindersAdapter {
     private let store: EKEventStore
     private let logger: Logger
     private var accessGranted = false
+    /// Dedups concurrent ensureAccess() calls. Without this, an actor `await`
+    /// suspension between `accessGranted` checks lets multiple callers each
+    /// kick off their own `requestFullAccessToReminders` against EventKit; if
+    /// the framework call hangs (observed when TCC state is stale after a
+    /// re-codesign), the hung calls accumulate and the secondary self-heal
+    /// then fails with "Transport already started".
+    private var accessTask: Task<Bool, Error>?
+
+    /// Hard ceiling on `requestFullAccessToReminders`. Apple's async wrapper
+    /// does not expose a timeout; in some macOS states (LaunchAgent without
+    /// foreground UI, TCC state mismatch after re-sign) it never resumes.
+    /// 10s is enough for a real prompt-and-grant flow to complete; longer
+    /// than that, treat as denied so the agent gets a real error instead of
+    /// dragging the whole MCP session into stale-session land.
+    private static let accessRequestTimeoutSec: UInt64 = 10
 
     public init(logger: Logger = Logger(label: "bridge.reminders")) {
         self.store = EKEventStore()
@@ -38,16 +53,60 @@ public actor RemindersAdapter {
 
     private func ensureAccess() async throws {
         if accessGranted { return }
+        let task: Task<Bool, Error>
+        if let existing = accessTask {
+            task = existing
+        } else {
+            task = makeAccessTask()
+            accessTask = task
+        }
         do {
-            let granted = try await store.requestFullAccessToReminders()
+            let granted = try await task.value
+            accessTask = nil
             if !granted {
                 throw AdapterError.accessDenied("user denied or system blocked Full Reminders Access")
             }
             accessGranted = true
         } catch let err as AdapterError {
+            accessTask = nil
             throw err
         } catch {
+            accessTask = nil
             throw AdapterError.accessDenied("\(error)")
+        }
+    }
+
+    /// Race the framework call against a timeout. Both subtasks are awaited
+    /// from this actor, so they capture `self` (Sendable) rather than the
+    /// non-Sendable `EKEventStore`. In normal grant-already-cached operation
+    /// the framework call resolves in single-digit milliseconds; the timeout
+    /// only fires when something is genuinely wrong (TCC state mismatch
+    /// after re-codesign, MainActor wedged, etc.).
+    private func makeAccessTask() -> Task<Bool, Error> {
+        let timeoutNs = Self.accessRequestTimeoutSec * 1_000_000_000
+        return Task<Bool, Error> { [weak self] in
+            guard let self else { return false }
+            return try await withThrowingTaskGroup(of: Bool.self) { group in
+                group.addTask { [weak self] in
+                    guard let self else { return false }
+                    return try await self.callRequestAccess()
+                }
+                group.addTask {
+                    try await Task.sleep(nanoseconds: timeoutNs)
+                    throw AdapterError.accessDenied("Reminders access request timed out — open System Settings → Privacy & Security → Reminders, enable icloud-bridge, then retry")
+                }
+                defer { group.cancelAll() }
+                return try await group.next()!
+            }
+        }
+    }
+
+    private func callRequestAccess() async throws -> Bool {
+        do {
+            return try await store.requestFullAccessToReminders()
+        } catch {
+            logger.error("requestFullAccessToReminders threw: \(error)")
+            throw error
         }
     }
 
