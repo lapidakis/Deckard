@@ -9,12 +9,39 @@ A Mac-resident MCP server that proxies iCloud-bound services to AI agents over s
 ## Build
 
 ```sh
-swift build
+make build       # daemon binary, codesigned (preserves TCC grants)
+make ui          # SwiftUI menubar app bundle, codesigned
+make release     # release-mode daemon
+make ui-release  # release-mode menubar app
+make test        # 50+ unit tests
 ```
 
-Binary lands at `.build/debug/icloud-bridge`. For a release build use `swift build -c release` and find the binary at `.build/release/icloud-bridge`.
+Binaries:
+- Daemon: `.build/debug/icloud-bridge` (CLI)
+- UI: `.build/debug/iCloud-Bridge.app` (menubar app — open with `open .build/debug/iCloud-Bridge.app` or double-click in Finder)
 
 ---
+
+## Menubar UI
+
+```sh
+make ui
+open .build/debug/iCloud-Bridge.app
+```
+
+The icloud icon appears in your menubar. Click it for:
+- Live status (running / stopped, PID, port, audit count)
+- Start / Stop / Restart buttons (drives `launchctl bootstrap` / `bootout`)
+- Open Settings… link to the full multi-tab window
+
+Settings tabs:
+- **Status** — daemon state, audit summary, control buttons, last error
+- **Tokens** — read-only list of registered tokens (label, profile, age, description). Editing via the `icloud-bridge auth` CLI.
+- **ACL** — read-only display of the active ACL with profile picker. Editing via `config.toml`.
+- **Permissions** — TCC grants for the bridge binary, plus deep links into System Settings → Privacy & Security panes
+- **Logs** — tail of the audit JSONL, refreshes every 3s
+
+The UI ships as a real codesigned .app bundle (Developer ID + hardened runtime). LSUIElement=true keeps it menubar-only, no Dock icon.
 
 ## First-run bootstrap
 

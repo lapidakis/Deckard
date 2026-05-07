@@ -8,6 +8,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "icloud-bridge", targets: ["icloud-bridge"]),
+        .executable(name: "icloud-bridge-ui", targets: ["icloud-bridge-ui"]),
         .library(name: "BridgeCore", targets: ["BridgeCore"]),
         .library(name: "ServiceMail", targets: ["ServiceMail"]),
         .library(name: "ServiceCalendar", targets: ["ServiceCalendar"]),
@@ -24,6 +25,15 @@ let package = Package(
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.5.0"),
     ],
     targets: [
+        .executableTarget(
+            name: "icloud-bridge-ui",
+            dependencies: [
+                "BridgeAuth",
+                "BridgeConfig",
+                "BridgePolicy",
+            ],
+            path: "Sources/icloud-bridge-ui"
+        ),
         .executableTarget(
             name: "icloud-bridge",
             dependencies: [

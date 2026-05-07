@@ -21,6 +21,16 @@ release:
 	swift build -c release
 	./scripts/codesign.sh release
 
+ui:
+	swift build
+	chmod +x scripts/build-ui-app.sh
+	./scripts/build-ui-app.sh debug
+
+ui-release:
+	swift build -c release
+	chmod +x scripts/build-ui-app.sh
+	./scripts/build-ui-app.sh release
+
 test:
 	swift test
 

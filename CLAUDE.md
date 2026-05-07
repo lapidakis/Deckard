@@ -31,6 +31,9 @@ ServiceCalendar      — EventKit (EKEventStore actor); tool handlers
 ServiceDrive         — iCloud Drive filesystem; DrivePath traversal guard
 ServiceVoiceMemo     — Voice Memos CloudRecordings.db reader (sqlite3 C API);
                        audio file pull as base64
+ServiceReminders     — EKEventStore reminders adapter; CRUD tools
+icloud-bridge-ui     — SwiftUI menubar app (MenuBarExtra + Settings scene);
+                       packaged as .app via scripts/build-ui-app.sh
 ```
 
 Dependency direction (import-only):
