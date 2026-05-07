@@ -4,6 +4,24 @@ public enum MailSearchField: String, Sendable {
     case subject, sender, body, any
 }
 
+/// Which mailboxes a cross-mailbox query (mailbox="") should walk.
+///
+/// Default `primary` skips Archive, Deleted Messages / Trash, and Junk / Spam
+/// — the folders that are large, mostly-cold, and rarely what an agent doing
+/// "find recent mail from X" actually wants. Opt in to include them when the
+/// query is genuinely historical or compliance-oriented.
+///
+/// An explicit `mailbox` filter on the call always wins over `scope` — the
+/// caller can still ask for `mailbox="Archive"` or `mailbox="Junk"` directly.
+public enum MailboxScope: String, Sendable {
+    /// Skip Archive, Trash/Deleted Messages, Junk/Spam. Default.
+    case primary
+    /// Include Archive; still skip Trash and Junk.
+    case withArchive = "with_archive"
+    /// Walk every mailbox, including Trash and Junk.
+    case all
+}
+
 public struct MailboxRef: Codable, Sendable, Hashable {
     public let account: String
     public let name: String

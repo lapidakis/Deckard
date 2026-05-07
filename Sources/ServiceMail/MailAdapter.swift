@@ -39,6 +39,7 @@ public actor MailAdapter {
         sinceISO: String? = nil,
         beforeISO: String? = nil,
         unreadOnly: Bool = false,
+        scope: MailboxScope = .primary,
         limit: Int = 25
     ) async throws -> [MessageSummary] {
         try validateDates(since: sinceISO, before: beforeISO)
@@ -49,6 +50,7 @@ public actor MailAdapter {
         filter.sinceISO = sinceISO
         filter.beforeISO = beforeISO
         filter.unreadOnly = unreadOnly
+        filter.scope = scope
         filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
         let raw = parseSummaries(out)
@@ -64,6 +66,7 @@ public actor MailAdapter {
         sinceISO: String? = nil,
         beforeISO: String? = nil,
         unreadOnly: Bool = false,
+        scope: MailboxScope = .primary,
         limit: Int = 25
     ) async throws -> [MessageSummary] {
         try validateDates(since: sinceISO, before: beforeISO)
@@ -75,6 +78,7 @@ public actor MailAdapter {
         filter.sinceISO = sinceISO
         filter.beforeISO = beforeISO
         filter.unreadOnly = unreadOnly
+        filter.scope = scope
         filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
         let raw = parseSummaries(out)

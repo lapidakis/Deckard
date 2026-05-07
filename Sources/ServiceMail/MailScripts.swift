@@ -30,6 +30,22 @@ enum MailScripts {
         var beforeISO: String? = nil
         var unreadOnly: Bool = false
         var perMailboxCap: Int = 50
+        /// Only consulted when `mailbox` is empty. An explicit mailbox filter
+        /// always wins (explicitly asking for Archive/Junk should work).
+        var scope: MailboxScope = .primary
+    }
+
+    /// Mailbox names to skip when walking cross-mailbox queries, by scope.
+    /// Match is case-insensitive on the AppleScript side.
+    static func skipNamesForScope(_ scope: MailboxScope) -> [String] {
+        switch scope {
+        case .primary:
+            return ["Archive", "Deleted Messages", "Trash", "Junk", "Spam"]
+        case .withArchive:
+            return ["Deleted Messages", "Trash", "Junk", "Spam"]
+        case .all:
+            return []
+        }
     }
 
     /// Lists every mailbox across every Mail.app account.
@@ -79,6 +95,7 @@ enum MailScripts {
 
         let sinceSetup = filter.sinceISO.flatMap { asDateSetup(varName: "sinceDate", iso: $0) } ?? ""
         let beforeSetup = filter.beforeISO.flatMap { asDateSetup(varName: "beforeDate", iso: $0) } ?? ""
+        let skipList = applescriptListLiteral(skipNamesForScope(filter.scope))
 
         return """
         set out to ""
@@ -87,6 +104,7 @@ enum MailScripts {
         set theQ to "\(qEsc)"
         set theAcct to "\(acctEsc)"
         set theMbox to "\(mboxEsc)"
+        set skipList to \(skipList)
         set perMboxCap to \(max(1, filter.perMailboxCap))
         \(sinceSetup)
         \(beforeSetup)
@@ -94,7 +112,24 @@ enum MailScripts {
             repeat with a in accounts
                 if theAcct = "" or (name of a as string) = theAcct then
                     repeat with mbox in mailboxes of a
-                        if theMbox = "" or (name of mbox as string) = theMbox then
+                        set mboxName to (name of mbox as string)
+                        set walkThis to false
+                        if theMbox = "" then
+                            -- Cross-mailbox: respect scope skip list (case-insensitive).
+                            set walkThis to true
+                            ignoring case
+                                repeat with skipName in skipList
+                                    if mboxName is (skipName as string) then
+                                        set walkThis to false
+                                        exit repeat
+                                    end if
+                                end repeat
+                            end ignoring
+                        else if mboxName = theMbox then
+                            -- Explicit mailbox filter wins regardless of scope.
+                            set walkThis to true
+                        end if
+                        if walkThis then
                             try
                                 set msgs to (\(whoseClause))
                             on error
@@ -121,7 +156,7 @@ enum MailScripts {
                                 on error
                                     set msgRead to false
                                 end try
-                                set out to out & msgID & FS & (name of a as string) & FS & (name of mbox as string) & FS & msgSubj & FS & msgFrom & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
+                                set out to out & msgID & FS & (name of a as string) & FS & mboxName & FS & msgSubj & FS & msgFrom & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
                                 set mboxCount to mboxCount + 1
                             end repeat
                         end if

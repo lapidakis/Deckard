@@ -54,14 +54,24 @@ struct ListMessagesTool: ToolHandler {
         description: """
         List messages from a mailbox without a text query. Filter by date range
         (since/before, ISO 8601 — uses date received) and read status. Returns
-        up to `limit` summaries. Use this for "what landed today" / "what's
-        unread" workflows; use mail.search when matching content.
+        up to `limit` summaries, sorted most-recent-first across mailboxes.
+
+        `scope` controls which mailboxes are walked when `mailbox` is empty:
+          - "primary" (default) — skip Archive, Trash, Junk
+          - "with_archive"      — include Archive
+          - "all"               — include everything
+        Explicit `mailbox` filter always wins (you can still ask for Archive
+        directly).
+
+        Use this for "what landed today" / "what's unread" workflows; use
+        mail.search when matching content.
         """,
         inputSchema: .object([
             "type": .string("object"),
             "properties": .object([
                 "account":     .object(["type": .string("string"), "description": .string("Account name; empty = all accounts.")]),
                 "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox name; empty = every mailbox in chosen account(s).")]),
+                "scope":       .object(["type": .string("string"), "enum": .array([.string("primary"), .string("with_archive"), .string("all")]), "description": .string("Cross-mailbox walk policy when mailbox is empty.")]),
                 "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Inclusive lower bound on date_received.")]),
                 "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Exclusive upper bound on date_received.")]),
                 "unread_only": .object(["type": .string("boolean"), "description": .string("If true, only return unread messages.")]),
@@ -78,11 +88,12 @@ struct ListMessagesTool: ToolHandler {
         let since   = arguments?["since"]?.stringValue
         let before  = arguments?["before"]?.stringValue
         let unread  = arguments?["unread_only"]?.boolValue ?? false
+        let scope   = MailboxScope(rawValue: arguments?["scope"]?.stringValue ?? "primary") ?? .primary
         let limit   = max(1, min(200, arguments?["limit"]?.intValue ?? 25))
         let result = try await adapter.listMessages(
             account: account, mailbox: mailbox,
             sinceISO: since, beforeISO: before,
-            unreadOnly: unread, limit: limit
+            unreadOnly: unread, scope: scope, limit: limit
         )
         return jsonResult(result)
     }
@@ -98,7 +109,15 @@ struct SearchMailTool: ToolHandler {
         description: """
         Search messages in Mail.app by substring. Filter by account, mailbox,
         field (subject | sender | body | any), date range (since/before, uses
-        date received), and read status. Returns up to `limit` summaries.
+        date received), and read status. Returns up to `limit` summaries
+        sorted most-recent-first across all walked mailboxes.
+
+        `scope` controls cross-mailbox walking when `mailbox` is empty:
+          - "primary" (default) — skip Archive, Trash, Junk
+          - "with_archive"      — include Archive
+          - "all"               — include everything
+        Explicit `mailbox` filter always wins.
+
         For listing without a query, use mail.list_messages.
         """,
         inputSchema: .object([
@@ -107,6 +126,7 @@ struct SearchMailTool: ToolHandler {
                 "query":       .object(["type": .string("string"), "description": .string("Substring to match, case-insensitive.")]),
                 "account":     .object(["type": .string("string"), "description": .string("Account name; empty = all accounts.")]),
                 "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox name; empty = every mailbox in chosen account(s).")]),
+                "scope":       .object(["type": .string("string"), "enum": .array([.string("primary"), .string("with_archive"), .string("all")])]),
                 "field":       .object([
                     "type": .string("string"),
                     "enum": .array([.string("subject"), .string("sender"), .string("body"), .string("any")]),
@@ -131,6 +151,7 @@ struct SearchMailTool: ToolHandler {
         let mailbox = arguments?["mailbox"]?.stringValue ?? ""
         let fieldRaw = arguments?["field"]?.stringValue ?? "any"
         let field = MailAdapter.SearchField(rawValue: fieldRaw) ?? .any
+        let scope = MailboxScope(rawValue: arguments?["scope"]?.stringValue ?? "primary") ?? .primary
         let since = arguments?["since"]?.stringValue
         let before = arguments?["before"]?.stringValue
         let unread = arguments?["unread_only"]?.boolValue ?? false
@@ -140,7 +161,7 @@ struct SearchMailTool: ToolHandler {
             account: account, mailbox: mailbox,
             field: field, query: query,
             sinceISO: since, beforeISO: before,
-            unreadOnly: unread, limit: limit
+            unreadOnly: unread, scope: scope, limit: limit
         )
         return jsonResult(results)
     }
