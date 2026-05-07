@@ -6,8 +6,12 @@
     <key>com.apple.security.automation.apple-events</key>
     <true/>
 
-    <!-- Phase 2: EventKit (Calendar, Reminders) -->
+    <!-- Phase 2: EventKit Calendar -->
     <key>com.apple.security.personal-information.calendars</key>
+    <true/>
+
+    <!-- Reminders (separate TCC service from Calendar) -->
+    <key>com.apple.security.personal-information.reminders</key>
     <true/>
 
     <!-- Required to spawn osascript for the approval-gate dialog under hardened runtime -->

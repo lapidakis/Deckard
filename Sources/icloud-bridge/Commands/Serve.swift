@@ -7,6 +7,7 @@ import ServiceMail
 import ServiceCalendar
 import ServiceDrive
 import ServiceVoiceMemo
+import ServiceReminders
 
 struct Serve: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -42,6 +43,7 @@ struct Serve: AsyncParsableCommand {
             CalendarTools(),
             DriveTools(adapter: DriveAdapter(settings: cfg.drive, logger: logger)),
             VoiceMemoTools(),
+            RemindersTools(),
         ]
 
         let mode: BridgeServer.Mode = stdio ? .stdio : .daemon
