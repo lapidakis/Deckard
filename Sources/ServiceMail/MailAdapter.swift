@@ -40,9 +40,10 @@ public actor MailAdapter {
         beforeISO: String? = nil,
         unreadOnly: Bool = false,
         scope: MailboxScope = .primary,
+        tzID: String? = nil,
         limit: Int = 25
     ) async throws -> [MessageSummary] {
-        try validateDates(since: sinceISO, before: beforeISO)
+        try validateDates(since: sinceISO, before: beforeISO, tzID: tzID)
         var filter = MailScripts.MessageFilter()
         filter.account = account
         filter.mailbox = mailbox
@@ -51,6 +52,7 @@ public actor MailAdapter {
         filter.beforeISO = beforeISO
         filter.unreadOnly = unreadOnly
         filter.scope = scope
+        filter.bareDateTz = Self.resolveTz(tzID)
         filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
         let raw = parseSummaries(out)
@@ -67,9 +69,10 @@ public actor MailAdapter {
         beforeISO: String? = nil,
         unreadOnly: Bool = false,
         scope: MailboxScope = .primary,
+        tzID: String? = nil,
         limit: Int = 25
     ) async throws -> [MessageSummary] {
-        try validateDates(since: sinceISO, before: beforeISO)
+        try validateDates(since: sinceISO, before: beforeISO, tzID: tzID)
         var filter = MailScripts.MessageFilter()
         filter.account = account
         filter.mailbox = mailbox
@@ -79,10 +82,35 @@ public actor MailAdapter {
         filter.beforeISO = beforeISO
         filter.unreadOnly = unreadOnly
         filter.scope = scope
+        filter.bareDateTz = Self.resolveTz(tzID)
         filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
         let raw = parseSummaries(out)
         return Self.sortByMostRecent(raw).prefix(limit).map { $0 }
+    }
+
+    /// Marks one message read or unread.
+    public func setReadState(account: String, mailbox: String, id: String, read: Bool) async throws {
+        let src = MailScripts.setReadState(account: account, mailbox: mailbox, id: id, read: read)
+        _ = try await runner.run(source: src, timeoutSeconds: 30)
+    }
+
+    /// Moves a message between mailboxes (and optionally accounts).
+    public func moveMessage(
+        account: String, mailbox: String, id: String,
+        targetAccount: String?, targetMailbox: String
+    ) async throws {
+        let tgtAcct = targetAccount?.isEmpty == false ? targetAccount! : account
+        let src = MailScripts.moveMessage(
+            account: account, mailbox: mailbox, id: id,
+            targetAccount: tgtAcct, targetMailbox: targetMailbox
+        )
+        _ = try await runner.run(source: src, timeoutSeconds: 30)
+    }
+
+    static func resolveTz(_ id: String?) -> TimeZone {
+        if let id, !id.isEmpty, let tz = TimeZone(identifier: id) { return tz }
+        return .current
     }
 
     /// Single-mailbox queries can use a tight per-mailbox cap (= caller's limit)
@@ -133,11 +161,12 @@ public actor MailAdapter {
 
     // MARK: - Validation
 
-    private func validateDates(since: String?, before: String?) throws {
-        if let s = since, MailScripts.asDateSetup(varName: "_", iso: s) == nil {
+    private func validateDates(since: String?, before: String?, tzID: String?) throws {
+        let tz = Self.resolveTz(tzID)
+        if let s = since, MailScripts.asDateSetup(varName: "_", iso: s, bareDateTz: tz) == nil {
             throw AdapterError.invalidDate(field: "since", value: s)
         }
-        if let b = before, MailScripts.asDateSetup(varName: "_", iso: b) == nil {
+        if let b = before, MailScripts.asDateSetup(varName: "_", iso: b, bareDateTz: tz) == nil {
             throw AdapterError.invalidDate(field: "before", value: b)
         }
     }

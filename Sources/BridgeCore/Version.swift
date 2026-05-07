@@ -1,3 +1,3 @@
 public enum BridgeCore {
-    public static let version = "0.6.2"
+    public static let version = "0.7.0"
 }

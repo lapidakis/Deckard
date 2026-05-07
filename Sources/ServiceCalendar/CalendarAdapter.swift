@@ -290,6 +290,11 @@ public actor CalendarAdapter {
 
     private func summarize(_ e: EKEvent, in tz: TimeZone) -> EventSummary {
         let allDay = e.isAllDay
+        let attendees: [String] = (e.attendees ?? []).map { p in
+            let name = p.name ?? ""
+            let email = p.url.absoluteString.replacingOccurrences(of: "mailto:", with: "")
+            return name.isEmpty ? email : "\(name) <\(email)>"
+        }
         return EventSummary(
             id: e.eventIdentifier ?? "",
             calendarId: e.calendar.calendarIdentifier,
@@ -304,7 +309,8 @@ public actor CalendarAdapter {
             isRecurring: e.hasRecurrenceRules,
             recurrenceRule: firstRecurrence(of: e),
             originalTimeZone: e.timeZone?.identifier,
-            attendeeCount: e.attendees?.count ?? 0
+            attendeeCount: attendees.count,
+            attendees: attendees
         )
     }
 

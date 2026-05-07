@@ -19,6 +19,9 @@ public struct MailTools: ToolProvider {
             GetMessageTool(adapter: adapter),
             MailCreateDraftTool(adapter: adapter),
             MailSendTool(adapter: adapter),
+            MailMarkReadTool(adapter: adapter),
+            MailMarkUnreadTool(adapter: adapter),
+            MailMoveMessageTool(adapter: adapter),
         ]
     }
 }
@@ -74,6 +77,7 @@ struct ListMessagesTool: ToolHandler {
                 "scope":       .object(["type": .string("string"), "enum": .array([.string("primary"), .string("with_archive"), .string("all")]), "description": .string("Cross-mailbox walk policy when mailbox is empty.")]),
                 "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Inclusive lower bound on date_received.")]),
                 "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Exclusive upper bound on date_received.")]),
+                "tz":          .object(["type": .string("string"), "description": .string("IANA tz id used to interpret bare yyyy-MM-dd dates. Defaults to system local. Full ISO timestamps with offsets are unaffected.")]),
                 "unread_only": .object(["type": .string("boolean"), "description": .string("If true, only return unread messages.")]),
                 "limit":       .object(["type": .string("integer"), "description": .string("Max results (1-200). Defaults to 25.")]),
             ]),
@@ -89,11 +93,13 @@ struct ListMessagesTool: ToolHandler {
         let before  = arguments?["before"]?.stringValue
         let unread  = arguments?["unread_only"]?.boolValue ?? false
         let scope   = MailboxScope(rawValue: arguments?["scope"]?.stringValue ?? "primary") ?? .primary
+        let tz      = arguments?["tz"]?.stringValue
         let limit   = max(1, min(200, arguments?["limit"]?.intValue ?? 25))
         let result = try await adapter.listMessages(
             account: account, mailbox: mailbox,
             sinceISO: since, beforeISO: before,
-            unreadOnly: unread, scope: scope, limit: limit
+            unreadOnly: unread, scope: scope,
+            tzID: tz, limit: limit
         )
         return jsonResult(result)
     }
@@ -134,6 +140,7 @@ struct SearchMailTool: ToolHandler {
                 ]),
                 "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Inclusive lower bound on date_received.")]),
                 "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Exclusive upper bound on date_received.")]),
+                "tz":          .object(["type": .string("string"), "description": .string("IANA tz id used to interpret bare yyyy-MM-dd dates. Defaults to system local.")]),
                 "unread_only": .object(["type": .string("boolean"), "description": .string("If true, only return unread messages.")]),
                 "limit":       .object(["type": .string("integer"), "description": .string("Max results (1-200). Defaults to 25.")]),
             ]),
@@ -154,6 +161,7 @@ struct SearchMailTool: ToolHandler {
         let scope = MailboxScope(rawValue: arguments?["scope"]?.stringValue ?? "primary") ?? .primary
         let since = arguments?["since"]?.stringValue
         let before = arguments?["before"]?.stringValue
+        let tz = arguments?["tz"]?.stringValue
         let unread = arguments?["unread_only"]?.boolValue ?? false
         let limit = max(1, min(200, arguments?["limit"]?.intValue ?? 25))
 
@@ -161,7 +169,8 @@ struct SearchMailTool: ToolHandler {
             account: account, mailbox: mailbox,
             field: field, query: query,
             sinceISO: since, beforeISO: before,
-            unreadOnly: unread, scope: scope, limit: limit
+            unreadOnly: unread, scope: scope,
+            tzID: tz, limit: limit
         )
         return jsonResult(results)
     }

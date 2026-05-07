@@ -28,6 +28,7 @@ enum MailScripts {
         var textQuery: String = ""
         var sinceISO: String? = nil
         var beforeISO: String? = nil
+        var bareDateTz: TimeZone = .current   // tz for parsing bare yyyy-MM-dd inputs
         var unreadOnly: Bool = false
         var perMailboxCap: Int = 50
         /// Only consulted when `mailbox` is empty. An explicit mailbox filter
@@ -93,8 +94,8 @@ enum MailScripts {
 
         let whoseClause = conds.isEmpty ? "messages of mbox" : "messages of mbox whose " + conds.joined(separator: " and ")
 
-        let sinceSetup = filter.sinceISO.flatMap { asDateSetup(varName: "sinceDate", iso: $0) } ?? ""
-        let beforeSetup = filter.beforeISO.flatMap { asDateSetup(varName: "beforeDate", iso: $0) } ?? ""
+        let sinceSetup = filter.sinceISO.flatMap { asDateSetup(varName: "sinceDate", iso: $0, bareDateTz: filter.bareDateTz) } ?? ""
+        let beforeSetup = filter.beforeISO.flatMap { asDateSetup(varName: "beforeDate", iso: $0, bareDateTz: filter.bareDateTz) } ?? ""
         let skipList = applescriptListLiteral(skipNamesForScope(filter.scope))
 
         return """
@@ -332,9 +333,17 @@ enum MailScripts {
     }
 
     /// Emits an AppleScript snippet that constructs a date variable from an ISO
-    /// 8601 timestamp. Returns nil for unparseable input — callers should treat
-    /// nil as a hard error rather than silently dropping the filter.
-    static func asDateSetup(varName: String, iso: String) -> String? {
+    /// 8601 timestamp. Returns nil for unparseable input.
+    ///
+    /// `bareDateTz` is the timezone used to interpret bare `yyyy-MM-dd` inputs
+    /// (no time/zone). Defaults to system-local so "May 6" means what the user
+    /// naively expects in their own timezone. Full ISO timestamps with explicit
+    /// `Z` or `±HH:MM` offsets are absolute and ignore this parameter.
+    ///
+    /// Components are then extracted in the SYSTEM timezone (where AppleScript
+    /// dates live), so the AppleScript date object represents the same absolute
+    /// moment as the input.
+    static func asDateSetup(varName: String, iso: String, bareDateTz: TimeZone = .current) -> String? {
         let formatter1 = ISO8601DateFormatter()
         formatter1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         var date = formatter1.date(from: iso)
@@ -344,10 +353,10 @@ enum MailScripts {
             date = formatter2.date(from: iso)
         }
         if date == nil {
-            // accept bare yyyy-MM-dd (interpret as midnight UTC)
+            // bare yyyy-MM-dd → midnight in the caller's tz (default: system local)
             let dayFmt = DateFormatter()
             dayFmt.dateFormat = "yyyy-MM-dd"
-            dayFmt.timeZone = TimeZone(identifier: "UTC")
+            dayFmt.timeZone = bareDateTz
             date = dayFmt.date(from: iso)
         }
         guard let date else { return nil }
@@ -361,6 +370,99 @@ enum MailScripts {
         set hours of \(varName) to \(comps.hour ?? 0)
         set minutes of \(varName) to \(comps.minute ?? 0)
         set seconds of \(varName) to \(comps.second ?? 0)
+        """
+    }
+
+    /// Sets read state on a single message, scoped by (account, mailbox, id).
+    static func setReadState(account: String, mailbox: String, id: String, read: Bool) -> String {
+        let acctEsc = applescriptEscape(account)
+        let mboxEsc = applescriptEscape(mailbox)
+        let idEsc = applescriptEscape(id)
+        return """
+        set theAcct to "\(acctEsc)"
+        set theMbox to "\(mboxEsc)"
+        set theID to "\(idEsc)"
+        tell application "Mail"
+            set found to missing value
+            repeat with a in accounts
+                if (name of a as string) = theAcct then
+                    repeat with mbox in mailboxes of a
+                        if (name of mbox as string) = theMbox then
+                            try
+                                set found to (first message of mbox whose id is (theID as integer))
+                            end try
+                            exit repeat
+                        end if
+                    end repeat
+                    exit repeat
+                end if
+            end repeat
+            if found is missing value then
+                error "message_not_found"
+            end if
+            set read status of found to \(read ? "true" : "false")
+            return "ok"
+        end tell
+        """
+    }
+
+    /// Moves a message to a target mailbox (optionally in a different account).
+    static func moveMessage(
+        account: String, mailbox: String, id: String,
+        targetAccount: String, targetMailbox: String
+    ) -> String {
+        let acctEsc = applescriptEscape(account)
+        let mboxEsc = applescriptEscape(mailbox)
+        let idEsc = applescriptEscape(id)
+        let tgtAcctEsc = applescriptEscape(targetAccount)
+        let tgtMboxEsc = applescriptEscape(targetMailbox)
+        return """
+        set theAcct to "\(acctEsc)"
+        set theMbox to "\(mboxEsc)"
+        set theID to "\(idEsc)"
+        set tgtAcct to "\(tgtAcctEsc)"
+        set tgtMbox to "\(tgtMboxEsc)"
+        tell application "Mail"
+            set found to missing value
+            repeat with a in accounts
+                if (name of a as string) = theAcct then
+                    repeat with mbox in mailboxes of a
+                        if (name of mbox as string) = theMbox then
+                            try
+                                set found to (first message of mbox whose id is (theID as integer))
+                            end try
+                            exit repeat
+                        end if
+                    end repeat
+                    exit repeat
+                end if
+            end repeat
+            if found is missing value then
+                error "source_message_not_found"
+            end if
+            set destAccount to missing value
+            repeat with a in accounts
+                if (name of a as string) = tgtAcct then
+                    set destAccount to a
+                    exit repeat
+                end if
+            end repeat
+            if destAccount is missing value then
+                error "target_account_not_found"
+            end if
+            set destMbox to missing value
+            repeat with mbox in mailboxes of destAccount
+                if (name of mbox as string) = tgtMbox then
+                    set destMbox to mbox
+                    exit repeat
+                end if
+            end repeat
+            if destMbox is missing value then
+                error "target_mailbox_not_found"
+            end if
+            move found to destMbox
+            return "moved"
+        end tell
         """
     }
 }

@@ -82,6 +82,10 @@ public struct EventSummary: Codable, Sendable, Hashable {
     public let recurrenceRule: RecurrenceRule?
     public let originalTimeZone: String?  // event's authoring tz, e.g. "America/Denver"
     public let attendeeCount: Int          // 0 = no invitees on this event
+    /// Display strings: "Name <email>" or just email when no name. Caveat:
+    /// EventKit only populates attendees for invited events; self-authored
+    /// events on iCloud-CalDAV often return empty even when invitees exist.
+    public let attendees: [String]
 
     public init(
         id: String, calendarId: String, calendarTitle: String,
@@ -89,7 +93,7 @@ public struct EventSummary: Codable, Sendable, Hashable {
         isAllDay: Bool,
         localStartDate: String?, localEndDate: String?,
         location: String?, isRecurring: Bool, recurrenceRule: RecurrenceRule?,
-        originalTimeZone: String?, attendeeCount: Int
+        originalTimeZone: String?, attendeeCount: Int, attendees: [String]
     ) {
         self.id = id
         self.calendarId = calendarId
@@ -105,6 +109,7 @@ public struct EventSummary: Codable, Sendable, Hashable {
         self.recurrenceRule = recurrenceRule
         self.originalTimeZone = originalTimeZone
         self.attendeeCount = attendeeCount
+        self.attendees = attendees
     }
 
     enum CodingKeys: String, CodingKey {
@@ -120,6 +125,7 @@ public struct EventSummary: Codable, Sendable, Hashable {
         case recurrenceRule = "recurrence_rule"
         case originalTimeZone = "original_time_zone"
         case attendeeCount = "attendee_count"
+        case attendees
     }
 }
 

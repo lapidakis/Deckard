@@ -139,12 +139,18 @@ public struct MCPHostBuilder: Sendable {
                 return acc
             }
             await policy.recordResult(request, latencyMs: totalMs, resultBytes: bytes, error: nil)
-            // tool_ms = time inside the handler; mw_ms = redaction+tagging
-            // (almost always <10ms, but worth surfacing if a regex pathology
-            // ever hits). result_bytes lets you spot "tool was fast but
-            // returned 5 MB" cases without grepping audit.
             logger.info("tool_end tool=\(params.name) tool_ms=\(toolMs) mw_ms=\(mwMs) bytes=\(bytes)")
-            return processed
+            // Surface bridge-side timing to the agent via _meta so it can
+            // distinguish "bridge was slow" from "network was slow" without
+            // having access to the daemon's audit log.
+            let meta = Metadata(additionalFields: [
+                "duration_ms":      .int(totalMs),
+                "tool_duration_ms": .int(toolMs),
+                "mw_duration_ms":   .int(mwMs),
+                "result_bytes":     .int(bytes),
+                "bridge_version":   .string(BridgeCore.version),
+            ])
+            return CallTool.Result(content: processed.content, isError: processed.isError, _meta: meta)
         } catch {
             let ms = elapsedMs(since: start)
             await policy.recordResult(request, latencyMs: ms, resultBytes: nil, error: "\(error)")
