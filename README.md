@@ -274,7 +274,8 @@ Audit: every call recorded as JSONL with caller, transport, tool, arg-keys (no v
 
 - Phase 2: Calendar (EventKit, native — no AppleScript)
 - Phase 3: iCloud Drive (filesystem + `brctl` for placeholders)
-- Phase 4: iMessage (chat.db reads, AppleScript send, sender allowlist)
+- Phase 4: Voice Memos (read-only — list / search transcripts / get transcript by id)
+- Phase 5: iMessage (chat.db reads, AppleScript send, sender allowlist)
 - Notarization (for distribution to other Macs without Gatekeeper warnings)
 - Per-peer Tailscale WhoIs identity (currently bearer-only on tailnet)
 - Menu-bar UI for approvals + ACL toggles (config file stays the source of truth)

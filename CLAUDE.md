@@ -12,7 +12,8 @@ Read this file before making changes. Read README.md for end-user setup; this fi
 | 1 | Mail (list/search/get/send), redaction, injection-tag, approval gate | Done — verified live |
 | 2 | Calendar via EventKit | Not started |
 | 3 | iCloud Drive | Not started |
-| 4 | iMessage (chat.db read + AppleScript send) | Not started |
+| 4 | Voice Memos (CloudRecordings.db read, transcripts) | Not started |
+| 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
 Codesigned with Developer ID Application (`com.lapidakis.icloud-bridge`, team `NZL3HS8AH4`). Use `make build` / `make release` so the post-build `scripts/codesign.sh` runs; bare `swift build` produces an adhoc binary that will lose TCC grants.
 
@@ -92,6 +93,7 @@ Audit at `~/Library/Logs/iCloud-Bridge/audit.jsonl`.
 
 - **Always build via `make build`.** Bare `swift build` overwrites the signed binary with an adhoc one and TCC grants disappear silently until you re-sign. The Makefile chains `swift build` → `scripts/codesign.sh` so this is one command, not two.
 - **Calendar AppleScript is broken on macOS 14+.** Phase 2 must use `EventKit` directly with `requestFullAccessToEvents`. Don't try to extend `MailScripts` to drive Calendar.
+- **Voice Memos data lives in a Group Container.** Path: `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db`. CoreData/SQLite hybrid — column names are Z-prefixed (`ZCUSTOMLABEL`, `ZDATE`, `ZDURATION`, `ZPATH`, `ZUUID`, `ZEVALUATEDTRANSCRIPTION`). Dates use Core Data epoch (2001-01-01). Audio is alongside as `.m4a`. Read needs Full Disk Access. Container exists empty if Voice Memos hasn't synced — service should error cleanly when DB is missing rather than crashing.
 - **`StatefulHTTPServerTransport`** is framework-agnostic — Hummingbird is the wrapper. The transport ships an `OriginValidator.localhost()` by default, but that only checks the `Origin` header, not the bind address. Loopback bind is enforced separately in `HTTPRunner`.
 - **Two daemons fighting over port 8787.** `pkill -f "icloud-bridge serve"` doesn't always kill instantly; `sleep 0.7` after, or `kill -9` if you've already nudged it. The LaunchAgent binds with `SO_REUSEADDR`, so a stuck orphan can co-exist invisibly.
 - **stdout is reserved in stdio mode** for MCP frames. All logs MUST go to stderr (`LoggingSetup.bootstrap` configures this).
