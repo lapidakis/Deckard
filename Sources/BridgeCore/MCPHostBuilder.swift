@@ -117,27 +117,38 @@ public struct MCPHostBuilder: Sendable {
         }
 
         let start = ContinuousClock().now
+        // Breadcrumb at start so a hung call shows up in stderr.log before the
+        // audit row lands (audit only writes on completion).
+        logger.info("tool_start tool=\(params.name) caller=\(auth.auditCaller) arg_keys=\(request.argKeys.joined(separator: ","))")
         do {
             let raw = try await handler.call(arguments: params.arguments)
+            let toolMs = elapsedMs(since: start)
+            let mwStart = ContinuousClock().now
             // Apply middleware in order: redaction first, then injection tagging.
             // Redaction operates on raw secrets; tagging wraps the redacted text.
             var processed = raw
             for mw in middleware {
                 processed = mw.transform(result: processed, tool: handler, request: request)
             }
-            let ms = elapsedMs(since: start)
+            let mwMs = elapsedMs(since: mwStart)
+            let totalMs = toolMs + mwMs
             let bytes = processed.content.reduce(0) { acc, item in
                 if case .text(text: let s, annotations: _, _meta: _) = item {
                     return acc + s.utf8.count
                 }
                 return acc
             }
-            await policy.recordResult(request, latencyMs: ms, resultBytes: bytes, error: nil)
+            await policy.recordResult(request, latencyMs: totalMs, resultBytes: bytes, error: nil)
+            // tool_ms = time inside the handler; mw_ms = redaction+tagging
+            // (almost always <10ms, but worth surfacing if a regex pathology
+            // ever hits). result_bytes lets you spot "tool was fast but
+            // returned 5 MB" cases without grepping audit.
+            logger.info("tool_end tool=\(params.name) tool_ms=\(toolMs) mw_ms=\(mwMs) bytes=\(bytes)")
             return processed
         } catch {
             let ms = elapsedMs(since: start)
             await policy.recordResult(request, latencyMs: ms, resultBytes: nil, error: "\(error)")
-            logger.error("Tool '\(params.name)' threw: \(error)")
+            logger.error("tool_error tool=\(params.name) elapsed_ms=\(ms) error=\(error)")
             return CallTool.Result(content: [.text(text: "Tool error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }
     }
