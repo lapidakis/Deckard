@@ -3,8 +3,17 @@ import Logging
 
 /// High-level adapter on top of `AppleScriptRunner` that returns Codable types.
 public actor MailAdapter {
-    public enum SearchField: String, Sendable {
-        case subject, sender, body, any
+    public typealias SearchField = MailSearchField
+
+    public enum AdapterError: Error, CustomStringConvertible {
+        case invalidDate(field: String, value: String)
+
+        public var description: String {
+            switch self {
+            case .invalidDate(let field, let value):
+                return "\(field) is not a parseable ISO 8601 timestamp: '\(value)'"
+            }
+        }
     }
 
     private let runner: AppleScriptRunner
@@ -23,18 +32,50 @@ public actor MailAdapter {
         return parseMailboxes(out)
     }
 
-    public func search(
-        account: String,
-        mailbox: String,
-        field: SearchField,
-        query: String,
+    /// Lists messages with no text filter. Use `search` when matching content.
+    public func listMessages(
+        account: String = "",
+        mailbox: String = "",
+        sinceISO: String? = nil,
+        beforeISO: String? = nil,
+        unreadOnly: Bool = false,
         limit: Int = 25
     ) async throws -> [MessageSummary] {
-        let src = MailScripts.search(
-            account: account, mailbox: mailbox,
-            field: field.rawValue, query: query, limit: limit
-        )
-        let out = try await runner.run(source: src, timeoutSeconds: 60)
+        try validateDates(since: sinceISO, before: beforeISO)
+        var filter = MailScripts.MessageFilter()
+        filter.account = account
+        filter.mailbox = mailbox
+        filter.textQuery = ""
+        filter.sinceISO = sinceISO
+        filter.beforeISO = beforeISO
+        filter.unreadOnly = unreadOnly
+        filter.limit = limit
+        let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
+        return parseSummaries(out)
+    }
+
+    /// Searches messages with a text filter (and optional structural filters).
+    public func search(
+        account: String = "",
+        mailbox: String = "",
+        field: SearchField = .any,
+        query: String,
+        sinceISO: String? = nil,
+        beforeISO: String? = nil,
+        unreadOnly: Bool = false,
+        limit: Int = 25
+    ) async throws -> [MessageSummary] {
+        try validateDates(since: sinceISO, before: beforeISO)
+        var filter = MailScripts.MessageFilter()
+        filter.account = account
+        filter.mailbox = mailbox
+        filter.textField = field
+        filter.textQuery = query
+        filter.sinceISO = sinceISO
+        filter.beforeISO = beforeISO
+        filter.unreadOnly = unreadOnly
+        filter.limit = limit
+        let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
         return parseSummaries(out)
     }
 
@@ -47,9 +88,25 @@ public actor MailAdapter {
         return msg
     }
 
+    public func createDraft(to: [String], cc: [String], bcc: [String], subject: String, body: String) async throws {
+        let src = MailScripts.createDraft(to: to, cc: cc, bcc: bcc, subject: subject, body: body)
+        _ = try await runner.run(source: src, timeoutSeconds: 30)
+    }
+
     public func sendMessage(to: [String], cc: [String], bcc: [String], subject: String, body: String) async throws {
         let src = MailScripts.sendMessage(to: to, cc: cc, bcc: bcc, subject: subject, body: body)
         _ = try await runner.run(source: src, timeoutSeconds: 30)
+    }
+
+    // MARK: - Validation
+
+    private func validateDates(since: String?, before: String?) throws {
+        if let s = since, MailScripts.asDateSetup(varName: "_", iso: s) == nil {
+            throw AdapterError.invalidDate(field: "since", value: s)
+        }
+        if let b = before, MailScripts.asDateSetup(varName: "_", iso: b) == nil {
+            throw AdapterError.invalidDate(field: "before", value: b)
+        }
     }
 
     // MARK: - Parsing
@@ -64,7 +121,7 @@ public actor MailAdapter {
 
     private func parseSummaries(_ out: String) -> [MessageSummary] {
         records(out).compactMap { fields in
-            guard fields.count >= 7 else { return nil }
+            guard fields.count >= 8 else { return nil }
             return MessageSummary(
                 id: fields[0],
                 account: fields[1],
@@ -72,7 +129,8 @@ public actor MailAdapter {
                 subject: fields[3],
                 sender: fields[4],
                 dateSent: fields[5].isEmpty ? nil : fields[5],
-                isRead: fields[6].lowercased() == "true"
+                dateReceived: fields[6].isEmpty ? nil : fields[6],
+                isRead: fields[7].lowercased() == "true"
             )
         }
     }

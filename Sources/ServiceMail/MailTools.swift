@@ -4,17 +4,20 @@ import BridgeCore
 
 /// MCP-facing tool handlers for Mail.app.
 ///
-/// Read-only set in Phase 1: list_mailboxes, search, get_message. The write
-/// tool `mail.send` ships in Phase 1 too but lives in `MailSendTool.swift`
-/// because it's the first user of the approval gate.
+/// Read tools: list_mailboxes, list_messages, search, get_message.
+/// Write tools (in MailSendTool / MailDraftTool):
+///   - mail.create_draft  (safe — opens in Mail.app, user must send manually)
+///   - mail.send          (destructive — gated by approval)
 public struct MailTools: ToolProvider {
     public let handlers: [any ToolHandler]
 
     public init(adapter: MailAdapter = MailAdapter()) {
         self.handlers = [
             ListMailboxesTool(adapter: adapter),
+            ListMessagesTool(adapter: adapter),
             SearchMailTool(adapter: adapter),
             GetMessageTool(adapter: adapter),
+            MailCreateDraftTool(adapter: adapter),
             MailSendTool(adapter: adapter),
         ]
     }
@@ -37,8 +40,51 @@ struct ListMailboxesTool: ToolHandler {
 
     func call(arguments: [String: Value]?) async throws -> CallTool.Result {
         let mailboxes = try await adapter.listMailboxes()
-        let json = try jsonString(mailboxes)
-        return CallTool.Result(content: [.text(text: json, annotations: nil, _meta: nil)], isError: false)
+        return jsonResult(mailboxes)
+    }
+}
+
+// MARK: - mail.list_messages (no text filter)
+
+struct ListMessagesTool: ToolHandler {
+    let name = "mail.list_messages"
+    let returnsUntrustedContent = true
+    let spec = Tool(
+        name: "mail.list_messages",
+        description: """
+        List messages from a mailbox without a text query. Filter by date range
+        (since/before, ISO 8601 — uses date received) and read status. Returns
+        up to `limit` summaries. Use this for "what landed today" / "what's
+        unread" workflows; use mail.search when matching content.
+        """,
+        inputSchema: .object([
+            "type": .string("object"),
+            "properties": .object([
+                "account":     .object(["type": .string("string"), "description": .string("Account name; empty = all accounts.")]),
+                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox name; empty = every mailbox in chosen account(s).")]),
+                "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Inclusive lower bound on date_received.")]),
+                "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Exclusive upper bound on date_received.")]),
+                "unread_only": .object(["type": .string("boolean"), "description": .string("If true, only return unread messages.")]),
+                "limit":       .object(["type": .string("integer"), "description": .string("Max results (1-200). Defaults to 25.")]),
+            ]),
+            "additionalProperties": .bool(false),
+        ])
+    )
+    let adapter: MailAdapter
+
+    func call(arguments: [String: Value]?) async throws -> CallTool.Result {
+        let account = arguments?["account"]?.stringValue ?? ""
+        let mailbox = arguments?["mailbox"]?.stringValue ?? ""
+        let since   = arguments?["since"]?.stringValue
+        let before  = arguments?["before"]?.stringValue
+        let unread  = arguments?["unread_only"]?.boolValue ?? false
+        let limit   = max(1, min(200, arguments?["limit"]?.intValue ?? 25))
+        let result = try await adapter.listMessages(
+            account: account, mailbox: mailbox,
+            sinceISO: since, beforeISO: before,
+            unreadOnly: unread, limit: limit
+        )
+        return jsonResult(result)
     }
 }
 
@@ -50,33 +96,26 @@ struct SearchMailTool: ToolHandler {
     let spec = Tool(
         name: "mail.search",
         description: """
-        Search messages in Mail.app. Filter by account, mailbox, and field
-        (subject | sender | body | any). Returns up to `limit` summaries.
+        Search messages in Mail.app by substring. Filter by account, mailbox,
+        field (subject | sender | body | any), date range (since/before, uses
+        date received), and read status. Returns up to `limit` summaries.
+        For listing without a query, use mail.list_messages.
         """,
         inputSchema: .object([
             "type": .string("object"),
             "properties": .object([
-                "query": .object([
-                    "type": .string("string"),
-                    "description": .string("Substring to match, case-insensitive."),
-                ]),
-                "account": .object([
-                    "type": .string("string"),
-                    "description": .string("Account name from list_mailboxes; empty = all accounts."),
-                ]),
-                "mailbox": .object([
-                    "type": .string("string"),
-                    "description": .string("Mailbox name; empty = every mailbox in the chosen account(s)."),
-                ]),
-                "field": .object([
+                "query":       .object(["type": .string("string"), "description": .string("Substring to match, case-insensitive.")]),
+                "account":     .object(["type": .string("string"), "description": .string("Account name; empty = all accounts.")]),
+                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox name; empty = every mailbox in chosen account(s).")]),
+                "field":       .object([
                     "type": .string("string"),
                     "enum": .array([.string("subject"), .string("sender"), .string("body"), .string("any")]),
                     "description": .string("Which field to match. Defaults to 'any'."),
                 ]),
-                "limit": .object([
-                    "type": .string("integer"),
-                    "description": .string("Maximum results (1-200). Defaults to 25."),
-                ]),
+                "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Inclusive lower bound on date_received.")]),
+                "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Exclusive upper bound on date_received.")]),
+                "unread_only": .object(["type": .string("boolean"), "description": .string("If true, only return unread messages.")]),
+                "limit":       .object(["type": .string("integer"), "description": .string("Max results (1-200). Defaults to 25.")]),
             ]),
             "required": .array([.string("query")]),
             "additionalProperties": .bool(false),
@@ -86,21 +125,24 @@ struct SearchMailTool: ToolHandler {
 
     func call(arguments: [String: Value]?) async throws -> CallTool.Result {
         guard let query = arguments?["query"]?.stringValue, !query.isEmpty else {
-            return CallTool.Result(content: [.text(text: "query is required", annotations: nil, _meta: nil)], isError: true)
+            return errorResult("query is required")
         }
         let account = arguments?["account"]?.stringValue ?? ""
         let mailbox = arguments?["mailbox"]?.stringValue ?? ""
         let fieldRaw = arguments?["field"]?.stringValue ?? "any"
         let field = MailAdapter.SearchField(rawValue: fieldRaw) ?? .any
-        let rawLimit = arguments?["limit"]?.intValue ?? 25
-        let limit = max(1, min(200, rawLimit))
+        let since = arguments?["since"]?.stringValue
+        let before = arguments?["before"]?.stringValue
+        let unread = arguments?["unread_only"]?.boolValue ?? false
+        let limit = max(1, min(200, arguments?["limit"]?.intValue ?? 25))
 
         let results = try await adapter.search(
             account: account, mailbox: mailbox,
-            field: field, query: query, limit: limit
+            field: field, query: query,
+            sinceISO: since, beforeISO: before,
+            unreadOnly: unread, limit: limit
         )
-        let json = try jsonString(results)
-        return CallTool.Result(content: [.text(text: json, annotations: nil, _meta: nil)], isError: false)
+        return jsonResult(results)
     }
 }
 
@@ -111,11 +153,16 @@ struct GetMessageTool: ToolHandler {
     let returnsUntrustedContent = true
     let spec = Tool(
         name: "mail.get_message",
-        description: "Fetch a single message's full body and metadata by id (from a prior `mail.search` result).",
+        description: """
+        Fetch a single message's full body and metadata. Requires (id, account,
+        mailbox) together because Mail.app's integer message id is unique only
+        within a mailbox — the same id can collide across accounts. Use the
+        exact account+mailbox returned by mail.search / mail.list_messages.
+        """,
         inputSchema: .object([
             "type": .string("object"),
             "properties": .object([
-                "id": .object(["type": .string("string")]),
+                "id":      .object(["type": .string("string")]),
                 "account": .object(["type": .string("string")]),
                 "mailbox": .object(["type": .string("string")]),
             ]),
@@ -131,19 +178,27 @@ struct GetMessageTool: ToolHandler {
             let account = arguments?["account"]?.stringValue,
             let mailbox = arguments?["mailbox"]?.stringValue
         else {
-            return CallTool.Result(content: [.text(text: "id, account, mailbox are required", annotations: nil, _meta: nil)], isError: true)
+            return errorResult("id, account, mailbox are required")
         }
         let msg = try await adapter.getMessage(account: account, mailbox: mailbox, id: id)
-        let json = try jsonString(msg)
-        return CallTool.Result(content: [.text(text: json, annotations: nil, _meta: nil)], isError: false)
+        return jsonResult(msg)
     }
 }
 
 // MARK: - helpers
 
-private func jsonString<T: Encodable>(_ value: T) throws -> String {
-    let enc = JSONEncoder()
-    enc.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
-    let data = try enc.encode(value)
-    return String(data: data, encoding: .utf8) ?? "{}"
+func jsonResult<T: Encodable>(_ value: T) -> CallTool.Result {
+    do {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
+        let data = try enc.encode(value)
+        let s = String(data: data, encoding: .utf8) ?? "{}"
+        return CallTool.Result(content: [.text(text: s, annotations: nil, _meta: nil)], isError: false)
+    } catch {
+        return errorResult("encode failed: \(error)")
+    }
+}
+
+func errorResult(_ message: String) -> CallTool.Result {
+    CallTool.Result(content: [.text(text: message, annotations: nil, _meta: nil)], isError: true)
 }

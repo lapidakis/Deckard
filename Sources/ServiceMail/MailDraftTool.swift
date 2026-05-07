@@ -2,17 +2,19 @@ import Foundation
 import MCP
 import BridgeCore
 
-/// Sends a message via Mail.app. Always default-deny in ACL; recommended setting
-/// is `[acl.tools] "mail.send" = "approve"` so every send routes through the
-/// approval gate. Bypass only after careful thought.
-struct MailSendTool: ToolHandler, ApprovalSummarizing {
-    let name = "mail.send"
+/// Creates a draft and opens it in Mail.app for the user to review and send manually.
+/// This is the SAFE alternative to `mail.send` — drafts stay on the Mac until the
+/// user explicitly sends or deletes them. Recommended for any agent workflow that
+/// produces email content; only use `mail.send` when truly autonomous send is required.
+struct MailCreateDraftTool: ToolHandler, ApprovalSummarizing {
+    let name = "mail.create_draft"
     let spec = Tool(
-        name: "mail.send",
+        name: "mail.create_draft",
         description: """
-        Send an email via Mail.app. WRITE TOOL — defaults to deny. Configure
-        `[acl.tools] "mail.send" = "approve"` in config.toml to enable; every
-        call will then pop a confirmation dialog showing recipient + body.
+        Create a draft message in Mail.app and open it visibly for the user.
+        SAFE — message stays in Drafts until the user manually sends it.
+        Recommended over mail.send for any agent-authored email; the user
+        becomes the final gate. Returns {"draft": true} on success.
         """,
         inputSchema: .object([
             "type": .string("object"),
@@ -36,45 +38,33 @@ struct MailSendTool: ToolHandler, ApprovalSummarizing {
         let bcc = stringArray(arguments?["bcc"])
         let subject = arguments?["subject"]?.stringValue ?? ""
         let body = arguments?["body"]?.stringValue ?? ""
-
         if to.isEmpty {
-            return CallTool.Result(
-                content: [.text(text: "to[] cannot be empty", annotations: nil, _meta: nil)],
-                isError: true
-            )
+            return errorResult("to[] cannot be empty")
         }
-
-        try await adapter.sendMessage(to: to, cc: cc, bcc: bcc, subject: subject, body: body)
+        try await adapter.createDraft(to: to, cc: cc, bcc: bcc, subject: subject, body: body)
         return CallTool.Result(
-            content: [.text(text: "{\"sent\":true}", annotations: nil, _meta: nil)],
+            content: [.text(text: #"{"draft":true}"#, annotations: nil, _meta: nil)],
             isError: false
         )
     }
 
+    /// Approval summary used IF the user opts to gate drafts (default ACL is allow).
+    /// Same shape as mail.send's summary so the dialog feels consistent.
     func approvalSummary(for arguments: [String: Value]?) -> [String] {
         let to = stringArray(arguments?["to"])
         let cc = stringArray(arguments?["cc"])
-        let bcc = stringArray(arguments?["bcc"])
         let subject = arguments?["subject"]?.stringValue ?? ""
         let body = arguments?["body"]?.stringValue ?? ""
-
         var lines: [String] = []
+        lines.append("Draft only — will open in Mail.app, not send")
         lines.append("To: \(to.joined(separator: ", "))")
         if !cc.isEmpty { lines.append("Cc: \(cc.joined(separator: ", "))") }
-        if !bcc.isEmpty { lines.append("Bcc: \(bcc.joined(separator: ", "))") }
         lines.append("Subject: \(subject)")
         lines.append("")
         lines.append("Body (preview):")
-        let preview = String(body.prefix(400))
-        lines.append(preview)
-        if body.count > 400 {
-            lines.append("…(\(body.count - 400) more chars)")
-        }
+        lines.append(String(body.prefix(400)))
         return lines
     }
 }
 
-func stringArray(_ value: Value?) -> [String] {
-    guard case .array(let items)? = value else { return [] }
-    return items.compactMap { $0.stringValue }
-}
+// stringArray helper is shared from MailSendTool.swift via target visibility.

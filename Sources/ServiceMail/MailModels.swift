@@ -1,5 +1,9 @@
 import Foundation
 
+public enum MailSearchField: String, Sendable {
+    case subject, sender, body, any
+}
+
 public struct MailboxRef: Codable, Sendable, Hashable {
     public let account: String
     public let name: String
@@ -12,20 +16,27 @@ public struct MailboxRef: Codable, Sendable, Hashable {
 }
 
 public struct MessageSummary: Codable, Sendable, Hashable {
-    public let id: String          // Mail.app message id (numeric, scoped to account+mailbox)
+    public let id: String              // Mail.app message id (numeric, scoped to account+mailbox)
     public let account: String
     public let mailbox: String
     public let subject: String
     public let sender: String
-    public let dateSent: String?   // ISO 8601
+    public let dateSent: String?       // ISO 8601
+    public let dateReceived: String?   // ISO 8601 — what filters use
     public let isRead: Bool
-    public init(id: String, account: String, mailbox: String, subject: String, sender: String, dateSent: String?, isRead: Bool) {
+    public init(
+        id: String, account: String, mailbox: String,
+        subject: String, sender: String,
+        dateSent: String?, dateReceived: String?,
+        isRead: Bool
+    ) {
         self.id = id
         self.account = account
         self.mailbox = mailbox
         self.subject = subject
         self.sender = sender
         self.dateSent = dateSent
+        self.dateReceived = dateReceived
         self.isRead = isRead
     }
 }
