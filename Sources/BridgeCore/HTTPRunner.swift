@@ -8,9 +8,11 @@ import BridgeConfig
 
 /// Runs an MCP server over HTTP, bound to 127.0.0.1 by default.
 ///
-/// The HTTP server is a thin Hummingbird app whose only route is `POST/GET/DELETE
-/// /mcp`. Each request is authenticated, then forwarded to the SDK's
-/// `StatefulHTTPServerTransport.handleRequest`.
+/// HTTPRunner is multi-tenant: each authenticated bearer token resolves to its
+/// own `SessionHolder` (with its own MCP Server, ACL profile, and AuthContext).
+/// This keeps audit identities clean ("bearer:rocky" vs "bearer:eleanor") and
+/// lets per-token profiles enforce different ACLs without per-call dispatch
+/// gymnastics inside the SDK.
 public struct HTTPRunner: Sendable {
     public struct Bind: Sendable {
         public let host: String
@@ -24,68 +26,41 @@ public struct HTTPRunner: Sendable {
     }
 
     private let bind: Bind
-    private let builder: MCPHostBuilder
-    private let tokenStore: TokenStore
+    private let sessions: TokenSessions
     private let requireToken: Bool
     private let logger: Logger
 
     public init(
         bind: Bind,
-        builder: MCPHostBuilder,
-        tokenStore: TokenStore,
+        sessions: TokenSessions,
         requireToken: Bool,
         logger: Logger = Logger(label: "bridge.http")
     ) {
         self.bind = bind
-        self.builder = builder
-        self.tokenStore = tokenStore
+        self.sessions = sessions
         self.requireToken = requireToken
         self.logger = logger
     }
 
     public func run() async throws {
-        let auth = AuthContext(
-            transport: bind.transportLabel,
-            identity: .bearer(tokenLabel: "default"),
-            remoteDescription: "\(bind.host):\(bind.port)"
-        )
-        // SessionHolder owns the transport+server pair and can recreate it
-        // when the SDK refuses a fresh `initialize` because a stale session
-        // is still in memory. Without this, every Claude Code restart on the
-        // client side requires a daemon bounce.
-        let holder = try await SessionHolder(builder: builder, auth: auth, logger: logger)
-
         let runnerLogger = logger
-        let tokenStore = self.tokenStore
+        let sessions = self.sessions
         let requireToken = self.requireToken
 
         let router = Router()
         router.on("/mcp", method: .post) { req, ctx -> Response in
-            try await Self.handle(
-                req: req, ctx: ctx, holder: holder,
-                tokenStore: tokenStore, requireToken: requireToken,
-                logger: runnerLogger
-            )
+            try await Self.handle(req: req, ctx: ctx, sessions: sessions, requireToken: requireToken, logger: runnerLogger)
         }
         router.on("/mcp", method: .get) { req, ctx -> Response in
-            try await Self.handle(
-                req: req, ctx: ctx, holder: holder,
-                tokenStore: tokenStore, requireToken: requireToken,
-                logger: runnerLogger
-            )
+            try await Self.handle(req: req, ctx: ctx, sessions: sessions, requireToken: requireToken, logger: runnerLogger)
         }
         router.on("/mcp", method: .delete) { req, ctx -> Response in
-            try await Self.handle(
-                req: req, ctx: ctx, holder: holder,
-                tokenStore: tokenStore, requireToken: requireToken,
-                logger: runnerLogger
-            )
+            try await Self.handle(req: req, ctx: ctx, sessions: sessions, requireToken: requireToken, logger: runnerLogger)
         }
 
         // Catch-all for unrouted paths (OAuth discovery probes, etc.).
         // Returns a JSON 404 so client SDKs that JSON-parse the body don't
-        // explode with "Unexpected EOF". Path "/**" matches everything not
-        // already routed above.
+        // explode with "Unexpected EOF".
         router.on("/**", method: .get) { _, _ -> Response in
             Self.notFoundJSON()
         }
@@ -98,27 +73,37 @@ public struct HTTPRunner: Sendable {
             ),
             logger: logger
         )
-        logger.info("HTTP server binding \(bind.host):\(bind.port)")
+        logger.info("HTTP server binding \(bind.host):\(bind.port) (tokens=\(sessions.count))")
         try await app.runService()
     }
 
     private static func handle(
         req: Request,
         ctx: BasicRequestContext,
-        holder: SessionHolder,
-        tokenStore: TokenStore,
+        sessions: TokenSessions,
         requireToken: Bool,
         logger: Logger
     ) async throws -> Response {
+        var resolvedHolder: SessionHolder?
         if requireToken {
             guard let token = extractBearer(from: req.headers) else {
                 return unauthorized(reason: "missing_token", message: "Missing bearer token")
             }
-            let ok: Bool
-            do { ok = try await tokenStore.verify(token) } catch { ok = false }
-            guard ok else {
+            guard let entry = sessions.entry(for: token) else {
                 return unauthorized(reason: "invalid_token", message: "Invalid bearer token")
             }
+            resolvedHolder = entry.holder
+        } else {
+            // require_token = false (rare/dev). Pick the first available
+            // session holder. With no token, identity is unknowable.
+            resolvedHolder = sessions.entry(for: "")?.holder
+            if resolvedHolder == nil {
+                return jsonError(status: .internalServerError, message: "No session holder configured")
+            }
+        }
+
+        guard let holder = resolvedHolder else {
+            return unauthorized(reason: "invalid_token", message: "Invalid bearer token")
         }
 
         let bodyData: Data
@@ -218,9 +203,7 @@ public struct HTTPRunner: Sendable {
 
     /// 401 with a `WWW-Authenticate: Bearer` header so MCP clients fall back to
     /// the bearer token in their config instead of attempting OAuth discovery
-    /// (RFC 6750). Without this, Claude Code's MCP SDK probes
-    /// `/.well-known/oauth-protected-resource`, parses the empty 404 body as a
-    /// JSON OAuth error, and surfaces a confusing "JSON Parse error" auth failure.
+    /// (RFC 6750).
     private static func unauthorized(reason: String, message: String) -> Response {
         let json = #"{"error":"\#(message)"}"#
         var fields = HTTPFields()
@@ -232,42 +215,11 @@ public struct HTTPRunner: Sendable {
         return Response(status: .unauthorized, headers: fields, body: .init(byteBuffer: ByteBuffer(string: json)))
     }
 
-    /// JSON 404 for any unrouted path (e.g. OAuth discovery probes). Empty
-    /// bodies trip MCP clients that try to parse the response as JSON.
+    /// JSON 404 for any unrouted path (e.g. OAuth discovery probes).
     static func notFoundJSON() -> Response {
         let json = #"{"error":"not_found","auth":"bearer","oauth":false}"#
         var fields = HTTPFields()
         fields.append(HTTPField(name: .contentType, value: "application/json"))
         return Response(status: .notFound, headers: fields, body: .init(byteBuffer: ByteBuffer(string: json)))
-    }
-}
-
-/// Holds the MCP transport+server pair and recreates them when the SDK's
-/// session state becomes stale. Actor-isolated so concurrent requests racing
-/// to recreate end up with a single fresh pair.
-private actor SessionHolder {
-    private var transport: StatefulHTTPServerTransport
-    private var server: Server
-    private let builder: MCPHostBuilder
-    private let auth: AuthContext
-    private let logger: Logger
-
-    init(builder: MCPHostBuilder, auth: AuthContext, logger: Logger) async throws {
-        self.builder = builder
-        self.auth = auth
-        self.logger = logger
-        self.transport = StatefulHTTPServerTransport(logger: logger)
-        self.server = await builder.build(auth: auth)
-        try await self.server.start(transport: self.transport)
-    }
-
-    func currentTransport() -> StatefulHTTPServerTransport { transport }
-
-    func recreate() async throws {
-        await server.stop()
-        await transport.disconnect()
-        self.transport = StatefulHTTPServerTransport(logger: logger)
-        self.server = await builder.build(auth: auth)
-        try await self.server.start(transport: transport)
     }
 }

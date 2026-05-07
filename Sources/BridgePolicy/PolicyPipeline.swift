@@ -20,6 +20,18 @@ public struct PolicyPipeline: Sendable {
         self.logger = logger
     }
 
+    /// Build a pipeline scoped to a per-token profile. Falls back to the
+    /// global ACLConfig when no profile name was set on the token.
+    public init(acl: ACLConfig, profile: ProfileConfig?, audit: AuditSink, logger: Logger = Logger(label: "bridge.policy")) {
+        if let profile {
+            self.acl = ACLEvaluator(profile: profile)
+        } else {
+            self.acl = ACLEvaluator(acl: acl)
+        }
+        self.audit = audit
+        self.logger = logger
+    }
+
     /// Pre-call gate: returns the outcome and records a deny/approval-required
     /// audit row immediately. On `.allow` the caller must call `recordResult`
     /// once the tool returns.

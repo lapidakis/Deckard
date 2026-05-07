@@ -35,38 +35,59 @@ public struct BridgeServer: Sendable {
 
     public func run() async throws {
         let audit = AuditSink(logger: logger)
-        // Sweep the log on startup so a long-stopped daemon doesn't hold onto
-        // stale entries past the retention window.
         if config.audit.enabled, config.audit.retentionDays > 0 {
             let result = await audit.prune(retentionDays: config.audit.retentionDays)
             if result.removed > 0 {
                 logger.info("Audit startup sweep: kept=\(result.kept) removed=\(result.removed)")
             }
         }
-        let policy = PolicyPipeline(config: config, audit: audit, logger: logger)
+
         let middleware: [any ResultMiddleware] = [
             Redactor(config: config.redaction),
             InjectionTagger(config: config.injection),
         ]
         let builder = MCPHostBuilder(
             providers: providers,
-            policy: policy,
             middleware: middleware,
             logger: logger
         )
-        let tokens = TokenStore(logger: logger)
 
         switch mode {
         case .stdio:
-            try await StdioRunner(builder: builder, logger: logger).run()
+            // stdio uses the global ACL — no token mapping in this transport.
+            let policy = PolicyPipeline(config: config, audit: audit, logger: logger)
+            try await StdioRunner(builder: builder, policy: policy, logger: logger).run()
+
         case .daemon:
-            // Ensure token exists before opening the listener.
-            _ = try await tokens.ensureToken()
+            let registry = TokenRegistry(logger: logger)
+            try await registry.ensureLoaded()
+
+            // Build per-token SessionHolders. Each token gets:
+            //   - AuthContext with `bearer:<label>` so audit shows the agent
+            //   - PolicyPipeline scoped to the token's profile (or global ACL
+            //     if no profile is set)
+            let entries = await registry.allEntries()
+            var bySecret: [String: TokenSessions.Entry] = [:]
+            for (label, entry) in entries {
+                let profile = config.acl.profile(named: entry.profile)
+                let policy = PolicyPipeline(
+                    acl: config.acl, profile: profile,
+                    audit: audit, logger: logger
+                )
+                let auth = AuthContext(
+                    transport: .loopback,    // overridden per-listener if needed
+                    identity: .bearer(tokenLabel: label),
+                    remoteDescription: "127.0.0.1"
+                )
+                let holder = try await SessionHolder(
+                    builder: builder, auth: auth, policy: policy, logger: logger
+                )
+                bySecret[entry.secret] = TokenSessions.Entry(label: label, holder: holder)
+                logger.info("Token registered: label=\(label) profile=\(entry.profile ?? "<global>")")
+            }
+            let sessions = TokenSessions(bySecret: bySecret)
 
             try await withThrowingTaskGroup(of: Void.self) { group in
-                // Background pruner: re-sweeps the audit log every
-                // [audit] prune_interval_hours. Cheap (parses just the ts
-                // field per line) and serialized through AuditSink.
                 if config.audit.enabled,
                    config.audit.retentionDays > 0,
                    config.audit.pruneIntervalHours > 0 {
@@ -92,11 +113,8 @@ public struct BridgeServer: Sendable {
                         transportLabel: .loopback
                     )
                     let runner = HTTPRunner(
-                        bind: bind,
-                        builder: builder,
-                        tokenStore: tokens,
-                        requireToken: config.auth.requireToken,
-                        logger: logger
+                        bind: bind, sessions: sessions,
+                        requireToken: config.auth.requireToken, logger: logger
                     )
                     group.addTask { try await runner.run() }
                 }
@@ -111,11 +129,8 @@ public struct BridgeServer: Sendable {
                             transportLabel: .tailnet
                         )
                         let runner = HTTPRunner(
-                            bind: bind,
-                            builder: builder,
-                            tokenStore: tokens,
-                            requireToken: config.auth.requireToken,
-                            logger: logger
+                            bind: bind, sessions: sessions,
+                            requireToken: config.auth.requireToken, logger: logger
                         )
                         group.addTask { try await runner.run() }
                         logger.info("Tailscale listener: \(ip):\(config.tailscale.port)")

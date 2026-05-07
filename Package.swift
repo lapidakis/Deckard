@@ -92,6 +92,7 @@ let package = Package(
             name: "BridgeAuth",
             dependencies: [
                 "BridgeConfig",
+                "TOMLKit",
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/BridgeAuth"

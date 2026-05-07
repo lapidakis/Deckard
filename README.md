@@ -41,9 +41,66 @@ Inspect with:
 
 ---
 
-## ACL — opt in to each tool
+## Multi-token auth + ACL profiles
 
-Default-deny. Tools must be listed explicitly. Edit `config.toml`:
+The bridge supports multiple bearer tokens, each labeled and optionally bound to
+its own ACL profile. Tokens live in `~/Library/Application Support/iCloud-Bridge/tokens.toml` (mode 0600, plaintext secrets).
+
+Manage tokens with the CLI:
+
+```sh
+icloud-bridge auth list                                          # see all tokens
+icloud-bridge auth add rocky --profile trusted --description "Rocky on this Mac"
+icloud-bridge auth add eleanor --profile triage --description "Eleanor on Hermes"
+icloud-bridge auth add scratch --profile readonly                # untrusted scratch
+icloud-bridge auth show rocky                                    # re-fetch a secret
+icloud-bridge auth rotate rocky                                  # generate new secret
+icloud-bridge auth revoke scratch
+```
+
+Each token shows up in audit as `caller: "bearer:<label>"` so you can tell agents apart. Restart the daemon after adding/revoking/rotating tokens — the in-memory session holders are bound at startup.
+
+Define profiles in `config.toml` next to `[acl]`:
+
+```toml
+[acl]
+default = "deny"
+[acl.tools]
+"health.ping" = "allow"     # this is the global ACL — used when a token has no profile
+
+[acl.profiles.trusted]
+default = "deny"
+[acl.profiles.trusted.tools]
+"mail.list_messages" = "allow"
+"mail.search" = "allow"
+"mail.send" = "approve"
+"calendar.list_events" = "allow"
+"calendar.create_event" = "approve"
+"drive.read" = "allow"
+"drive.write" = "approve"
+# … full surface
+
+[acl.profiles.triage]
+default = "deny"
+[acl.profiles.triage.tools]
+"mail.list_messages" = "allow"
+"mail.mark_read" = "allow"
+"mail.move_message" = "allow"
+"mail.create_draft" = "allow"
+# no .send, no .write — Eleanor can triage without auto-sending anything
+
+[acl.profiles.readonly]
+default = "deny"
+[acl.profiles.readonly.tools]
+"mail.list_messages" = "allow"
+"calendar.list_events" = "allow"
+"drive.read" = "allow"
+# pure-read profile for untrusted experimentation
+```
+
+## Single-token (legacy / global) ACL
+
+Tokens with no profile fall back to the global `[acl]` block. Edit `config.toml`:
 
 ```toml
 [acl]

@@ -10,6 +10,7 @@ struct ICloudBridge: AsyncParsableCommand {
             ConfigCommand.self,
             Status.self,
             Audit.self,
+            Auth.self,
             Install.self,
             Uninstall.self,
         ]

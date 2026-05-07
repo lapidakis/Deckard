@@ -13,7 +13,6 @@ public struct MCPHostBuilder: Sendable {
     public let serverName: String
     public let serverVersion: String
     private let providers: [any ToolProvider]
-    private let policy: PolicyPipeline
     private let middleware: [any ResultMiddleware]
     private let approval: any ApprovalGate
     private let logger: Logger
@@ -22,7 +21,6 @@ public struct MCPHostBuilder: Sendable {
         serverName: String = "icloud-bridge",
         serverVersion: String = BridgeCore.version,
         providers: [any ToolProvider],
-        policy: PolicyPipeline,
         middleware: [any ResultMiddleware] = [],
         approval: any ApprovalGate = OsaScriptApprovalGate(),
         logger: Logger = Logger(label: "bridge.host")
@@ -30,15 +28,15 @@ public struct MCPHostBuilder: Sendable {
         self.serverName = serverName
         self.serverVersion = serverVersion
         self.providers = providers
-        self.policy = policy
         self.middleware = middleware
         self.approval = approval
         self.logger = logger
     }
 
     /// Build a Server (not yet started) with all tools registered through the
-    /// policy pipeline. The `auth` describes the caller for audit purposes.
-    public func build(auth: AuthContext) async -> Server {
+    /// caller-supplied policy pipeline. The `auth` describes the caller for
+    /// audit purposes; `policy` carries that caller's ACL profile.
+    public func build(auth: AuthContext, policy: PolicyPipeline) async -> Server {
         let server = Server(
             name: serverName,
             version: serverVersion,
@@ -53,7 +51,6 @@ public struct MCPHostBuilder: Sendable {
             ListTools.Result(tools: specs)
         }
 
-        let policy = self.policy
         let logger = self.logger
         let middleware = self.middleware
         let approval = self.approval

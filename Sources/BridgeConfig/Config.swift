@@ -260,8 +260,53 @@ public struct ACLConfig: Codable, Sendable, Equatable {
     public var `default`: ACLDecision
     /// Per-tool overrides keyed by fully-qualified tool name (e.g. "mail.send").
     public var tools: [String: ACLDecision]
+    /// Named profiles that tokens can reference. When a token has a non-nil
+    /// `profile` field, the bridge uses `profiles[name]` instead of this
+    /// top-level config. Falls back to top-level when the profile name is
+    /// unknown so a typo doesn't lock out a caller.
+    public var profiles: [String: ProfileConfig]
 
-    public init(default: ACLDecision = .deny, tools: [String: ACLDecision] = ["health.ping": .allow]) {
+    public init(
+        default: ACLDecision = .deny,
+        tools: [String: ACLDecision] = ["health.ping": .allow],
+        profiles: [String: ProfileConfig] = [:]
+    ) {
+        self.default = `default`
+        self.tools = tools
+        self.profiles = profiles
+    }
+
+    public func decision(for tool: String) -> ACLDecision {
+        tools[tool] ?? `default`
+    }
+
+    /// Returns the profile-specific ACL when name resolves; nil otherwise so
+    /// caller can fall back to this `ACLConfig`.
+    public func profile(named name: String?) -> ProfileConfig? {
+        guard let name, !name.isEmpty else { return nil }
+        return profiles[name]
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case `default`, tools, profiles
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let defaults = ACLConfig()
+        self.default = try c.decodeIfPresent(ACLDecision.self, forKey: .default) ?? defaults.default
+        self.tools = try c.decodeIfPresent([String: ACLDecision].self, forKey: .tools) ?? defaults.tools
+        self.profiles = try c.decodeIfPresent([String: ProfileConfig].self, forKey: .profiles) ?? defaults.profiles
+    }
+}
+
+/// One ACL profile — a complete (default + tools) policy bound to a token.
+/// Same shape as `ACLConfig` minus the `profiles` map (no nesting).
+public struct ProfileConfig: Codable, Sendable, Equatable {
+    public var `default`: ACLDecision
+    public var tools: [String: ACLDecision]
+
+    public init(default: ACLDecision = .deny, tools: [String: ACLDecision] = [:]) {
         self.default = `default`
         self.tools = tools
     }
@@ -276,8 +321,8 @@ public struct ACLConfig: Codable, Sendable, Equatable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        let defaults = ACLConfig()
-        self.default = try c.decodeIfPresent(ACLDecision.self, forKey: .default) ?? defaults.default
-        self.tools = try c.decodeIfPresent([String: ACLDecision].self, forKey: .tools) ?? defaults.tools
+        let d = ProfileConfig()
+        self.default = try c.decodeIfPresent(ACLDecision.self, forKey: .default) ?? d.default
+        self.tools = try c.decodeIfPresent([String: ACLDecision].self, forKey: .tools) ?? d.tools
     }
 }

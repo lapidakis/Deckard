@@ -14,7 +14,8 @@ public enum BridgePaths {
     }
 
     public static var configFile: URL { supportDir.appendingPathComponent("config.toml") }
-    public static var tokenFile: URL { supportDir.appendingPathComponent("token") }
+    public static var tokenFile: URL { supportDir.appendingPathComponent("token") }       // legacy v0.7 single-token
+    public static var tokensFile: URL { supportDir.appendingPathComponent("tokens.toml") } // v0.8+ multi-token
     public static var auditFile: URL { logsDir.appendingPathComponent("audit.jsonl") }
 
     public static func ensureDirs() throws {
