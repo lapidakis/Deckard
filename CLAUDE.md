@@ -14,7 +14,7 @@ Read this file before making changes. Read README.md for end-user setup; this fi
 | 3 | iCloud Drive | Not started |
 | 4 | iMessage (chat.db read + AppleScript send) | Not started |
 
-Codesigning with a stable identity is a known follow-up — adhoc signing means TCC re-prompts every `swift build`. Tackle this before Phase 2.
+Codesigned with Developer ID Application (`com.lapidakis.icloud-bridge`, team `NZL3HS8AH4`). Use `make build` / `make release` so the post-build `scripts/codesign.sh` runs; bare `swift build` produces an adhoc binary that will lose TCC grants.
 
 ## Module map
 
@@ -90,7 +90,7 @@ Audit at `~/Library/Logs/iCloud-Bridge/audit.jsonl`.
 
 ## Pitfalls
 
-- **TCC + adhoc signing.** The bearer-binary identity hash changes on every rebuild → TCC grant evaporates → next call gets a silent deny. Codesign with a stable cert before Phase 2.
+- **Always build via `make build`.** Bare `swift build` overwrites the signed binary with an adhoc one and TCC grants disappear silently until you re-sign. The Makefile chains `swift build` → `scripts/codesign.sh` so this is one command, not two.
 - **Calendar AppleScript is broken on macOS 14+.** Phase 2 must use `EventKit` directly with `requestFullAccessToEvents`. Don't try to extend `MailScripts` to drive Calendar.
 - **`StatefulHTTPServerTransport`** is framework-agnostic — Hummingbird is the wrapper. The transport ships an `OriginValidator.localhost()` by default, but that only checks the `Origin` header, not the bind address. Loopback bind is enforced separately in `HTTPRunner`.
 - **Two daemons fighting over port 8787.** `pkill -f "icloud-bridge serve"` doesn't always kill instantly; `sleep 0.7` after, or `kill -9` if you've already nudged it. The LaunchAgent binds with `SO_REUSEADDR`, so a stuck orphan can co-exist invisibly.

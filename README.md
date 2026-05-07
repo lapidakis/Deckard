@@ -131,7 +131,7 @@ The first time you call a `mail.*` tool, macOS will prompt:
 
 Approve. The grant persists in System Settings → Privacy & Security → Automation. You can revoke any time.
 
-**Unsigned debug builds get a fresh prompt every rebuild** because TCC keys grants by signature. Codesigning is on the Phase 2 todo list and will fix this.
+The bridge is signed with a stable Developer ID identity (`com.lapidakis.icloud-bridge`, team `NZL3HS8AH4`), so TCC grants persist across rebuilds. Run `make build` (or `make release`) to get a properly signed binary; raw `swift build` produces an unsigned/adhoc binary that will re-prompt.
 
 ---
 
@@ -275,6 +275,6 @@ Audit: every call recorded as JSONL with caller, transport, tool, arg-keys (no v
 - Phase 2: Calendar (EventKit, native — no AppleScript)
 - Phase 3: iCloud Drive (filesystem + `brctl` for placeholders)
 - Phase 4: iMessage (chat.db reads, AppleScript send, sender allowlist)
-- Codesigning + Developer ID for stable TCC grants across rebuilds
+- Notarization (for distribution to other Macs without Gatekeeper warnings)
 - Per-peer Tailscale WhoIs identity (currently bearer-only on tailnet)
 - Menu-bar UI for approvals + ACL toggles (config file stays the source of truth)
