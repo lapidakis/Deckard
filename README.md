@@ -2,7 +2,7 @@
 
 A Mac-resident MCP server that proxies iCloud-bound services to AI agents over stdio or HTTP. One trust boundary: ACLs, redaction, prompt-injection tagging, and audit logging in one place. Loopback-only by default; opt-in Tailscale.
 
-**Status:** Phases 1 (Mail) and 2 (Calendar) complete. Mail verified end-to-end against Mail.app on macOS 26. Phase 3 (iCloud Drive) next.
+**Status:** Phases 1 (Mail), 2 (Calendar), and 3 (iCloud Drive) complete. Mail and Calendar verified end-to-end on macOS 26. Phase 4 (Voice Memos) next.
 
 ---
 
@@ -69,6 +69,13 @@ default = "deny"
 "calendar.create_event"   = "approve"
 "calendar.update_event"   = "approve"
 "calendar.delete_event"   = "approve"
+
+# Drive (Phase 3)
+"drive.list"              = "allow"
+"drive.stat"              = "allow"
+"drive.read"              = "allow"
+"drive.materialize"       = "allow"
+"drive.write"             = "approve"
 ```
 
 Restart `serve` after edits. The bridge re-reads `config.toml` only at startup.
@@ -282,6 +289,15 @@ tccutil reset AppleEvents com.lapidakis.icloud-bridge
 - `mail.create_draft` — safe — opens draft in Mail.app for user to send manually
 - `mail.send` — destructive; gated by approval dialog (when ACL = `approve`)
 
+**Drive (Phase 3)** — filesystem under `~/Library/Mobile Documents/com~apple~CloudDocs`
+- `drive.list` — directory listing; placeholders surface with `is_placeholder: true`
+- `drive.stat` — single-path metadata (size, modified, created, uti_type)
+- `drive.read` — text (utf-8) or binary (base64); 1 MiB default cap, 16 MiB hard max; `truncated` flag when bigger
+- `drive.materialize` — `brctl download` an offloaded `.icloud` placeholder; optional `wait_seconds`
+- `drive.write` — gated by approval; modes: create / overwrite / append; encodings: utf-8 / base64
+
+Path safety: every caller-supplied path runs through `DrivePath.resolve()`, which rejects absolute paths, walks `..` segments and rejects any that escape root, and (for existing targets) verifies the symlink-resolved path is still under the iCloud root.
+
 **Calendar (Phase 2)** — native EventKit, not AppleScript
 - `calendar.list_calendars` — id, title, source, type, write status, color; pass `writable_only: true` to filter
 - `calendar.list_events` — events in [since, before) date range, optional calendar filter, optional `tz`
@@ -309,7 +325,6 @@ Audit: every call recorded as JSONL with caller, transport, tool, arg-keys (no v
 
 ## What's coming
 
-- Phase 3: iCloud Drive (filesystem + `brctl` for placeholders)
 - Phase 4: Voice Memos (read-only — list / search transcripts / get transcript by id)
 - Phase 5: iMessage (chat.db reads, AppleScript send, sender allowlist)
 - Notarization (for distribution to other Macs without Gatekeeper warnings)

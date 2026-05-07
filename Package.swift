@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "BridgeCore", targets: ["BridgeCore"]),
         .library(name: "ServiceMail", targets: ["ServiceMail"]),
         .library(name: "ServiceCalendar", targets: ["ServiceCalendar"]),
+        .library(name: "ServiceDrive", targets: ["ServiceDrive"]),
     ],
     dependencies: [
         .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.11.0"),
@@ -30,6 +31,7 @@ let package = Package(
                 "BridgePolicy",
                 "ServiceMail",
                 "ServiceCalendar",
+                "ServiceDrive",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
             ],
@@ -52,6 +54,15 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ],
             path: "Sources/ServiceCalendar"
+        ),
+        .target(
+            name: "ServiceDrive",
+            dependencies: [
+                "BridgeCore",
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "Logging", package: "swift-log"),
+            ],
+            path: "Sources/ServiceDrive"
         ),
         .target(
             name: "BridgeCore",
@@ -99,6 +110,7 @@ let package = Package(
                 "BridgeCore",
                 "ServiceMail",
                 "ServiceCalendar",
+                "ServiceDrive",
             ],
             path: "Tests/BridgeTests"
         ),

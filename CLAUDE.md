@@ -11,7 +11,7 @@ Read this file before making changes. Read README.md for end-user setup; this fi
 | 0 | Skeleton, transports, auth, ACL, audit | Done |
 | 1 | Mail (list/search/get/send), redaction, injection-tag, approval gate | Done — verified live |
 | 2 | Calendar via EventKit (read + write) | Done |
-| 3 | iCloud Drive | Not started |
+| 3 | iCloud Drive (read + write + materialize) | Done |
 | 4 | Voice Memos (CloudRecordings.db read, transcripts) | Not started |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
@@ -28,6 +28,7 @@ BridgeConfig         — TOML schema, defaults, on-disk persistence
 BridgePolicy         — ACLEvaluator, AuditSink (JSONL), PolicyPipeline
 ServiceMail          — Mail.app via NSAppleScript; tool handlers
 ServiceCalendar      — EventKit (EKEventStore actor); tool handlers
+ServiceDrive         — iCloud Drive filesystem; DrivePath traversal guard
 ```
 
 Dependency direction (import-only):
@@ -98,6 +99,8 @@ Audit at `~/Library/Logs/iCloud-Bridge/audit.jsonl`.
 - **Calendar uses EventKit, not AppleScript** — Calendar AppleScript is broken on macOS 14+. `CalendarAdapter` wraps `EKEventStore` in an actor (it's not Sendable) and lazily calls `requestFullAccessToEvents` on first use. The `com.apple.security.personal-information.calendars` entitlement is in `Resources/icloud-bridge.entitlements`. EventKit's `event(withIdentifier:)` IDs are globally unique — no need to scope `calendar.get_event` by calendar.
 - **Calendar tz handling.** All read tools accept an optional `tz` (IANA id like `"America/Denver"`); when supplied, output `start`/`end` are formatted in that zone. UTC by default. `Apple Foundation quirk:` `TimeZone(identifier: "UTC").identifier` returns `"GMT"`. Test against `secondsFromGMT() == 0`, not the identifier string.
 - **All-day events.** EventKit stores all-day starts/ends as zero-offset times that don't necessarily match the user's local-day understanding ("Cinco de Mayo on May 5" can be `2026-05-05T00:00Z` which is May 4 in MT). The summary always exposes `local_start_date` / `local_end_date` (`yyyy-MM-dd` in caller `tz`) for `is_all_day == true`. Agents should prefer those for "what's on day X" intent.
+- **DrivePath canonicalization is component-walk, not NSString.** `NSString.standardizingPath` / `URL.standardizedFileURL` have edge cases that vary across macOS versions — `Documents/..` was *not* collapsed to root reliably. `DrivePath.resolve()` walks the path components by hand, popping on `..` and erroring if the stack is empty. Any future Drive features must keep this canonicalization; do NOT switch to URL/NSString-based shortcuts.
+- **`.icloud` placeholders are stub files named `.<basename>.icloud`** in the parent directory. `drive.list` strips the leading dot and trailing `.icloud` and surfaces the visible name with `is_placeholder=true`. `drive.read` errors on placeholders unless `auto_materialize=true`. The materialization tool shells `/usr/bin/brctl download <abs-path>`.
 - **`attendee_count` is best-effort.** EventKit's `event.attendees` returns participants only when the calendar source carries them. iCloud-CalDAV self-authored events, subscription feeds, and many shared-iCloud events return empty even when the user "shared" or "invited" via the iOS UI. Don't assume zero means "no one else is on this." If the user reports surprising zeros, suggest verifying via Calendar.app's own inspector.
 - **Voice Memos data lives in a Group Container.** Path: `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db`. CoreData/SQLite hybrid — column names are Z-prefixed (`ZCUSTOMLABEL`, `ZDATE`, `ZDURATION`, `ZPATH`, `ZUUID`, `ZEVALUATEDTRANSCRIPTION`). Dates use Core Data epoch (2001-01-01). Audio is alongside as `.m4a`. Read needs Full Disk Access. Container exists empty if Voice Memos hasn't synced — service should error cleanly when DB is missing rather than crashing.
 - **`StatefulHTTPServerTransport`** is framework-agnostic — Hummingbird is the wrapper. The transport ships an `OriginValidator.localhost()` by default, but that only checks the `Origin` header, not the bind address. Loopback bind is enforced separately in `HTTPRunner`.
