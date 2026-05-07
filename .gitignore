@@ -13,3 +13,4 @@ xcuserdata/
 # Local config / secrets that may end up in repo during dev
 local-config.toml
 *.token
+tokens.toml
