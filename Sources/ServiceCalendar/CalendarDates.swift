@@ -5,9 +5,11 @@ import Foundation
 public enum CalendarDates {
     public enum DateError: Error, CustomStringConvertible {
         case unparseable(String)
+        case unknownTimeZone(String)
         public var description: String {
             switch self {
             case .unparseable(let s): return "not a parseable ISO 8601 timestamp: '\(s)'"
+            case .unknownTimeZone(let s): return "unknown IANA time zone: '\(s)'"
             }
         }
     }
@@ -33,9 +35,38 @@ public enum CalendarDates {
         throw DateError.unparseable(s)
     }
 
+    /// Validate an IANA time zone identifier (e.g. "America/Denver"). nil is
+    /// allowed and means "use UTC."
+    public static func resolveTimeZone(_ id: String?) throws -> TimeZone {
+        guard let id, !id.isEmpty else { return TimeZone(identifier: "UTC")! }
+        guard let tz = TimeZone(identifier: id) else { throw DateError.unknownTimeZone(id) }
+        return tz
+    }
+
+    /// Format a Date as ISO 8601 in UTC (e.g. "2026-05-07T10:00:00.500Z").
     public static func format(_ d: Date) -> String {
+        format(d, in: TimeZone(identifier: "UTC")!)
+    }
+
+    /// Format a Date as ISO 8601 in the supplied tz (e.g. "2026-05-07T04:00:00.500-06:00").
+    public static func format(_ d: Date, in tz: TimeZone) -> String {
         let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        f.formatOptions = [
+            .withInternetDateTime, .withFractionalSeconds,
+            .withTimeZone, .withColonSeparatorInTimeZone,
+        ]
+        f.timeZone = tz
+        return f.string(from: d)
+    }
+
+    /// Local-calendar date string (yyyy-MM-dd) for the supplied date in the
+    /// supplied tz. Useful for all-day events: an event marked "May 6 all-day"
+    /// in MT has start=2026-05-06T06:00Z, end=2026-05-07T06:00Z. Showing the
+    /// agent "2026-05-06" avoids the "did this leak into yesterday" question.
+    public static func localDateString(_ d: Date, in tz: TimeZone) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        f.timeZone = tz
         return f.string(from: d)
     }
 }

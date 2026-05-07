@@ -65,6 +65,7 @@ default = "deny"
 "calendar.list_events"    = "allow"
 "calendar.search_events"  = "allow"
 "calendar.get_event"      = "allow"
+"calendar.now"            = "allow"
 "calendar.create_event"   = "approve"
 "calendar.update_event"   = "approve"
 "calendar.delete_event"   = "approve"
@@ -282,13 +283,21 @@ tccutil reset AppleEvents com.lapidakis.icloud-bridge
 - `mail.send` — destructive; gated by approval dialog (when ACL = `approve`)
 
 **Calendar (Phase 2)** — native EventKit, not AppleScript
-- `calendar.list_calendars` — id, title, source, type, write status, color
-- `calendar.list_events` — events in [since, before) date range, optional calendar filter
-- `calendar.search_events` — substring search across title/location/notes within a date range
-- `calendar.get_event` — full event detail (notes, attendees, organizer, url, time zone)
+- `calendar.list_calendars` — id, title, source, type, write status, color; pass `writable_only: true` to filter
+- `calendar.list_events` — events in [since, before) date range, optional calendar filter, optional `tz`
+- `calendar.search_events` — substring search across title/location/notes; same shape as list_events plus query
+- `calendar.get_event` — full event detail (notes, attendees, organizer, url, recurrence, time zone)
+- `calendar.now` — snapshot of current + next events (morning-briefing primitive)
 - `calendar.create_event` — gated by approval (shows what/when/where)
 - `calendar.update_event` — gated by approval (shows changed fields)
 - `calendar.delete_event` — gated by approval (irreversible)
+
+Every event includes:
+- `start` / `end` — ISO 8601 in caller-requested `tz` (or UTC if none)
+- `local_start_date` / `local_end_date` — `yyyy-MM-dd` for all-day events (avoids the "Cinco de Mayo leaks into May 5" UTC-range issue)
+- `original_time_zone` — IANA tz the event was authored in
+- `attendee_count` — number of invitees (`get_event` returns the full attendee list)
+- `recurrence_rule` — structured `{frequency, interval, by_day, by_month_day, by_month, count, end_date}` when `is_recurring` is true
 
 Outbound: secret-shaped substrings (AWS/OpenAI/Anthropic/GitHub/Slack tokens, SSN, RSA private keys) replaced with `[REDACTED:<rule>]` in tool results.
 

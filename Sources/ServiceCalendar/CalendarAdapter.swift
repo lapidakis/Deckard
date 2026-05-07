@@ -58,10 +58,11 @@ public actor CalendarAdapter {
 
     // MARK: - Read
 
-    public func listCalendars() async throws -> [CalendarRef] {
+    public func listCalendars(writableOnly: Bool = false) async throws -> [CalendarRef] {
         try await ensureAccess()
         let cals = store.calendars(for: .event)
-        return cals.map { c in
+        let filtered = writableOnly ? cals.filter { $0.allowsContentModifications } : cals
+        return filtered.map { c in
             CalendarRef(
                 id: c.calendarIdentifier,
                 title: c.title,
@@ -77,17 +78,19 @@ public actor CalendarAdapter {
         calendarId: String?,
         sinceISO: String,
         beforeISO: String,
-        limit: Int
+        limit: Int,
+        tzID: String?
     ) async throws -> [EventSummary] {
         try await ensureAccess()
         let start = try CalendarDates.parse(sinceISO)
         let end = try CalendarDates.parse(beforeISO)
+        let outputTz = try CalendarDates.resolveTimeZone(tzID)
         let scope = try resolveCalendars(filterId: calendarId)
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: scope)
         let raw = store.events(matching: predicate)
         let sorted = raw.sorted { $0.startDate < $1.startDate }
         let bounded = Array(sorted.prefix(max(1, limit)))
-        return bounded.map(summarize)
+        return bounded.map { summarize($0, in: outputTz) }
     }
 
     public func searchEvents(
@@ -95,11 +98,13 @@ public actor CalendarAdapter {
         calendarId: String?,
         sinceISO: String,
         beforeISO: String,
-        limit: Int
+        limit: Int,
+        tzID: String?
     ) async throws -> [EventSummary] {
         try await ensureAccess()
         let start = try CalendarDates.parse(sinceISO)
         let end = try CalendarDates.parse(beforeISO)
+        let outputTz = try CalendarDates.resolveTimeZone(tzID)
         let scope = try resolveCalendars(filterId: calendarId)
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: scope)
         let q = query.lowercased()
@@ -109,15 +114,49 @@ public actor CalendarAdapter {
                 || (e.notes?.lowercased().contains(q) ?? false)
         }
         let sorted = matched.sorted { $0.startDate < $1.startDate }
-        return Array(sorted.prefix(max(1, limit))).map(summarize)
+        return Array(sorted.prefix(max(1, limit))).map { summarize($0, in: outputTz) }
     }
 
-    public func getEvent(id: String) async throws -> CalendarEvent {
+    public func getEvent(id: String, tzID: String?) async throws -> CalendarEvent {
         try await ensureAccess()
+        let outputTz = try CalendarDates.resolveTimeZone(tzID)
         guard let event = store.event(withIdentifier: id) else {
             throw CalendarError.eventNotFound(id)
         }
-        return detail(event)
+        return detail(event, in: outputTz)
+    }
+
+    /// Snapshot of "what's happening now and what's next." Window for "current"
+    /// is events whose [start, end) overlaps now; "next" is up to `nextLimit`
+    /// events starting strictly after now within the next `lookaheadHours`.
+    public func now(
+        nextLimit: Int = 3,
+        lookaheadHours: Int = 12,
+        tzID: String?
+    ) async throws -> CalendarNowSnapshot {
+        try await ensureAccess()
+        let outputTz = try CalendarDates.resolveTimeZone(tzID)
+        let now = Date()
+        let lookahead = now.addingTimeInterval(TimeInterval(max(1, lookaheadHours) * 3600))
+
+        // Pull the union of current + soon. predicateForEvents wants a window;
+        // we use [now - 24h, lookahead] so all-day events that started "today"
+        // show up under "current" if they're still active.
+        let windowStart = now.addingTimeInterval(-24 * 3600)
+        let predicate = store.predicateForEvents(withStart: windowStart, end: lookahead, calendars: nil)
+        let all = store.events(matching: predicate).sorted { $0.startDate < $1.startDate }
+
+        let current = all.filter { $0.startDate <= now && $0.endDate > now }
+        let next = all
+            .filter { $0.startDate > now }
+            .prefix(max(1, nextLimit))
+
+        return CalendarNowSnapshot(
+            now: CalendarDates.format(now, in: outputTz),
+            timeZone: outputTz.identifier,
+            current: current.map { summarize($0, in: outputTz) },
+            next: Array(next).map { summarize($0, in: outputTz) }
+        )
     }
 
     // MARK: - Write
@@ -146,13 +185,14 @@ public actor CalendarAdapter {
         }
     }
 
-    public func createEvent(_ input: EventInput) async throws -> CalendarEvent {
+    public func createEvent(_ input: EventInput, tzID: String? = nil) async throws -> CalendarEvent {
         try await ensureAccess()
+        let outputTz = try CalendarDates.resolveTimeZone(tzID)
         let calendar = try resolveWritableCalendar(id: input.calendarId)
         let event = EKEvent(eventStore: store)
         try apply(input: input, to: event, calendar: calendar)
         try store.save(event, span: .thisEvent)
-        return detail(event)
+        return detail(event, in: outputTz)
     }
 
     public struct EventUpdate: Sendable {
@@ -179,8 +219,9 @@ public actor CalendarAdapter {
         }
     }
 
-    public func updateEvent(_ update: EventUpdate) async throws -> CalendarEvent {
+    public func updateEvent(_ update: EventUpdate, tzID: String? = nil) async throws -> CalendarEvent {
         try await ensureAccess()
+        let outputTz = try CalendarDates.resolveTimeZone(tzID)
         guard let event = store.event(withIdentifier: update.eventId) else {
             throw CalendarError.eventNotFound(update.eventId)
         }
@@ -194,7 +235,7 @@ public actor CalendarAdapter {
         if let loc = update.location { event.location = loc }
         if let n = update.notes { event.notes = n }
         try store.save(event, span: .thisEvent)
-        return detail(event)
+        return detail(event, in: outputTz)
     }
 
     public func deleteEvent(id: String) async throws {
@@ -247,21 +288,27 @@ public actor CalendarAdapter {
         return cal
     }
 
-    private func summarize(_ e: EKEvent) -> EventSummary {
-        EventSummary(
+    private func summarize(_ e: EKEvent, in tz: TimeZone) -> EventSummary {
+        let allDay = e.isAllDay
+        return EventSummary(
             id: e.eventIdentifier ?? "",
             calendarId: e.calendar.calendarIdentifier,
             calendarTitle: e.calendar.title,
             title: e.title ?? "",
-            start: CalendarDates.format(e.startDate),
-            end: CalendarDates.format(e.endDate),
-            isAllDay: e.isAllDay,
+            start: CalendarDates.format(e.startDate, in: tz),
+            end: CalendarDates.format(e.endDate, in: tz),
+            isAllDay: allDay,
+            localStartDate: allDay ? CalendarDates.localDateString(e.startDate, in: tz) : nil,
+            localEndDate:   allDay ? CalendarDates.localDateString(e.endDate, in: tz) : nil,
             location: e.location,
-            isRecurring: e.hasRecurrenceRules
+            isRecurring: e.hasRecurrenceRules,
+            recurrenceRule: firstRecurrence(of: e),
+            originalTimeZone: e.timeZone?.identifier,
+            attendeeCount: e.attendees?.count ?? 0
         )
     }
 
-    private func detail(_ e: EKEvent) -> CalendarEvent {
+    private func detail(_ e: EKEvent, in tz: TimeZone) -> CalendarEvent {
         let attendees: [String] = (e.attendees ?? []).map { p in
             let name = p.name ?? ""
             let email = (p.url.absoluteString.replacingOccurrences(of: "mailto:", with: ""))
@@ -272,22 +319,31 @@ public actor CalendarAdapter {
             let email = p.url.absoluteString.replacingOccurrences(of: "mailto:", with: "")
             return name.isEmpty ? email : "\(name) <\(email)>"
         }
+        let allDay = e.isAllDay
         return CalendarEvent(
             id: e.eventIdentifier ?? "",
             calendarId: e.calendar.calendarIdentifier,
             calendarTitle: e.calendar.title,
             title: e.title ?? "",
-            start: CalendarDates.format(e.startDate),
-            end: CalendarDates.format(e.endDate),
-            isAllDay: e.isAllDay,
+            start: CalendarDates.format(e.startDate, in: tz),
+            end: CalendarDates.format(e.endDate, in: tz),
+            isAllDay: allDay,
+            localStartDate: allDay ? CalendarDates.localDateString(e.startDate, in: tz) : nil,
+            localEndDate:   allDay ? CalendarDates.localDateString(e.endDate, in: tz) : nil,
             location: e.location,
             notes: e.notes,
             url: e.url?.absoluteString,
             attendees: attendees,
             organizer: organizer,
             isRecurring: e.hasRecurrenceRules,
-            timeZone: e.timeZone?.identifier
+            recurrenceRule: firstRecurrence(of: e),
+            originalTimeZone: e.timeZone?.identifier
         )
+    }
+
+    private func firstRecurrence(of e: EKEvent) -> RecurrenceRule? {
+        guard let rules = e.recurrenceRules, let first = rules.first else { return nil }
+        return CalendarRecurrence.convert(first)
     }
 
     private func typeString(_ t: EKCalendarType) -> String {
