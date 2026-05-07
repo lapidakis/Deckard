@@ -1,9 +1,8 @@
 import Foundation
-import AppKit
 import Logging
 
-/// Errors surfaced by `AppleScriptRunner.run`. Translation of NSAppleScript
-/// failure dictionaries is best-effort; callers should treat any error as
+/// Errors surfaced by `AppleScriptRunner.run`. Translation of osascript exit
+/// signals is best-effort; callers should treat any error as
 /// "the action did not happen" and surface it to the agent.
 public enum AppleScriptError: Error, CustomStringConvertible {
     case compileFailed(String)
@@ -21,11 +20,18 @@ public enum AppleScriptError: Error, CustomStringConvertible {
     }
 }
 
-/// Runs AppleScript source via in-process `NSAppleScript`. Each call is enqueued
-/// on a serial executor so concurrent tool invocations don't trample one another.
+/// Runs AppleScript source via the `osascript` subprocess.
 ///
-/// Output is returned as a String. Tools that need structured output should
-/// embed JSON or a delimited format inside the script's return value.
+/// Originally used in-process `NSAppleScript.executeAndReturnError(_:)`. That
+/// call is synchronous C-level: when Mail.app stalls (mid-IMAP-fetch, indexing,
+/// etc.), the call holds its thread and Swift cancellation can't interrupt it,
+/// so our `withTimeout` race fired the timer but the thread never returned.
+/// Symptom: `mail.search` calls hung past the 60s timeout with no
+/// `tool_error` log line, requiring a daemon bounce to clear.
+///
+/// Using `osascript` as a subprocess gives us a real kill handle: when the
+/// timer wins, we send SIGTERM to the child and the dispatch path throws
+/// `AppleScriptError.timeout` cleanly.
 public actor AppleScriptRunner {
     private let logger: Logger
 
@@ -34,53 +40,94 @@ public actor AppleScriptRunner {
     }
 
     public func run(source: String, timeoutSeconds: Double = 15) async throws -> String {
-        let captured = source
-        return try await withTimeout(seconds: timeoutSeconds) {
-            try await Self.execute(source: captured)
-        }
+        try await withTimeoutKilling(seconds: timeoutSeconds, source: source)
     }
 
-    private static func execute(source: String) async throws -> String {
-        try await Task.detached(priority: .userInitiated) {
-            guard let script = NSAppleScript(source: source) else {
-                throw AppleScriptError.compileFailed("NSAppleScript init returned nil")
-            }
-            var errInfo: NSDictionary?
-            let descriptor = script.executeAndReturnError(&errInfo)
-            if let errInfo {
-                let code = errInfo[NSAppleScript.errorAppName] as? Int
-                    ?? (errInfo["NSAppleScriptErrorNumber"] as? Int)
-                let msg = errInfo[NSAppleScript.errorMessage] as? String
-                    ?? (errInfo["NSAppleScriptErrorMessage"] as? String)
-                    ?? "unknown error"
-                if msg.contains("Not authorized to send Apple events")
-                    || msg.contains("not allowed assistive access")
-                    || (code == -1743 || code == -600 || code == -1719)
-                {
-                    throw AppleScriptError.tccDenied(msg)
+    /// Spawns `osascript -` with the source on stdin. Race a wait-for-exit
+    /// task against a timer task; if timer wins, terminate the child and
+    /// throw `.timeout`.
+    private func withTimeoutKilling(seconds: Double, source: String) async throws -> String {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-"]   // read script from stdin
+        let inPipe = Pipe()
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        proc.standardInput = inPipe
+        proc.standardOutput = outPipe
+        proc.standardError = errPipe
+
+        do {
+            try proc.run()
+        } catch {
+            throw AppleScriptError.compileFailed("osascript spawn failed: \(error)")
+        }
+
+        // Write source to stdin and close it so osascript starts compiling.
+        let scriptData = Data(source.utf8)
+        do {
+            try inPipe.fileHandleForWriting.write(contentsOf: scriptData)
+            try inPipe.fileHandleForWriting.close()
+        } catch {
+            proc.terminate()
+            throw AppleScriptError.compileFailed("write to osascript stdin failed: \(error)")
+        }
+
+        // Race exit-watcher vs timer. Whichever fires first wins.
+        // The exit-watcher polls `proc.isRunning` so we can interrupt it via
+        // structured cancellation if the timer wins.
+        return try await withThrowingTaskGroup(of: String?.self) { group in
+            group.addTask {
+                while proc.isRunning {
+                    if Task.isCancelled { return nil }
+                    try await Task.sleep(nanoseconds: 50_000_000) // 50 ms poll
                 }
-                throw AppleScriptError.executionFailed(code: code, message: msg)
+                let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
+                let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
+                let stdout = String(data: outData, encoding: .utf8) ?? ""
+                let stderr = String(data: errData, encoding: .utf8) ?? ""
+                if proc.terminationStatus != 0 {
+                    if Self.looksTCCDenied(stderr) {
+                        throw AppleScriptError.tccDenied(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+                    }
+                    let code = Int(proc.terminationStatus)
+                    let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                    throw AppleScriptError.executionFailed(code: code, message: msg)
+                }
+                return stdout
             }
-            return descriptor.stringValue ?? ""
-        }.value
-    }
-}
-
-/// Cancels `body` after `seconds` and throws `AppleScriptError.timeout`. Used
-/// only by the runner — keep it private so it doesn't leak out as a general
-/// utility (real timeout primitives belong in a util package later).
-private func withTimeout<T: Sendable>(
-    seconds: Double,
-    _ body: @Sendable @escaping () async throws -> T
-) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask { try await body() }
-        group.addTask {
-            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            throw AppleScriptError.timeout(seconds: seconds)
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                if proc.isRunning {
+                    proc.terminate()      // SIGTERM; gives osascript a chance to clean up
+                    // Give it 500ms to die cleanly, then SIGKILL.
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    if proc.isRunning {
+                        kill(proc.processIdentifier, SIGKILL)
+                    }
+                }
+                throw AppleScriptError.timeout(seconds: seconds)
+            }
+            do {
+                let result = try await group.next()!
+                group.cancelAll()
+                if let result { return result }
+                throw AppleScriptError.executionFailed(code: nil, message: "internal: nil result without throw")
+            } catch {
+                group.cancelAll()
+                if proc.isRunning {
+                    proc.terminate()
+                }
+                throw error
+            }
         }
-        let result = try await group.next()!
-        group.cancelAll()
-        return result
+    }
+
+    private static func looksTCCDenied(_ stderr: String) -> Bool {
+        let s = stderr.lowercased()
+        return s.contains("not authorized to send apple events")
+            || s.contains("not allowed assistive access")
+            || s.contains("(-1743)")
+            || s.contains("(-600)")
     }
 }
