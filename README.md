@@ -4,7 +4,7 @@ A Mac-resident MCP server that proxies Apple-native services — Mail, Calendar,
 
 The bridge is built around a simple premise: an LLM agent talking to your iCloud should look more like a service account with scoped permissions than a fully-trusted user. Every call passes through the same policy pipeline (auth → ACL → redaction → injection-tagging → approval-gate → audit), and every layer is configurable per token.
 
-**Status:** v0.11.0, 35 tools across 5 services, signed Developer ID build, **116 unit tests** (incl. a schema validator that walks every registered tool), daemon + menubar UI shipping with first-launch onboarding. Designed for personal homelab use; security model documented in [`docs/security-model.md`](docs/security-model.md).
+**Status:** **v1.0.0-beta.1 (public beta).** 35 tools across 5 services, codesigned + notarized Developer ID build, **116 unit tests** (incl. a schema validator that walks every registered tool), daemon + menubar UI with first-launch onboarding, CI on every push. Designed for personal homelab use; security model documented in [`docs/security-model.md`](docs/security-model.md). Known beta issues + roadmap in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -35,34 +35,38 @@ What it doesn't do:
 
 ## Install
 
-Tested on macOS 14+ (Sonoma) and macOS 26 (Tahoe). Apple Silicon. Single Swift binary.
+Tested on macOS 14+ (Sonoma) and macOS 26 (Tahoe). Apple Silicon.
 
-```sh
-git clone https://github.com/lapidakis/iCloud-Bridge.git
-cd iCloud-Bridge
-make build                            # daemon, codesigned (preserves TCC)
-.build/debug/icloud-bridge config init
-.build/debug/icloud-bridge install    # registers LaunchAgent, starts the daemon
-```
+### Public beta (recommended)
 
-That's it. After this:
+Grab the latest DMG from the [Releases page](https://github.com/lapidakis/iCloud-Bridge/releases). Drag `iCloud-Bridge.app` into `/Applications`, double-click, and the menubar icon appears. First launch opens a 6-step onboarding window (Welcome → Daemon → Token → Permissions → Connect → Done) that walks through token creation, surfaces required TCC grants with deep-links to System Settings, and gives you a copy-paste `claude mcp add` snippet.
+
+After onboarding:
 - Daemon listening at `http://127.0.0.1:8787/mcp`
 - Audit log at `~/Library/Logs/iCloud-Bridge/audit.jsonl`
 - Default token at `~/Library/Application Support/iCloud-Bridge/tokens.toml`
 - Restarts on login
 
-For the menubar app:
+The release artifacts are codesigned and notarized — Gatekeeper accepts them on first open. Verify the SHA-256 sidecar against the DMG before running if you'd like.
+
+The icloud icon turns green when the daemon's running, slashed-red when stopped. Click for status; "Open Settings…" for the multi-tab window. Reopen onboarding anytime via Settings → Status → "Show Onboarding…".
+
+### Build from source
+
+For development, contributors, or anyone with a Developer ID and a preference for self-signed builds:
 
 ```sh
-make ui
-open .build/debug/iCloud-Bridge.app
+git clone https://github.com/lapidakis/iCloud-Bridge.git
+cd iCloud-Bridge
+make build                            # auto-detects your Developer ID; falls back to adhoc
+.build/debug/icloud-bridge config init
+.build/debug/icloud-bridge install    # registers LaunchAgent, starts the daemon
+make ui                               # builds the menubar app bundle
 ```
 
-First launch opens a 6-step onboarding window (Welcome → Daemon → Token → Permissions → Connect → Done) that walks through token creation, surfaces required TCC grants with deep-links to System Settings, and gives you a copy-paste `claude mcp add` snippet. Reopen anytime via Settings → Status → "Show Onboarding…" or the menubar popup. Closing the window mid-flow counts as Skip — won't auto-reopen.
+The codesign script (`scripts/codesign.sh`) resolves the signing identity in this order: `$ICB_SIGN_IDENTITY` → first detected `Developer ID Application:` in your keychain → adhoc with a warning. Adhoc builds run, but TCC grants don't persist across rebuilds — each `make build` re-prompts for Mail/Calendar/Reminders permissions.
 
-The icloud icon turns green when the daemon's running, slashed-red when stopped. Click for status; "Open Settings…" for the multi-tab window.
-
-To codesign with your own identity, set `ICB_SIGN_IDENTITY` before running `make build` / `make ui`. Default is mine; the build will fail with a clear cert-not-found message if yours isn't installed.
+CI runs `swift test` on every push (see `.github/workflows/ci.yml`). PRs that break the schema validator or any other test are blocked.
 
 ---
 
@@ -89,7 +93,7 @@ Verify in any Claude Code session with `/mcp` — should show `icloud  ✓ conne
 
 ---
 
-## What's in the box (35 tools, v0.11.0)
+## What's in the box (35 tools, v1.0.0-beta.1)
 
 **Built-in**
 - `health.ping` — liveness probe; tiny payload, useful diagnostic

@@ -4,7 +4,7 @@ A Mac-resident MCP server that proxies iCloud-bound services to AI agents over s
 
 Read this file before making changes. README.md is end-user-facing; this file is for the contributor. `docs/` has the deep dives — `architecture.md`, `security-model.md`, `configuration.md`, `operations.md`.
 
-## Status (v0.11.0)
+## Status (v1.0.0-beta.1 — public beta)
 
 | Phase | What | Status |
 |---|---|---|

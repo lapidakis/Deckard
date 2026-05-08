@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Manual trigger for ad-hoc verification (e.g. before tagging a release).
+  workflow_dispatch:
+
+# Cancel in-flight runs when a new commit lands on the same ref —
+# avoids stacking redundant test runs while a contributor pushes
+# fixups during code review.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: swift test (macOS 15, Apple Silicon)
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show Swift / Xcode versions
+        run: |
+          swift --version
+          xcrun --version
+          xcrun swiftc --version
+          sw_vers
+
+      # Cache `.build/` keyed by Package.resolved so checkout-deps work
+      # is amortized across runs without poisoning the cache when deps
+      # legitimately change.
+      - name: Cache .build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Resolve packages
+        run: swift package resolve
+
+      - name: Build
+        run: swift build
+
+      # `swift test` includes the schema validator (SchemaTests), which
+      # walks every registered tool's inputSchema and rejects top-level
+      # oneOf/allOf/anyOf, missing types, name/spec.name mismatches, etc.
+      # A schema bug ships only if this step passes.
+      - name: Test
+        run: swift test

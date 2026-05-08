@@ -1,0 +1,202 @@
+name: Release
+
+# Triggered by pushing a `v*` tag — e.g. `git tag v1.0.0-beta.1 && git push origin v1.0.0-beta.1`
+# Builds the daemon + menubar UI in release mode, codesigns with the Developer ID
+# certificate from secrets, notarizes via notarytool, packages the artifacts as a
+# DMG, and attaches them to a GitHub Release matching the tag.
+#
+# Required secrets (set under Settings → Secrets and variables → Actions):
+#   APPLE_DEVELOPER_CERT_BASE64   base64-encoded .p12 export of the Developer ID Application cert
+#   APPLE_DEVELOPER_CERT_PASSWORD password for the .p12 above
+#   APPLE_ID                      Apple ID (email) used for notarytool submission
+#   APPLE_TEAM_ID                 Developer team id (e.g. NZL3HS8AH4)
+#   APPLE_ID_PASSWORD             app-specific password from appleid.apple.com (NOT the AppleID login)
+#   ICB_BUNDLE_ID                 com.lapidakis.icloud-bridge       (optional override)
+#   ICB_UI_BUNDLE_ID              com.lapidakis.icloud-bridge.ui    (optional override)
+#
+# Forking notes: a fork that doesn't have these secrets configured will fail this
+# workflow. CI (.github/workflows/ci.yml) is the right path for fork PRs — it
+# tests without signing.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist)"
+        required: true
+
+permissions:
+  contents: write   # gh release create needs this
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign, notarize, package
+    runs-on: macos-15
+
+    env:
+      ICB_BUNDLE_ID: ${{ secrets.ICB_BUNDLE_ID || 'com.lapidakis.icloud-bridge' }}
+      ICB_UI_BUNDLE_ID: ${{ secrets.ICB_UI_BUNDLE_ID || 'com.lapidakis.icloud-bridge.ui' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Show toolchain versions
+        run: swift --version && sw_vers
+
+      # Decode the .p12 cert and create an ephemeral keychain so the
+      # signing identity is available to codesign without polluting the
+      # runner's default keychain. The keychain is unlocked for the
+      # duration of the job; GitHub recycles the runner afterward so
+      # the cert doesn't leak.
+      - name: Import signing certificate
+        env:
+          CERT_B64: ${{ secrets.APPLE_DEVELOPER_CERT_BASE64 }}
+          CERT_PW: ${{ secrets.APPLE_DEVELOPER_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/icb-signing.keychain-db"
+          KEYCHAIN_PW=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$CERT_B64" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CERT_PW" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | xargs)
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PW" "$KEYCHAIN_PATH" >/dev/null
+
+          # Surface the resolved identity for the build step's logs.
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep "Developer ID Application"
+
+      - name: Build daemon (release)
+        run: swift build -c release
+
+      - name: Build menubar UI (release)
+        run: |
+          # Same swift build target produces both binaries.
+          swift build -c release --product icloud-bridge-ui
+
+      - name: Codesign daemon
+        run: ./scripts/codesign.sh release
+
+      - name: Build + codesign menubar app bundle
+        run: ./scripts/build-ui-app.sh release
+
+      # Notarization: zip the artifacts, submit to Apple, wait for the
+      # ticket, staple it back onto the .app + binary so they validate
+      # offline once the user downloads them.
+      - name: Notarize daemon
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BIN=".build/release/icloud-bridge"
+          ditto -c -k --keepParent "$BIN" "$RUNNER_TEMP/daemon.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/daemon.zip" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --wait
+          # Standalone binaries can't be stapled — `xcrun stapler staple`
+          # only works on bundles. Notarization ticket is fetched at run
+          # time on the user's Mac via Gatekeeper's online check.
+
+      - name: Notarize app bundle
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
+        run: |
+          set -euo pipefail
+          APP=".build/release/iCloud-Bridge.app"
+          ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/app.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/app.zip" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_ID_PASSWORD" \
+            --wait
+          # Staple the notarization ticket to the .app so Gatekeeper
+          # validates it offline (e.g. air-gapped first launch).
+          xcrun stapler staple "$APP"
+
+      - name: Package DMG
+        run: |
+          set -euo pipefail
+          STAGING="$RUNNER_TEMP/dmg-staging"
+          mkdir -p "$STAGING"
+          cp -R ".build/release/iCloud-Bridge.app" "$STAGING/"
+          cp ".build/release/icloud-bridge" "$STAGING/icloud-bridge"
+          chmod +x "$STAGING/icloud-bridge"
+          # Symlink to /Applications so users can drag-install in one motion.
+          ln -s /Applications "$STAGING/Applications"
+          # Brief getting-started note. Doesn't need to render in TextEdit;
+          # plain text is enough for the first read.
+          cat > "$STAGING/README.txt" <<'EOF'
+          iCloud-Bridge
+
+          1. Drag iCloud-Bridge.app into the Applications folder.
+          2. Open it. The first launch shows a 6-step onboarding
+             window (token, permissions, connection details).
+          3. The icloud-bridge CLI binary is the daemon — `make
+             install` from a checkout, or copy it to /usr/local/bin
+             yourself if you want CLI access.
+
+          See https://github.com/lapidakis/iCloud-Bridge for full docs.
+          EOF
+
+          DMG="$RUNNER_TEMP/iCloud-Bridge-${{ steps.tag.outputs.name }}.dmg"
+          hdiutil create -volname "iCloud-Bridge" \
+            -srcfolder "$STAGING" \
+            -ov -format UDZO \
+            "$DMG"
+          shasum -a 256 "$DMG" > "$DMG.sha256"
+          ls -la "$DMG" "$DMG.sha256"
+          # Hand off to the next step.
+          echo "DMG_PATH=$DMG" >> "$GITHUB_ENV"
+          echo "DMG_SHA=$DMG.sha256" >> "$GITHUB_ENV"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"
+          # Idempotent: if the release already exists (e.g. a re-run),
+          # update it. `gh release create --notes-file CHANGELOG.md`
+          # picks up our auto-extracted changelog when present.
+          NOTES_FLAG=""
+          if [ -f CHANGELOG.md ]; then
+            NOTES_FLAG="--notes-file CHANGELOG.md"
+          else
+            NOTES_FLAG="--generate-notes"
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$DMG_PATH" "$DMG_SHA" --clobber
+          else
+            gh release create "$TAG" "$DMG_PATH" "$DMG_SHA" \
+              --title "$TAG" \
+              --prerelease \
+              $NOTES_FLAG
+          fi

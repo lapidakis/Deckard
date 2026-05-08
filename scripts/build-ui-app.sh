@@ -12,7 +12,13 @@ CONFIG="${1:-debug}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$ROOT/.build/$CONFIG/icloud-bridge-ui"
 APP="$ROOT/.build/$CONFIG/iCloud-Bridge.app"
-IDENTITY="${ICB_SIGN_IDENTITY:-Developer ID Application: Michael  Lapidakis (NZL3HS8AH4)}"
+
+# shellcheck source=lib/detect-identity.sh
+. "$ROOT/scripts/lib/detect-identity.sh"
+detect_identity
+print_identity_banner
+IDENTITY="$ICB_RESOLVED_IDENTITY"
+
 BUNDLE_ID="${ICB_UI_BUNDLE_ID:-com.lapidakis.icloud-bridge.ui}"
 
 if [[ ! -f "$BIN" ]]; then
