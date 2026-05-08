@@ -2,7 +2,7 @@ import SwiftUI
 import BridgeAuth
 
 /// Read-only list of tokens. Mutations (add/revoke/rotate) handled via the
-/// `icloud-bridge auth` CLI for v0.1; UI-side editing lands in the next pass.
+/// `deckard auth` CLI for v0.1; UI-side editing lands in the next pass.
 struct TokensTab: View {
     struct Row: Identifiable, Hashable {
         var id: String { label }
@@ -31,7 +31,7 @@ struct TokensTab: View {
                 ContentUnavailableView(
                     "No tokens",
                     systemImage: "key.slash",
-                    description: Text("Run `icloud-bridge auth add <label>` to create one.")
+                    description: Text("Run `deckard auth add <label>` to create one.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -56,10 +56,10 @@ struct TokensTab: View {
                 Text("Token operations").font(.callout.bold())
                 Text("Manage tokens via the CLI for now — UI editing lands in the next pass.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("icloud-bridge auth add <label> --profile <name> --description \"…\"")
+                Text("deckard auth add <label> --profile <name> --description \"…\"")
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
-                Text("icloud-bridge auth list / show / rotate / revoke")
+                Text("deckard auth list / show / rotate / revoke")
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
             }

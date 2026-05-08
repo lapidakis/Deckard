@@ -1,6 +1,6 @@
 import Foundation
 
-/// On-disk schema for `~/Library/Application Support/iCloud-Bridge/config.toml`.
+/// On-disk schema for `~/Library/Application Support/Deckard/config.toml`.
 ///
 /// The config file is the only switch the bridge consults at runtime. The CLI
 /// edits it; a future menu-bar UI will edit the same file. Keep it human-readable

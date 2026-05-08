@@ -22,7 +22,7 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 ### 1. Bearer authentication (per-token)
 
 - All HTTP requests must carry `Authorization: Bearer <secret>`. Stdio mode bypasses this — its trust boundary is the OS process.
-- Tokens live in `~/Library/Application Support/iCloud-Bridge/tokens.toml`, mode 0600. Plaintext storage; the threat model assumes filesystem read = total compromise (so hashing wouldn't help).
+- Tokens live in `~/Library/Application Support/Deckard/tokens.toml`, mode 0600. Plaintext storage; the threat model assumes filesystem read = total compromise (so hashing wouldn't help).
 - Constant-time comparison on every request. Verification iterates all tokens regardless of which (or whether any) matches.
 - 401 responses include `WWW-Authenticate: Bearer` so MCP clients route auth via their own bearer config rather than attempting OAuth discovery.
 
@@ -58,7 +58,7 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 
 ### 6. Audit log
 
-- Append-only JSONL at `~/Library/Logs/iCloud-Bridge/audit.jsonl`. Every call gets one row regardless of decision: caller, transport, tool, arg-keys (no values), decision, latency, byte count, error.
+- Append-only JSONL at `~/Library/Logs/Deckard/audit.jsonl`. Every call gets one row regardless of decision: caller, transport, tool, arg-keys (no values), decision, latency, byte count, error.
 - Argument *values* are intentionally not recorded — argument *keys* tell you what was called without leaking the payload. (A "search for X" call shows `arg_keys: ["query"]`, not `query: "X"`.) Combined with the result-byte count, this gives operator-grade visibility without spilling content.
 - Configurable retention (default 30 days). Periodic in-actor prune avoids races with concurrent writes.
 
@@ -92,7 +92,7 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 - For autonomous agents (Eleanor-shape: runs on a schedule without a human at the keyboard), set every write tool to `approve` even though the dialog will time out — that's the right default failure mode for unattended runs.
 - Set `[drive] write_allowed_prefixes = ["agent-drafts/"]` if any token needs `drive.write` access. Keeps the blast radius bounded to a sandbox subtree.
 - Watch the audit log periodically. `audit stats` shows the time range; `audit tail` streams recent calls. If you see a tool you didn't expect, your ACL drifted or a token has too much.
-- For Tailnet exposure, treat each token as a network credential — same posture as an SSH key. Rotate via `icloud-bridge auth rotate <label>` when a device is decommissioned.
+- For Tailnet exposure, treat each token as a network credential — same posture as an SSH key. Rotate via `deckard auth rotate <label>` when a device is decommissioned.
 
 ## What this model is NOT
 

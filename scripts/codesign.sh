@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Codesign the icloud-bridge binary with a stable Developer ID identity.
+# Codesign the deckard binary with a stable Developer ID identity.
 #
 # TCC grants are keyed by the binary's signing identity (team + bundle id).
 # Without a stable signature, every `swift build` invalidates Automation /
@@ -8,23 +8,23 @@
 # Usage:
 #   scripts/codesign.sh [debug|release]
 #
-# Identity resolution: $ICB_SIGN_IDENTITY → first detected Developer ID
+# Identity resolution: $DECKARD_SIGN_IDENTITY → first detected Developer ID
 # Application identity → adhoc fallback. See scripts/lib/detect-identity.sh.
 
 set -euo pipefail
 
 CONFIG="${1:-debug}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BIN="$ROOT/.build/$CONFIG/icloud-bridge"
-ENTITLEMENTS="$ROOT/Resources/icloud-bridge.entitlements"
+BIN="$ROOT/.build/$CONFIG/deckard"
+ENTITLEMENTS="$ROOT/Resources/deckard.entitlements"
 
 # shellcheck source=lib/detect-identity.sh
 . "$ROOT/scripts/lib/detect-identity.sh"
 detect_identity
 print_identity_banner
-IDENTITY="$ICB_RESOLVED_IDENTITY"
+IDENTITY="$DECKARD_RESOLVED_IDENTITY"
 
-BUNDLE_ID="${ICB_BUNDLE_ID:-com.lapidakis.icloud-bridge}"
+BUNDLE_ID="${DECKARD_BUNDLE_ID:-com.lapidakis.deckard}"
 
 if [[ ! -f "$BIN" ]]; then
     echo "error: binary not found at $BIN" >&2

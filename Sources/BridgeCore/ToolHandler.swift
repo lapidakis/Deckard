@@ -1,7 +1,7 @@
 import Foundation
 import MCP
 
-/// One iCloud-Bridge tool. Service modules (ServiceMail, ServiceCalendar, ...)
+/// One Deckard tool. Service modules (ServiceMail, ServiceCalendar, ...)
 /// implement this in Phases 1+. The `MCPHostBuilder` registers each provider's
 /// tools with a `Server` via `withMethodHandler`.
 public protocol ToolHandler: Sendable {

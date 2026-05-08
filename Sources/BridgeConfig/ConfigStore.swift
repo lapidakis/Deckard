@@ -10,7 +10,7 @@ public enum ConfigError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .fileNotFound(let url):
-            return "Config not found at \(url.path) — run `icloud-bridge config init`."
+            return "Config not found at \(url.path) — run `deckard config init`."
         case .parse(let url, let err):
             return "Failed to parse \(url.path): \(err)"
         case .write(let url, let err):
@@ -68,8 +68,8 @@ public struct ConfigStore: Sendable {
             throw ConfigError.write(url, underlying: error)
         }
         let header = """
-            # iCloud-Bridge config
-            # Edited by `icloud-bridge config` or by hand. The bridge re-reads this
+            # Deckard config
+            # Edited by `deckard config` or by hand. The bridge re-reads this
             # file on each `serve`. Restart the LaunchAgent after edits.
 
             """

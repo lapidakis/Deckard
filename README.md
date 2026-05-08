@@ -1,4 +1,4 @@
-# iCloud-Bridge
+# Deckard
 
 A Mac-resident MCP server that proxies Apple-native services — Mail, Calendar, iCloud Drive, Voice Memos, Reminders — to AI agents over stdio or HTTP. One trust boundary, one audit log, one place to enforce safety.
 
@@ -12,7 +12,7 @@ The bridge is built around a simple premise: an LLM agent talking to your iCloud
 
 Most "AppleScript MCP" projects expose Mail or Calendar as a thin RPC: tools fire, results come back as flat strings, the agent reads whatever the user reads. That's fine for trusted prompts and demo screenshots; it's wrong for any system where the agent might be compromised, the email content might be hostile, or the action chain might run unattended.
 
-iCloud-Bridge sits between the agent and macOS and adds:
+Deckard sits between the agent and macOS and adds:
 
 - **Default-deny ACL** with per-token profiles. A "triage" agent gets `mail.list_messages` + `mail.mark_read` + nothing else. A "trusted" agent gets the full surface but `mail.send` still routes through an approval dialog. A "readonly" experiment can't write anything anywhere.
 - **Outbound redaction.** Before any tool result reaches the model, secret-shaped substrings are replaced with `[REDACTED:<rule>]`: AWS keys, OpenAI / Anthropic keys, GitHub PATs, Slack tokens, RSA private blocks, SSN-like patterns. New rules drop in via config.
@@ -29,7 +29,7 @@ iCloud-Bridge sits between the agent and macOS and adds:
 What it doesn't do:
 - It doesn't validate the agent's content before it leaves your network — that's the agent runtime's job.
 - It doesn't prevent the user from misconfiguring a token to "allow everything." It documents the dangers; it can't read your mind.
-- It doesn't promise to be safe under physical access to the machine. Anyone who can read `~/Library/Application Support/iCloud-Bridge/tokens.toml` has every bearer.
+- It doesn't promise to be safe under physical access to the machine. Anyone who can read `~/Library/Application Support/Deckard/tokens.toml` has every bearer.
 
 ---
 
@@ -39,12 +39,12 @@ Tested on macOS 14+ (Sonoma) and macOS 26 (Tahoe). Apple Silicon.
 
 ### Public beta (recommended)
 
-Grab the latest DMG from the [Releases page](https://github.com/lapidakis/iCloud-Bridge/releases). Drag `iCloud-Bridge.app` into `/Applications`, double-click, and the menubar icon appears. First launch opens a 6-step onboarding window (Welcome → Daemon → Token → Permissions → Connect → Done) that walks through token creation, surfaces required TCC grants with deep-links to System Settings, and gives you a copy-paste `claude mcp add` snippet.
+Grab the latest DMG from the [Releases page](https://github.com/lapidakis/Deckard/releases). Drag `Deckard.app` into `/Applications`, double-click, and the menubar icon appears. First launch opens a 6-step onboarding window (Welcome → Daemon → Token → Permissions → Connect → Done) that walks through token creation, surfaces required TCC grants with deep-links to System Settings, and gives you a copy-paste `claude mcp add` snippet.
 
 After onboarding:
 - Daemon listening at `http://127.0.0.1:8787/mcp`
-- Audit log at `~/Library/Logs/iCloud-Bridge/audit.jsonl`
-- Default token at `~/Library/Application Support/iCloud-Bridge/tokens.toml`
+- Audit log at `~/Library/Logs/Deckard/audit.jsonl`
+- Default token at `~/Library/Application Support/Deckard/tokens.toml`
 - Restarts on login
 
 The release artifacts are codesigned and notarized — Gatekeeper accepts them on first open. Verify the SHA-256 sidecar against the DMG before running if you'd like.
@@ -56,15 +56,15 @@ The icloud icon turns green when the daemon's running, slashed-red when stopped.
 For development, contributors, or anyone with a Developer ID and a preference for self-signed builds:
 
 ```sh
-git clone https://github.com/lapidakis/iCloud-Bridge.git
-cd iCloud-Bridge
+git clone https://github.com/lapidakis/Deckard.git
+cd Deckard
 make build                            # auto-detects your Developer ID; falls back to adhoc
-.build/debug/icloud-bridge config init
-.build/debug/icloud-bridge install    # registers LaunchAgent, starts the daemon
+.build/debug/deckard config init
+.build/debug/deckard install    # registers LaunchAgent, starts the daemon
 make ui                               # builds the menubar app bundle
 ```
 
-The codesign script (`scripts/codesign.sh`) resolves the signing identity in this order: `$ICB_SIGN_IDENTITY` → first detected `Developer ID Application:` in your keychain → adhoc with a warning. Adhoc builds run, but TCC grants don't persist across rebuilds — each `make build` re-prompts for Mail/Calendar/Reminders permissions.
+The codesign script (`scripts/codesign.sh`) resolves the signing identity in this order: `$DECKARD_SIGN_IDENTITY` → first detected `Developer ID Application:` in your keychain → adhoc with a warning. Adhoc builds run, but TCC grants don't persist across rebuilds — each `make build` re-prompts for Mail/Calendar/Reminders permissions.
 
 CI runs `swift test` on every push (see `.github/workflows/ci.yml`). PRs that break the schema validator or any other test are blocked.
 
@@ -73,7 +73,7 @@ CI runs `swift test` on every push (see `.github/workflows/ci.yml`). PRs that br
 ## Use it from Claude Code
 
 ```sh
-TOKEN=$(.build/debug/icloud-bridge auth show default)
+TOKEN=$(.build/debug/deckard auth show default)
 
 claude mcp add --transport http icloud http://127.0.0.1:8787/mcp \
     --header "Authorization: Bearer $TOKEN"

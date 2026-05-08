@@ -11,8 +11,8 @@ name: Release
 #   APPLE_ID                      Apple ID (email) used for notarytool submission
 #   APPLE_TEAM_ID                 Developer team id (e.g. NZL3HS8AH4)
 #   APPLE_ID_PASSWORD             app-specific password from appleid.apple.com (NOT the AppleID login)
-#   ICB_BUNDLE_ID                 com.lapidakis.icloud-bridge       (optional override)
-#   ICB_UI_BUNDLE_ID              com.lapidakis.icloud-bridge.ui    (optional override)
+#   DECKARD_BUNDLE_ID                 com.lapidakis.deckard       (optional override)
+#   DECKARD_UI_BUNDLE_ID              com.lapidakis.deckard.ui    (optional override)
 #
 # Forking notes: a fork that doesn't have these secrets configured will fail this
 # workflow. CI (.github/workflows/ci.yml) is the right path for fork PRs — it
@@ -41,8 +41,8 @@ jobs:
     runs-on: macos-15
 
     env:
-      ICB_BUNDLE_ID: ${{ secrets.ICB_BUNDLE_ID || 'com.lapidakis.icloud-bridge' }}
-      ICB_UI_BUNDLE_ID: ${{ secrets.ICB_UI_BUNDLE_ID || 'com.lapidakis.icloud-bridge.ui' }}
+      DECKARD_BUNDLE_ID: ${{ secrets.DECKARD_BUNDLE_ID || 'com.lapidakis.deckard' }}
+      DECKARD_UI_BUNDLE_ID: ${{ secrets.DECKARD_UI_BUNDLE_ID || 'com.lapidakis.deckard.ui' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -94,7 +94,7 @@ jobs:
       - name: Build menubar UI (release)
         run: |
           # Same swift build target produces both binaries.
-          swift build -c release --product icloud-bridge-ui
+          swift build -c release --product deckard-ui
 
       - name: Codesign daemon
         run: ./scripts/codesign.sh release
@@ -112,7 +112,7 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
         run: |
           set -euo pipefail
-          BIN=".build/release/icloud-bridge"
+          BIN=".build/release/deckard"
           ditto -c -k --keepParent "$BIN" "$RUNNER_TEMP/daemon.zip"
           xcrun notarytool submit "$RUNNER_TEMP/daemon.zip" \
             --apple-id "$APPLE_ID" \
@@ -130,7 +130,7 @@ jobs:
           APPLE_ID_PASSWORD: ${{ secrets.APPLE_ID_PASSWORD }}
         run: |
           set -euo pipefail
-          APP=".build/release/iCloud-Bridge.app"
+          APP=".build/release/Deckard.app"
           ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/app.zip"
           xcrun notarytool submit "$RUNNER_TEMP/app.zip" \
             --apple-id "$APPLE_ID" \
@@ -146,28 +146,28 @@ jobs:
           set -euo pipefail
           STAGING="$RUNNER_TEMP/dmg-staging"
           mkdir -p "$STAGING"
-          cp -R ".build/release/iCloud-Bridge.app" "$STAGING/"
-          cp ".build/release/icloud-bridge" "$STAGING/icloud-bridge"
-          chmod +x "$STAGING/icloud-bridge"
+          cp -R ".build/release/Deckard.app" "$STAGING/"
+          cp ".build/release/deckard" "$STAGING/deckard"
+          chmod +x "$STAGING/deckard"
           # Symlink to /Applications so users can drag-install in one motion.
           ln -s /Applications "$STAGING/Applications"
           # Brief getting-started note. Doesn't need to render in TextEdit;
           # plain text is enough for the first read.
           cat > "$STAGING/README.txt" <<'EOF'
-          iCloud-Bridge
+          Deckard
 
-          1. Drag iCloud-Bridge.app into the Applications folder.
+          1. Drag Deckard.app into the Applications folder.
           2. Open it. The first launch shows a 6-step onboarding
              window (token, permissions, connection details).
-          3. The icloud-bridge CLI binary is the daemon — `make
+          3. The deckard CLI binary is the daemon — `make
              install` from a checkout, or copy it to /usr/local/bin
              yourself if you want CLI access.
 
-          See https://github.com/lapidakis/iCloud-Bridge for full docs.
+          See https://github.com/lapidakis/Deckard for full docs.
           EOF
 
-          DMG="$RUNNER_TEMP/iCloud-Bridge-${{ steps.tag.outputs.name }}.dmg"
-          hdiutil create -volname "iCloud-Bridge" \
+          DMG="$RUNNER_TEMP/Deckard-${{ steps.tag.outputs.name }}.dmg"
+          hdiutil create -volname "Deckard" \
             -srcfolder "$STAGING" \
             -ov -format UDZO \
             "$DMG"

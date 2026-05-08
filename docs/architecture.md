@@ -2,14 +2,14 @@
 
 A single Swift binary built from one SPM package. Two executable targets:
 
-- `icloud-bridge` — the daemon. CLI entry point. Runs as a LaunchAgent in the user's GUI session.
-- `icloud-bridge-ui` — SwiftUI menubar app, packaged as a `.app` bundle. Reads the same files as the daemon; communicates with launchd, not the daemon.
+- `deckard` — the daemon. CLI entry point. Runs as a LaunchAgent in the user's GUI session.
+- `deckard-ui` — SwiftUI menubar app, packaged as a `.app` bundle. Reads the same files as the daemon; communicates with launchd, not the daemon.
 
 Plus six library targets — five service adapters and a shared core.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ icloud-bridge daemon (LaunchAgent, com.lapidakis.icloud-bridge)
+│ deckard daemon (LaunchAgent, com.lapidakis.deckard)
 │
 │   Transports: stdio | HTTP loopback | HTTP tailnet (opt-in)
 │   ↓
@@ -38,8 +38,8 @@ Plus six library targets — five service adapters and a shared core.
 
 | Target | Role | Depends on |
 |---|---|---|
-| `icloud-bridge` | CLI entry point, subcommand routing | All Bridge* and Service* libraries |
-| `icloud-bridge-ui` | SwiftUI menubar app | BridgeAuth, BridgeConfig, BridgePolicy |
+| `deckard` | CLI entry point, subcommand routing | All Bridge* and Service* libraries |
+| `deckard-ui` | SwiftUI menubar app | BridgeAuth, BridgeConfig, BridgePolicy |
 | `BridgeCore` | MCP wiring: `Server` builder, transports, middleware pipeline, approval gate, ToolHandler protocol | BridgeAuth, BridgeConfig, BridgePolicy, MCP, Hummingbird, HTTPTypes |
 | `BridgeAuth` | TokenRegistry (multi-token persistence), AuthContext, TailscaleProbe | BridgeConfig, TOMLKit |
 | `BridgeConfig` | TOML schema + on-disk persistence (config.toml). Also defines profile schema. | TOMLKit |
@@ -74,7 +74,7 @@ Dependency direction: imports only flow from Service* down through BridgeCore do
 
 ## Stdio path
 
-Same dispatch logic, simpler transport. One server, one process, single AuthContext (`stdio:<pid>`). Used when launching the daemon as an MCP child process via `claude mcp add icloud -- /path/to/icloud-bridge serve --stdio`. No tokens required because the OS process boundary is the trust boundary.
+Same dispatch logic, simpler transport. One server, one process, single AuthContext (`stdio:<pid>`). Used when launching the daemon as an MCP child process via `claude mcp add icloud -- /path/to/deckard serve --stdio`. No tokens required because the OS process boundary is the trust boundary.
 
 ## Per-token Server design
 
@@ -114,21 +114,21 @@ Adding a tool that breaks any of these fails `swift test` before the agent ever 
 ## What runs where
 
 ```
-~/Library/Application Support/iCloud-Bridge/
+~/Library/Application Support/Deckard/
     config.toml                  ← user-editable runtime config
     tokens.toml                  ← multi-token registry, mode 0600
     token                        ← legacy v0.7 single-token (auto-migrates)
 
-~/Library/Logs/iCloud-Bridge/
+~/Library/Logs/Deckard/
     audit.jsonl                  ← append-only audit log
     stderr.log                   ← daemon stderr (LaunchAgent captures)
     stdout.log                   ← empty in normal use
 
 ~/Library/LaunchAgents/
-    com.lapidakis.icloud-bridge.plist  ← LaunchAgent definition
+    com.lapidakis.deckard.plist  ← LaunchAgent definition
 
-.build/debug/iCloud-Bridge.app   ← menubar UI bundle (.app)
-.build/debug/icloud-bridge       ← daemon binary
+.build/debug/Deckard.app   ← menubar UI bundle (.app)
+.build/debug/deckard       ← daemon binary
 ```
 
 The daemon owns the TCC grants because it's the one calling Mail/Calendar/etc. The UI's TCC posture is much smaller — it just reads the config files and shells launchctl.

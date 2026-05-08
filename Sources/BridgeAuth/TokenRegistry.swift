@@ -88,7 +88,7 @@ public actor TokenRegistry {
             // Do NOT log the secret. Same threat model as tokens.toml (mode 0600);
             // stderr.log is created with the user's umask (typically 0644) so
             // anything emitted here is more world-readable than the registry.
-            logger.info("Bootstrap token created with label 'default'. Run `icloud-bridge auth show default` to retrieve.")
+            logger.info("Bootstrap token created with label 'default'. Run `deckard auth show default` to retrieve.")
         }
         loaded = true
     }
@@ -184,9 +184,9 @@ public actor TokenRegistry {
         do {
             let body = try TOMLEncoder().encode(RegistryFile(tokens: entries))
             let header = """
-                # iCloud-Bridge tokens (mode 0600)
+                # Deckard tokens (mode 0600)
                 # Plaintext bearer secrets — file should never be world-readable.
-                # Manage via `icloud-bridge auth` subcommands rather than editing.
+                # Manage via `deckard auth` subcommands rather than editing.
 
                 """
             try (header + body).write(to: url, atomically: true, encoding: .utf8)

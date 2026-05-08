@@ -72,13 +72,13 @@ public struct OsaScriptApprovalGate: ApprovalGate {
         // System Events forces the dialog into the active Space and brings
         // its window to the front. The daemon already holds gui-domain
         // window-server access, so this only fails the first time when TCC
-        // hasn't yet granted Automation → System Events to icloud-bridge.
+        // hasn't yet granted Automation → System Events to deckard.
         let script = """
         tell application "System Events"
             activate
             try
                 set theResult to display dialog "\(applescriptEscape(body))" \
-                    with title "iCloud-Bridge approval" \
+                    with title "Deckard approval" \
                     buttons {"Deny", "Allow"} \
                     default button "Deny" \
                     cancel button "Deny" \

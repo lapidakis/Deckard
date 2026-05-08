@@ -1,10 +1,10 @@
 import ArgumentParser
 
 @main
-struct ICloudBridge: AsyncParsableCommand {
+struct Deckard: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "icloud-bridge",
-        abstract: "MCP bridge to iCloud services running on this Mac.",
+        commandName: "deckard",
+        abstract: "Swift-native MCP server for your Mac. Stay awhile and listen.",
         subcommands: [
             Serve.self,
             ConfigCommand.self,

@@ -1,7 +1,7 @@
 import SwiftUI
 import SQLite3
 
-/// Inspects TCC.db for grants made to the iCloud-Bridge binary. Read-only —
+/// Inspects TCC.db for grants made to the Deckard binary. Read-only —
 /// changing TCC requires going through System Settings, which we link to.
 struct PermissionsTab: View {
     @State private var grants: [Grant] = []
@@ -94,11 +94,16 @@ struct PermissionsTab: View {
         defer { sqlite3_close(db) }
 
         // Match by binary path (adhoc) OR signing identifier (Developer ID).
+        // Carries both the new (deckard) and pre-rename (icloud-bridge)
+        // identifiers for one release cycle so users mid-migration still
+        // see their existing grants. Drop the legacy clauses in v1.1.
         let sql = """
             SELECT service, client, auth_value, indirect_object_identifier,
                    datetime(last_modified,'unixepoch','localtime')
             FROM access
-            WHERE client LIKE '%icloud-bridge%'
+            WHERE client LIKE '%deckard%'
+               OR client = 'com.lapidakis.deckard'
+               OR client LIKE '%icloud-bridge%'
                OR client = 'com.lapidakis.icloud-bridge'
             ORDER BY last_modified DESC
             """

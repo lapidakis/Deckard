@@ -107,16 +107,11 @@ final class OnboardingState: ObservableObject {
 
     // MARK: - System probes used by step views
 
-    static var configFilePath: String {
-        NSString("~/Library/Application Support/iCloud-Bridge/config.toml").expandingTildeInPath
-    }
-
-    static var tokensFilePath: String {
-        NSString("~/Library/Application Support/iCloud-Bridge/tokens.toml").expandingTildeInPath
-    }
-
+    static var configFilePath: String { BridgePaths.configFile.path }
+    static var tokensFilePath: String { BridgePaths.tokensFile.path }
     static var launchAgentPlistPath: String {
-        NSString("~/Library/LaunchAgents/com.lapidakis.icloud-bridge.plist").expandingTildeInPath
+        let raw = "~/Library/LaunchAgents/\(BridgePaths.bundleID).plist"
+        return (raw as NSString).expandingTildeInPath
     }
 
     /// Counts entries in `tokens.toml` without parsing TOML — looks for
@@ -178,11 +173,15 @@ final class OnboardingState: ObservableObject {
     }
 
     private static func queryAuth(db: OpaquePointer?, service: String, indirect: String?) -> PermissionState {
+        // Match both the new bundle id AND the pre-rename one for one
+        // release cycle so the Permissions tab keeps showing grants for
+        // users mid-migration. Drop the legacy clauses in v1.1.
+        let clientFilter = "(client LIKE '%deckard%' OR client='\(BridgePaths.bundleID)' OR client LIKE '%icloud-bridge%' OR client='\(BridgePaths.legacyBundleID)')"
         let sql: String
         if indirect != nil {
-            sql = "SELECT auth_value FROM access WHERE service=? AND indirect_object_identifier=? AND (client LIKE '%icloud-bridge%' OR client='com.lapidakis.icloud-bridge') ORDER BY last_modified DESC LIMIT 1"
+            sql = "SELECT auth_value FROM access WHERE service=? AND indirect_object_identifier=? AND \(clientFilter) ORDER BY last_modified DESC LIMIT 1"
         } else {
-            sql = "SELECT auth_value FROM access WHERE service=? AND (client LIKE '%icloud-bridge%' OR client='com.lapidakis.icloud-bridge') ORDER BY last_modified DESC LIMIT 1"
+            sql = "SELECT auth_value FROM access WHERE service=? AND \(clientFilter) ORDER BY last_modified DESC LIMIT 1"
         }
         var stmt: OpaquePointer?
         defer { sqlite3_finalize(stmt) }

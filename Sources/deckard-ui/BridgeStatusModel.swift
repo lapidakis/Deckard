@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import BridgeConfig
 
 /// Polls the daemon's process state, port binding, and audit log shape.
 /// Refreshes on a timer so the menubar UI stays roughly current without
@@ -16,7 +17,7 @@ final class BridgeStatusModel: ObservableObject {
     @Published var refreshing: Bool = false
 
     private var pollTask: Task<Void, Never>? = nil
-    private let label = "com.lapidakis.icloud-bridge"
+    private let label = BridgePaths.bundleID
 
     init() {
         startPolling()
@@ -47,13 +48,13 @@ final class BridgeStatusModel: ObservableObject {
             // ps without `-ww` truncates the COMMAND column to the controlling
             // tty width (defaults to 80 cols when there isn't one). The bridge's
             // build path is ~88 chars, so the trailing `serve` gets clipped and
-            // a `contains("icloud-bridge serve")` match fails — the icon then
+            // the `contains("deckard serve")` match would fail — the icon then
             // appears slashed even when the daemon is healthy. `-ww` disables
             // truncation; keep it.
             let psResult = Self.run("/bin/ps", ["-axww", "-o", "pid,command"])
             var foundPID: Int32? = nil
             for line in psResult.stdout.split(separator: "\n")
-                where line.contains("icloud-bridge serve") && !line.contains("grep") {
+                where line.contains("deckard serve") && !line.contains("grep") {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
                 let firstField = trimmed.split(separator: " ").first.map(String.init) ?? ""
                 if let p = Int32(firstField) {
@@ -63,7 +64,7 @@ final class BridgeStatusModel: ObservableObject {
             }
 
             let lsof = Self.run("/usr/sbin/lsof", ["-nP", "-iTCP:8787", "-sTCP:LISTEN"])
-            return (foundPID, lsof.stdout.contains("icloud-br"))
+            return (foundPID, lsof.stdout.contains("deckard"))
         }.value
 
         self.pid = snapshot.pid
@@ -71,7 +72,7 @@ final class BridgeStatusModel: ObservableObject {
         self.portBound = snapshot.portBound
 
         // Audit log quick stats.
-        let auditURL = URL(fileURLWithPath: NSString("~/Library/Logs/iCloud-Bridge/audit.jsonl").expandingTildeInPath)
+        let auditURL = BridgePaths.auditFile
         if FileManager.default.fileExists(atPath: auditURL.path),
            let text = try? String(contentsOf: auditURL, encoding: .utf8) {
             let nonEmpty = text.split(separator: "\n", omittingEmptySubsequences: true)
@@ -92,7 +93,7 @@ final class BridgeStatusModel: ObservableObject {
 
     func start() async {
         let uid = getuid()
-        let plistPath = NSString("~/Library/LaunchAgents/com.lapidakis.icloud-bridge.plist").expandingTildeInPath
+        let plistPath = ("~/Library/LaunchAgents/\(BridgePaths.bundleID).plist" as NSString).expandingTildeInPath
         let r = await Task.detached {
             Self.run("/bin/launchctl", ["bootstrap", "gui/\(uid)", plistPath])
         }.value

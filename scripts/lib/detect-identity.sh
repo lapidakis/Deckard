@@ -3,7 +3,7 @@
 # scripts/build-ui-app.sh.
 #
 # Resolution order:
-#   1. $ICB_SIGN_IDENTITY (explicit override — used as-is, no validation)
+#   1. $DECKARD_SIGN_IDENTITY (explicit override — used as-is, no validation)
 #   2. The first "Developer ID Application:" identity in the user's
 #      keychain. Lets a contributor with their own Developer ID build
 #      without setting any env var, while keeping the original maintainer's
@@ -14,14 +14,14 @@
 #
 # Source this file from another script:
 #   . "$(dirname "$0")/lib/detect-identity.sh"
-#   detect_identity                 # populates $ICB_RESOLVED_IDENTITY
-#                                   # and $ICB_RESOLVED_IDENTITY_KIND
+#   detect_identity                 # populates $DECKARD_RESOLVED_IDENTITY
+#                                   # and $DECKARD_RESOLVED_IDENTITY_KIND
 #                                   #   ∈ {explicit, detected, adhoc}
 
 detect_identity() {
-    if [ -n "${ICB_SIGN_IDENTITY:-}" ]; then
-        ICB_RESOLVED_IDENTITY="$ICB_SIGN_IDENTITY"
-        ICB_RESOLVED_IDENTITY_KIND="explicit"
+    if [ -n "${DECKARD_SIGN_IDENTITY:-}" ]; then
+        DECKARD_RESOLVED_IDENTITY="$DECKARD_SIGN_IDENTITY"
+        DECKARD_RESOLVED_IDENTITY_KIND="explicit"
         return 0
     fi
 
@@ -36,13 +36,13 @@ detect_identity() {
         | sed -E 's/.*"(Developer ID Application:[^"]*)".*/\1/')
 
     if [ -n "$detected" ]; then
-        ICB_RESOLVED_IDENTITY="$detected"
-        ICB_RESOLVED_IDENTITY_KIND="detected"
+        DECKARD_RESOLVED_IDENTITY="$detected"
+        DECKARD_RESOLVED_IDENTITY_KIND="detected"
         return 0
     fi
 
-    ICB_RESOLVED_IDENTITY="-"
-    ICB_RESOLVED_IDENTITY_KIND="adhoc"
+    DECKARD_RESOLVED_IDENTITY="-"
+    DECKARD_RESOLVED_IDENTITY_KIND="adhoc"
     return 0
 }
 
@@ -50,18 +50,18 @@ detect_identity() {
 # invoke this after `detect_identity` so the build log makes the
 # resolution explicit.
 print_identity_banner() {
-    case "${ICB_RESOLVED_IDENTITY_KIND:-}" in
+    case "${DECKARD_RESOLVED_IDENTITY_KIND:-}" in
         explicit)
-            echo "codesign: using explicit ICB_SIGN_IDENTITY: $ICB_RESOLVED_IDENTITY"
+            echo "codesign: using explicit DECKARD_SIGN_IDENTITY: $DECKARD_RESOLVED_IDENTITY"
             ;;
         detected)
-            echo "codesign: using detected Developer ID identity: $ICB_RESOLVED_IDENTITY"
+            echo "codesign: using detected Developer ID identity: $DECKARD_RESOLVED_IDENTITY"
             ;;
         adhoc)
             echo "codesign: WARNING — no Developer ID Application identity available; adhoc-signing." >&2
             echo "codesign:   This produces a runnable binary, but TCC grants (Mail / Calendar / Reminders / Automation)" >&2
             echo "codesign:   will need to be re-approved on every rebuild because adhoc has no stable identity." >&2
-            echo "codesign:   To fix: install a Developer ID Application certificate, OR set ICB_SIGN_IDENTITY=<name>" >&2
+            echo "codesign:   To fix: install a Developer ID Application certificate, OR set DECKARD_SIGN_IDENTITY=<name>" >&2
             ;;
     esac
 }

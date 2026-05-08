@@ -19,7 +19,7 @@ public struct MCPHostBuilder: Sendable {
     private let logger: Logger
 
     public init(
-        serverName: String = "icloud-bridge",
+        serverName: String = "deckard",
         serverVersion: String = BridgeCore.version,
         providers: [any ToolProvider],
         middleware: [any ResultMiddleware] = [],

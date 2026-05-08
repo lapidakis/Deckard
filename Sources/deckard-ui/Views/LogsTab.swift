@@ -1,4 +1,5 @@
 import SwiftUI
+import BridgeConfig
 
 /// Tails the audit JSONL. Refreshes on a timer when this tab is visible.
 struct LogsTab: View {
@@ -74,7 +75,7 @@ struct LogsTab: View {
     }
 
     private func load() {
-        let auditPath = NSString("~/Library/Logs/iCloud-Bridge/audit.jsonl").expandingTildeInPath
+        let auditPath = BridgePaths.auditFile.path
         guard FileManager.default.fileExists(atPath: auditPath) else {
             self.lines = []
             self.loadError = nil

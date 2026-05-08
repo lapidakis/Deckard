@@ -2,13 +2,13 @@
 import PackageDescription
 
 let package = Package(
-    name: "iCloud-Bridge",
+    name: "Deckard",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "icloud-bridge", targets: ["icloud-bridge"]),
-        .executable(name: "icloud-bridge-ui", targets: ["icloud-bridge-ui"]),
+        .executable(name: "deckard", targets: ["deckard"]),
+        .executable(name: "deckard-ui", targets: ["deckard-ui"]),
         .library(name: "BridgeCore", targets: ["BridgeCore"]),
         .library(name: "ServiceMail", targets: ["ServiceMail"]),
         .library(name: "ServiceCalendar", targets: ["ServiceCalendar"]),
@@ -26,16 +26,16 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "icloud-bridge-ui",
+            name: "deckard-ui",
             dependencies: [
                 "BridgeAuth",
                 "BridgeConfig",
                 "BridgePolicy",
             ],
-            path: "Sources/icloud-bridge-ui"
+            path: "Sources/deckard-ui"
         ),
         .executableTarget(
-            name: "icloud-bridge",
+            name: "deckard",
             dependencies: [
                 "BridgeCore",
                 "BridgeConfig",
@@ -49,7 +49,7 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
             ],
-            path: "Sources/icloud-bridge"
+            path: "Sources/deckard"
         ),
         // BridgePolicy already a transitive dep through BridgeCore; explicit
         // here so Audit subcommand can call AuditSink directly.

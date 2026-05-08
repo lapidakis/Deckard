@@ -1,6 +1,16 @@
 # Changelog
 
-## v1.0.0-beta.1 — public beta
+## v1.0.0-beta.1 — public beta as Deckard
+
+The project was renamed from `iCloud-Bridge` to `Deckard` ahead of the first externally-installable release. The old name was a misnomer (the bridge talks to the host's Mail / Calendar / Reminders / Drive — those apps host iCloud, Gmail, Exchange, IMAP, CalDAV, whatever the user has configured) and was trademark-fragile besides. Detailed migration walkthrough in [`docs/migration-from-icloud-bridge.md`](docs/migration-from-icloud-bridge.md).
+
+The rename touches identifiers, paths, env vars, the GitHub repo URL, and the MCP server-name response — nothing about the actual tool surface. Tool names (`mail.move_message`, `calendar.create_event`, etc.) are unchanged because they were always domain-grouped, never carrying the project name. Existing bearer tokens still work because the `icb_` prefix is just an identity marker; the prefix is preserved verbatim for backwards compatibility.
+
+For users running the pre-rename codebase: the new `deckard` binary auto-migrates state on first start (moves `~/Library/Application Support/iCloud-Bridge/` → `Deckard/`, same for logs), and `deckard install` bootouts + removes the old LaunchAgent before installing the new one. TCC grants don't migrate — bundle id changing invalidates them — so the first call to each surface re-prompts; click Allow once.
+
+The full beta surface from below was first published under the iCloud-Bridge name moments before the rename and yanked rather than carried as a misleading historical artifact. Deckard's v1.0.0-beta.1 is the first published release.
+
+---
 
 First externally-installable release. The bridge is built and tested in CI; releases are codesigned with Developer ID and notarized so Gatekeeper accepts them on macOS 14+.
 
@@ -24,29 +34,29 @@ First externally-installable release. The bridge is built and tested in CI; rele
 
 **Reminders timeout actually fires.** v0.10.3's TaskGroup-based timeout was broken — the timeout subtask threw at 10s, but `withThrowingTaskGroup` waited for `cancelAll()` to terminate the wedged `@MainActor` framework call (which it can't), so the function blocked for hours. Replaced with `CheckedContinuation` + the completion-handler API + `DispatchQueue.asyncAfter` for the timeout. EventKit's hung internal request leaks (Apple's problem); the bridge unblocks on time.
 
-**Build script auto-detects signing identity.** `scripts/codesign.sh` and `scripts/build-ui-app.sh` now resolve the identity in this order: `$ICB_SIGN_IDENTITY` → first detected `Developer ID Application:` in keychain → adhoc with a loud warning. Forks no longer fail with "cert not found" because the maintainer's identity was hardcoded.
+**Build script auto-detects signing identity.** `scripts/codesign.sh` and `scripts/build-ui-app.sh` now resolve the identity in this order: `$DECKARD_SIGN_IDENTITY` → first detected `Developer ID Application:` in keychain → adhoc with a loud warning. Forks no longer fail with "cert not found" because the maintainer's identity was hardcoded.
 
 ### Known issues going into the public beta
 
 These are documented but not fixed in this release.
 
-- **Voice Memos TCC.** A previous deploy left the `voice_memo.*` surface TCC-denied; running `tccutil reset AppleEvents com.lapidakis.icloud-bridge` and triggering a tool call usually clears it. Documented in the operations troubleshooting table.
+- **Voice Memos TCC.** A previous deploy left the `voice_memo.*` surface TCC-denied; the post-rename install starts from a fresh slate (bundle id changed → all grants re-prompted), so this should resolve itself on first use. If it doesn't, `tccutil reset AppleEvents com.lapidakis.deckard` and triggering a tool call clears it. Documented in the operations troubleshooting table.
 - **`SessionHolder.recreate()` doesn't drain in-flight requests.** Rare race in the stale-session self-heal where the recreate trips "Transport already started" while a prior tool call is still pending. Less reachable since the Reminders timeout fix shipped (Reminders was the most common stall source). Filed as a follow-up.
 - **Approval dialog can't reach off-host operators.** A token reaching the bridge over Tailscale will see `.approve` outcomes time out (the dialog appears on the host Mac, not the operator's terminal). Mitigation today: set `interactive_approval = "never"` on the token's profile; audit logs record `approved_by_policy` for forensics. The right fix is an XPC channel from the daemon to the menubar UI for in-app prompts; not in beta scope.
 - **No iMessage (Phase 5) yet.** Read access to `chat.db` and AppleScript send are designed but unbuilt. v1.1 target.
 
 ### Install (public beta)
 
-Download the DMG from the [GitHub Releases](https://github.com/lapidakis/iCloud-Bridge/releases) page, drag `iCloud-Bridge.app` to Applications, and open it. The onboarding window walks you through token + permissions + connect.
+Download the DMG from the [GitHub Releases](https://github.com/lapidakis/Deckard/releases) page, drag `Deckard.app` to Applications, and open it. The onboarding window walks you through token + permissions + connect.
 
 For development / contributing, build from source:
 
 ```sh
-git clone https://github.com/lapidakis/iCloud-Bridge.git
-cd iCloud-Bridge
+git clone https://github.com/lapidakis/Deckard.git
+cd Deckard
 make build                            # auto-detects your Developer ID, falls back to adhoc
-.build/debug/icloud-bridge config init
-.build/debug/icloud-bridge install
+.build/debug/deckard config init
+.build/debug/deckard install
 ```
 
 CI runs `swift test` on every push; PRs that break the suite are blocked.

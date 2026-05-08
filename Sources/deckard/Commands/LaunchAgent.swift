@@ -2,7 +2,8 @@ import ArgumentParser
 import Foundation
 import BridgeConfig
 
-private let launchAgentLabel = "com.lapidakis.icloud-bridge"
+private let launchAgentLabel = BridgePaths.bundleID
+private let legacyLaunchAgentLabel = BridgePaths.legacyBundleID
 
 private var launchAgentsDir: URL {
     FileManager.default.homeDirectoryForCurrentUser
@@ -11,6 +12,10 @@ private var launchAgentsDir: URL {
 
 private var launchAgentPlistURL: URL {
     launchAgentsDir.appendingPathComponent("\(launchAgentLabel).plist")
+}
+
+private var legacyLaunchAgentPlistURL: URL {
+    launchAgentsDir.appendingPathComponent("\(legacyLaunchAgentLabel).plist")
 }
 
 struct Install: AsyncParsableCommand {
@@ -24,7 +29,7 @@ struct Install: AsyncParsableCommand {
         """
     )
 
-    @Option(name: .long, help: "Override path to the icloud-bridge binary.")
+    @Option(name: .long, help: "Override path to the deckard binary.")
     var binary: String?
 
     @Flag(name: .long, help: "Replace an existing LaunchAgent if present.")
@@ -34,6 +39,20 @@ struct Install: AsyncParsableCommand {
         let binaryPath = try resolveBinaryPath(override: binary)
         try BridgePaths.ensureDirs()
         try FileManager.default.createDirectory(at: launchAgentsDir, withIntermediateDirectories: true)
+
+        let target = "gui/\(getuid())"
+
+        // Migrate any pre-rename install: bootout the legacy LaunchAgent and
+        // remove its plist before laying down the new one. Without this the
+        // old daemon stays loaded under the old label, fights the new one
+        // over port 8787, and the user gets a confusing stack of audit rows
+        // attributed to the old binary path. Idempotent — silent no-op when
+        // there's no legacy install.
+        if FileManager.default.fileExists(atPath: legacyLaunchAgentPlistURL.path) {
+            print("Detected legacy LaunchAgent (\(legacyLaunchAgentLabel)); removing.")
+            _ = runLaunchctl(["bootout", "\(target)/\(legacyLaunchAgentLabel)"])
+            try? FileManager.default.removeItem(at: legacyLaunchAgentPlistURL)
+        }
 
         let plistURL = launchAgentPlistURL
         if FileManager.default.fileExists(atPath: plistURL.path) && !force {
@@ -45,8 +64,7 @@ struct Install: AsyncParsableCommand {
         try renderPlist(to: plistURL, binary: binaryPath, logDir: BridgePaths.logsDir.path)
         print("Wrote \(plistURL.path)")
 
-        // Boot out any existing instance, then bootstrap.
-        let target = "gui/\(getuid())"
+        // Boot out any existing instance under the new label, then bootstrap.
         _ = runLaunchctl(["bootout", "\(target)/\(launchAgentLabel)"])
         let result = runLaunchctl(["bootstrap", target, plistURL.path])
         guard result.exitCode == 0 else {
@@ -65,17 +83,23 @@ struct Uninstall: AsyncParsableCommand {
     )
 
     func run() async throws {
-        let plistURL = launchAgentPlistURL
         let target = "gui/\(getuid())"
-        let result = runLaunchctl(["bootout", "\(target)/\(launchAgentLabel)"])
-        if result.exitCode != 0 {
-            print("launchctl bootout returned \(result.exitCode): \(result.output)")
+
+        // Tear down both labels — covers a partial migration where someone
+        // runs `uninstall` between `deckard install`'s legacy-cleanup step
+        // and a fresh install would otherwise re-bootstrap the new one.
+        for label in [launchAgentLabel, legacyLaunchAgentLabel] {
+            let result = runLaunchctl(["bootout", "\(target)/\(label)"])
+            if result.exitCode != 0, !result.output.contains("Could not find") {
+                print("launchctl bootout \(label) returned \(result.exitCode): \(result.output)")
+            }
         }
-        if FileManager.default.fileExists(atPath: plistURL.path) {
-            try FileManager.default.removeItem(at: plistURL)
-            print("Removed \(plistURL.path)")
-        } else {
-            print("No plist at \(plistURL.path)")
+
+        for url in [launchAgentPlistURL, legacyLaunchAgentPlistURL] {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+                print("Removed \(url.path)")
+            }
         }
     }
 }
@@ -88,7 +112,7 @@ private func resolveBinaryPath(override: String?) throws -> String {
     }
     // Use the running executable's path so `install` always wires up the binary
     // that was just invoked. Resolve symlinks so launchd doesn't follow stale paths.
-    let argv0 = CommandLine.arguments.first ?? "icloud-bridge"
+    let argv0 = CommandLine.arguments.first ?? "deckard"
     let url: URL
     if argv0.contains("/") {
         url = URL(fileURLWithPath: argv0)

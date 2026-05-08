@@ -97,7 +97,7 @@ public struct HTTPRunner: Sendable {
             router: router,
             configuration: .init(
                 address: .hostname(bind.host, port: bind.port),
-                serverName: "icloud-bridge"
+                serverName: "deckard"
             ),
             logger: logger
         )
@@ -319,7 +319,7 @@ public struct HTTPRunner: Sendable {
         fields.append(HTTPField(name: .contentType, value: "application/json"))
         fields.append(HTTPField(
             name: .wwwAuthenticate,
-            value: #"Bearer realm="icloud-bridge", error="\#(reason)""#
+            value: #"Bearer realm="deckard", error="\#(reason)""#
         ))
         return Response(status: .unauthorized, headers: fields, body: .init(byteBuffer: ByteBuffer(string: json)))
     }

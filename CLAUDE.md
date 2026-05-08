@@ -16,7 +16,7 @@ Read this file before making changes. README.md is end-user-facing; this file is
 | 4.5 | Reminders (full CRUD via EventKit `.reminder`) | Done |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
-35 MCP tools total. Codesigned with Developer ID (`com.lapidakis.icloud-bridge`, team `NZL3HS8AH4`). Hardened runtime. **116 unit tests.**
+35 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **116 unit tests.**
 
 Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). Self-healing MCP session transport for stale-session SDK bug. Menubar UI scaffold (v0.10 series) with native macOS look. First-launch onboarding flow (v0.11+) walks through daemon → token → permissions → connect.
 
@@ -29,8 +29,8 @@ Per-token `interactive_approval` mode (`always` / `never`) lets trusted remote t
 ## Module map
 
 ```
-icloud-bridge        — CLI entry (ArgumentParser subcommands)
-icloud-bridge-ui     — SwiftUI menubar app (.app bundle via scripts/build-ui-app.sh)
+deckard              — CLI entry (ArgumentParser subcommands)
+deckard-ui     — SwiftUI menubar app (.app bundle via scripts/build-ui-app.sh)
 BridgeCore           — MCP server, transports (stdio + HTTP), middleware pipeline,
                        ApprovalGate, ToolHandler/ToolProvider protocols,
                        SessionHolder, TokenSessions
@@ -49,8 +49,8 @@ ServiceReminders     — EventKit `.reminder` adapter; CRUD tools
 
 Dependency direction (import-only):
 ```
-icloud-bridge      → BridgeCore + Service{Mail, Calendar, Drive, VoiceMemo, Reminders}
-icloud-bridge-ui   → BridgeAuth + BridgeConfig + BridgePolicy
+deckard            → BridgeCore + Service{Mail, Calendar, Drive, VoiceMemo, Reminders}
+deckard-ui   → BridgeAuth + BridgeConfig + BridgePolicy
 ServiceMail        → BridgeCore + MCP
 ServiceCalendar    → BridgeCore + MCP + EventKit
 ServiceDrive       → BridgeCore + BridgeConfig + MCP
@@ -94,32 +94,32 @@ swift build             # bare build — produces adhoc binary, will lose TCC gr
                         # (don't use for daemon; only ok if you re-codesign immediately)
 
 # Operator
-.build/debug/icloud-bridge config init
-.build/debug/icloud-bridge serve [--stdio]
-.build/debug/icloud-bridge install
-.build/debug/icloud-bridge audit stats
-.build/debug/icloud-bridge audit tail -l 50
-.build/debug/icloud-bridge audit prune --retention-days 7
+.build/debug/deckard config init
+.build/debug/deckard serve [--stdio]
+.build/debug/deckard install
+.build/debug/deckard audit stats
+.build/debug/deckard audit tail -l 50
+.build/debug/deckard audit prune --retention-days 7
 
 # Token management
-.build/debug/icloud-bridge auth list
-.build/debug/icloud-bridge auth add <label> --profile <name> --description "..."
-.build/debug/icloud-bridge auth show <label>
-.build/debug/icloud-bridge auth rotate <label>
-.build/debug/icloud-bridge auth revoke <label>
+.build/debug/deckard auth list
+.build/debug/deckard auth add <label> --profile <name> --description "..."
+.build/debug/deckard auth show <label>
+.build/debug/deckard auth rotate <label>
+.build/debug/deckard auth revoke <label>
 ```
 
 State lives at:
-- `~/Library/Application Support/iCloud-Bridge/config.toml`
-- `~/Library/Application Support/iCloud-Bridge/tokens.toml` (mode 0600)
-- `~/Library/Logs/iCloud-Bridge/audit.jsonl`
-- `~/Library/Logs/iCloud-Bridge/stderr.log`
+- `~/Library/Application Support/Deckard/config.toml`
+- `~/Library/Application Support/Deckard/tokens.toml` (mode 0600)
+- `~/Library/Logs/Deckard/audit.jsonl`
+- `~/Library/Logs/Deckard/stderr.log`
 
 ## How to add a new tool
 
 1. Create a struct conforming to `ToolHandler`. If results contain external content, set `returnsUntrustedContent = true`. If write/destructive, also conform to `ApprovalSummarizing` to shape the approval dialog.
 2. Add it to a `ToolProvider`'s `handlers` array.
-3. Register the provider in `Sources/icloud-bridge/Commands/Serve.swift`.
+3. Register the provider in `Sources/deckard/Commands/Serve.swift`.
 4. Tools default to deny in any token's profile. Document recommended ACL settings in the README + `docs/configuration.md`.
 5. Add a unit test if there's logic worth testing in isolation (date parsing, path safety, etc.).
 6. Update `docs/configuration.md` trust-tier example with the new tool name in `trusted` / `triage` / `readonly` profiles.
@@ -128,9 +128,9 @@ State lives at:
 
 ## Codesigning is load-bearing
 
-Codesigned with Developer ID Application (`com.lapidakis.icloud-bridge`, team `NZL3HS8AH4`). Use `make build` / `make release` so the post-build `scripts/codesign.sh` runs; bare `swift build` produces an adhoc binary that will lose TCC grants.
+Codesigned with Developer ID Application (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Use `make build` / `make release` so the post-build `scripts/codesign.sh` runs; bare `swift build` produces an adhoc binary that will lose TCC grants.
 
-The UI has its own bundle id (`com.lapidakis.icloud-bridge.ui`) and entitlements set; built via `make ui` → `scripts/build-ui-app.sh`.
+The UI has its own bundle id (`com.lapidakis.deckard.ui`) and entitlements set; built via `make ui` → `scripts/build-ui-app.sh`.
 
 `Always build via make build.` Bare `swift build` overwrites the signed binary with an adhoc one and TCC grants disappear silently until you re-sign. The Makefile chains `swift build` → `scripts/codesign.sh` so this is one command, not two.
 
@@ -147,7 +147,7 @@ The UI has its own bundle id (`com.lapidakis.icloud-bridge.ui`) and entitlements
 ## Pitfalls
 
 - **`make build`, not `swift build`.** Adhoc binaries lose TCC grants; the Makefile chains build + codesign.
-- **Calendar uses EventKit, not AppleScript** — Calendar AppleScript is broken on macOS 14+. The `com.apple.security.personal-information.calendars` entitlement is in `Resources/icloud-bridge.entitlements`.
+- **Calendar uses EventKit, not AppleScript** — Calendar AppleScript is broken on macOS 14+. The `com.apple.security.personal-information.calendars` entitlement is in `Resources/deckard.entitlements`.
 - **Calendar tz handling.** All read tools accept an optional `tz` (IANA id like `"America/Denver"`); when supplied, output `start`/`end` are formatted in that zone. UTC by default. **Apple Foundation quirk:** `TimeZone(identifier: "UTC").identifier` returns `"GMT"`. Test against `secondsFromGMT() == 0`, not the identifier string.
 - **All-day events.** EventKit stores all-day starts/ends as zero-offset times that don't necessarily match the user's local-day understanding. The summary always exposes `local_start_date` / `local_end_date` (`yyyy-MM-dd` in caller `tz`) for `is_all_day == true`.
 - **`attendee_count` is best-effort.** EventKit's `event.attendees` returns participants only when the calendar source carries them. iCloud-CalDAV self-authored events often return empty even when invitees exist.
@@ -167,14 +167,14 @@ The UI has its own bundle id (`com.lapidakis.icloud-bridge.ui`) and entitlements
 - **Per-call AuthContext via TaskLocal.** `BridgeCallContext.override` is read by `MCPHostBuilder.dispatch` before building the audit row. HTTPRunner sets it (transport label + identity + remote peer info) inside `$override.withValue { transport.handleRequest(...) }` so the SDK's structured-Task children inherit it. If the SDK ever switches to `Task.detached` for dispatch, this propagation breaks silently — `bridgeCallContextTaskLocalDefaultsToNil` test guards the boundary.
 - **Tailscale enforcement order.** Whois + allowlist runs BEFORE bearer auth. A non-allowlisted tailnet peer never gets to attempt token auth — protects bearer secrets from rate-limit spending. When the allowlist is empty (`isOpen`), whois still runs (best-effort) so the audit row shows who connected.
 - **Mail batch tools' AppleScript shape.** `move <list> to <mbox>` and `set read status of <list> to <bool>` BOTH fail in Mail.app on macOS 26 with -10006. The batch path resolves message refs, then iterates per-message in the action loop. The osascript invocation + Mail.app activation is a single ~600ms cost; loop iterations are sub-ms. Don't switch back to list-target forms without re-testing on the target macOS.
-- **Approval dialog visibility.** A bare `display dialog` from the LaunchAgent's osascript subprocess lands on whichever Space the daemon first attached to — typically not the user's current one — and times out at `giving up after`. Wrap with `tell application "System Events" / activate` to force the dialog onto the active Space + frontmost. First call after a fresh deploy triggers a one-time "icloud-bridge wants to control System Events" Automation TCC prompt; subsequent calls are durable.
+- **Approval dialog visibility.** A bare `display dialog` from the LaunchAgent's osascript subprocess lands on whichever Space the daemon first attached to — typically not the user's current one — and times out at `giving up after`. Wrap with `tell application "System Events" / activate` to force the dialog onto the active Space + frontmost. First call after a fresh deploy triggers a one-time "deckard wants to control System Events" Automation TCC prompt; subsequent calls are durable.
 - **Top-level JSON Schema keywords are rejected by Anthropic API.** `oneOf`, `allOf`, `anyOf` at the root of a tool's `inputSchema` returns HTTP 400 from the Claude API even though the MCP spec allows them. Express mutual-exclusion via field descriptions + runtime validation; `SchemaTests.noToolUsesTopLevelOneOfAllOfAnyOf` is the regression guard.
 - **HTTPRunner handler order**: tailscale enforcement happens BEFORE the bearer check. A non-allowlisted peer gets 403 Forbidden, not 401 — exposing 401 would invite token-guessing. Don't reorder without thinking through the privilege chain.
 
 ## What I should not do without asking
 
 - Modify the user's `config.toml` or `tokens.toml` in-place — the user owns those files.
-- Touch `~/Library/LaunchAgents/com.lapidakis.icloud-bridge.plist` outside the `install`/`uninstall` commands.
+- Touch `~/Library/LaunchAgents/com.lapidakis.deckard.plist` outside the `install`/`uninstall` commands.
 - Delete the audit log.
 - Bump dependencies in `Package.swift` casually — they're load-bearing for transport behavior.
 - Commit secrets or tokens. The `*.token` line + `tokens.toml` exclusion in `.gitignore` is your guardrail.

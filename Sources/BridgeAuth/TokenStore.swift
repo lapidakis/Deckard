@@ -4,8 +4,10 @@ import BridgeConfig
 
 /// Owns the bearer token. Generates one on first use; verifies on each call.
 ///
-/// Token format: 32 random bytes, base64url-encoded, prefixed `icb_`.
-/// Stored in `~/Library/Application Support/iCloud-Bridge/token` mode 0600.
+/// Token format: 32 random bytes, base64url-encoded, prefixed `icb_` (carried
+/// from the pre-rename project; preserved for backwards-compatibility with
+/// existing client configs).
+/// Stored in `~/Library/Application Support/Deckard/token` mode 0600.
 public actor TokenStore {
     private let url: URL
     private let logger: Logger

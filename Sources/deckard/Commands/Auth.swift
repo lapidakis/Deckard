@@ -21,7 +21,7 @@ struct Auth: AsyncParsableCommand {
             try await registry.ensureLoaded()
             let entries = await registry.allEntries()
             if entries.isEmpty {
-                print("No tokens. Run `icloud-bridge auth add <label>` to create one.")
+                print("No tokens. Run `deckard auth add <label>` to create one.")
                 return
             }
             print("LABEL                PROFILE          CREATED                   DESCRIPTION")

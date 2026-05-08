@@ -1,11 +1,11 @@
 # Configuration
 
-Two files live at `~/Library/Application Support/iCloud-Bridge/`:
+Two files live at `~/Library/Application Support/Deckard/`:
 
 - `config.toml` — user-editable runtime config (server, ACL, redaction, etc.)
 - `tokens.toml` — bearer secrets + token labels + profile assignments (mode 0600)
 
-The daemon reads both at startup. Edit, then restart the LaunchAgent (`icloud-bridge install --force`) or use the menubar UI's Restart button.
+The daemon reads both at startup. Edit, then restart the LaunchAgent (`deckard install --force`) or use the menubar UI's Restart button.
 
 ## `config.toml` reference
 
@@ -73,8 +73,8 @@ Audit rows from tailnet calls record `transport=tailnet` and (when whois succeed
 Inspect at runtime:
 
 ```sh
-icloud-bridge tailscale status        # config + probe state
-icloud-bridge tailscale whois 100.x.y.z   # resolve a tailnet IP and show allow/deny
+deckard tailscale status        # config + probe state
+deckard tailscale whois 100.x.y.z   # resolve a tailnet IP and show allow/deny
 ```
 
 ### `[auth]`
@@ -168,7 +168,7 @@ write_allowed_prefixes = ["agent-drafts/", "Inbox/agent/"]
 
 ## `tokens.toml` reference
 
-Managed via `icloud-bridge auth` subcommands; you can edit by hand if needed but the CLI is safer.
+Managed via `deckard auth` subcommands; you can edit by hand if needed but the CLI is safer.
 
 ```toml
 [tokens.<label>]
@@ -181,11 +181,11 @@ description = "free text"
 CLI:
 
 ```sh
-icloud-bridge auth list
-icloud-bridge auth add <label> --profile <name> --description "..."
-icloud-bridge auth show <label>             # re-fetch a secret
-icloud-bridge auth rotate <label>           # generate new secret, invalidate old
-icloud-bridge auth revoke <label>
+deckard auth list
+deckard auth add <label> --profile <name> --description "..."
+deckard auth show <label>             # re-fetch a secret
+deckard auth rotate <label>           # generate new secret, invalidate old
+deckard auth revoke <label>
 ```
 
 After any change, restart the daemon so the in-memory token registry rebinds.
@@ -302,9 +302,9 @@ default = "deny"
 Then create tokens for each:
 
 ```sh
-icloud-bridge auth add rocky    --profile trusted   --description "Rocky on this Mac"
-icloud-bridge auth add eleanor  --profile triage    --description "Eleanor on Hermes (paperclip)"
-icloud-bridge auth add scratch  --profile readonly  --description "Untrusted experiments"
+deckard auth add rocky    --profile trusted   --description "Rocky on this Mac"
+deckard auth add eleanor  --profile triage    --description "Eleanor on Hermes (paperclip)"
+deckard auth add scratch  --profile readonly  --description "Untrusted experiments"
 ```
 
 Each agent gets its own bearer; the daemon shows `caller: "bearer:rocky"` / `bearer:eleanor` / `bearer:scratch` in the audit log so you can grep usage by agent.
@@ -315,7 +315,7 @@ Each agent gets its own bearer; the daemon shows `caller: "bearer:rocky"` / `bea
 
 | Change | When it applies |
 |---|---|
-| Edit `config.toml` (any section) | Next daemon start. Restart via `icloud-bridge install --force`, the menubar UI's Restart button, or `make restart`. |
+| Edit `config.toml` (any section) | Next daemon start. Restart via `deckard install --force`, the menubar UI's Restart button, or `make restart`. |
 | `auth add/revoke/rotate` | Next daemon start. Same applies. |
 | Edit `tokens.toml` by hand | Next daemon start. Prefer the CLI. |
 | LaunchAgent plist edits | `launchctl bootout` then `bootstrap` to reload. |

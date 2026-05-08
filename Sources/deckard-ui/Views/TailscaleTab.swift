@@ -4,7 +4,7 @@ import BridgeConfig
 import BridgeAuth
 
 /// Read-only display of the bridge's Tailscale state. Mirrors the
-/// `icloud-bridge tailscale status` CLI: configuration values from
+/// `deckard tailscale status` CLI: configuration values from
 /// `config.toml`, probe state from the `tailscale` CLI (binary path,
 /// tailnet IPv4, self-peer whois), and a derived listener-readiness line.
 struct TailscaleTab: View {
@@ -197,10 +197,10 @@ struct TailscaleTab: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Inspect via CLI")
                     .font(.callout.bold())
-                Text("icloud-bridge tailscale status")
+                Text("deckard tailscale status")
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
-                Text("icloud-bridge tailscale whois <ip>")
+                Text("deckard tailscale whois <ip>")
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
                 Text("Edit `\(BridgePaths.configFile.path)` and bounce the daemon (Status tab → Restart) for changes to take effect.")

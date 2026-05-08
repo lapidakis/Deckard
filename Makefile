@@ -1,4 +1,4 @@
-# iCloud-Bridge — convenience targets
+# Deckard — convenience targets
 #
 # Goals:
 #   build         debug build + codesign
@@ -9,7 +9,7 @@
 #   clean         remove .build
 #
 # Codesigning identity / bundle id can be overridden via env:
-#   ICB_SIGN_IDENTITY="..."  ICB_BUNDLE_ID="..."  make build
+#   DECKARD_SIGN_IDENTITY="..."  DECKARD_BUNDLE_ID="..."  make build
 
 .PHONY: build release test install uninstall clean restart logs
 
@@ -33,20 +33,20 @@ test:
 	swift test
 
 install: build
-	.build/debug/icloud-bridge install --force
+	.build/debug/deckard install --force
 
 uninstall:
-	.build/debug/icloud-bridge uninstall
+	.build/debug/deckard uninstall
 
 restart: build
-	-launchctl bootout gui/$(shell id -u)/com.lapidakis.icloud-bridge
-	launchctl bootstrap gui/$(shell id -u) $(HOME)/Library/LaunchAgents/com.lapidakis.icloud-bridge.plist
+	-launchctl bootout gui/$(shell id -u)/com.lapidakis.deckard
+	launchctl bootstrap gui/$(shell id -u) $(HOME)/Library/LaunchAgents/com.lapidakis.deckard.plist
 
 logs:
-	tail -f $(HOME)/Library/Logs/iCloud-Bridge/stderr.log
+	tail -f $(HOME)/Library/Logs/Deckard/stderr.log
 
 audit:
-	.build/debug/icloud-bridge audit tail
+	.build/debug/deckard audit tail
 
 clean:
 	rm -rf .build

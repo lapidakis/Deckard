@@ -109,7 +109,7 @@ public actor RemindersAdapter {
                 guard latch.tryResume() else { return }
                 logger.error("Reminders access request timed out after \(timeoutNs / 1_000_000_000)s")
                 cont.resume(throwing: AdapterError.accessDenied(
-                    "Reminders access request timed out — open System Settings → Privacy & Security → Reminders, enable icloud-bridge, then retry"
+                    "Reminders access request timed out — open System Settings → Privacy & Security → Reminders, enable Deckard, then retry"
                 ))
             }
         }

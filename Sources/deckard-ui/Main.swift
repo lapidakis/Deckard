@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct iCloudBridgeUI: App {
+struct DeckardUI: App {
     @StateObject private var status = BridgeStatusModel()
     @StateObject private var onboarding = OnboardingState()
 
@@ -28,7 +28,7 @@ struct iCloudBridgeUI: App {
 
         // Onboarding window — opened by OnboardingLauncher on first launch
         // and by the "Show Onboarding…" button in the Status tab.
-        Window("Welcome to iCloud-Bridge", id: "onboarding") {
+        Window("Welcome to Deckard", id: "onboarding") {
             OnboardingView(status: status, onboarding: onboarding)
         }
         .windowResizability(.contentSize)

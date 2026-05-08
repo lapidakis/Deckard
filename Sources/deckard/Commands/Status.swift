@@ -13,7 +13,7 @@ struct Status: AsyncParsableCommand {
         let configExists = store.exists()
         let tokenExists = FileManager.default.fileExists(atPath: BridgePaths.tokenFile.path)
 
-        print("iCloud-Bridge status")
+        print("Deckard status")
         print("  config:  \(BridgePaths.configFile.path) \(configExists ? "(present)" : "(missing — run `config init`)")")
         print("  token:   \(BridgePaths.tokenFile.path) \(tokenExists ? "(present)" : "(absent — generated on first serve)")")
         print("  audit:   \(BridgePaths.auditFile.path)")
@@ -26,7 +26,7 @@ struct Status: AsyncParsableCommand {
                 let peers = cfg.tailscale.allowedPeers.isEmpty ? "<open>" : cfg.tailscale.allowedPeers.joined(separator: ",")
                 let users = cfg.tailscale.allowedUsers.isEmpty ? "<open>" : cfg.tailscale.allowedUsers.joined(separator: ",")
                 print("  tailnet:   on (port \(cfg.tailscale.port), peers=\(peers), users=\(users))")
-                print("             use `icloud-bridge tailscale status` for probe details")
+                print("             use `deckard tailscale status` for probe details")
             } else {
                 print("  tailnet:   off")
             }

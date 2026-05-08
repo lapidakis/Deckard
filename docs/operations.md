@@ -3,24 +3,24 @@
 ## Install
 
 ```sh
-git clone https://github.com/lapidakis/iCloud-Bridge.git
-cd iCloud-Bridge
+git clone https://github.com/lapidakis/Deckard.git
+cd Deckard
 make build
-.build/debug/icloud-bridge config init        # writes default config.toml
-.build/debug/icloud-bridge install            # registers LaunchAgent + starts daemon
+.build/debug/deckard config init        # writes default config.toml
+.build/debug/deckard install            # registers LaunchAgent + starts daemon
 ```
 
 The first daemon start auto-creates a `default` token in `tokens.toml` and prints the secret to stderr. Capture it for client config:
 
 ```sh
-.build/debug/icloud-bridge auth show default
+.build/debug/deckard auth show default
 ```
 
 For the menubar app:
 
 ```sh
 make ui
-open .build/debug/iCloud-Bridge.app
+open .build/debug/Deckard.app
 ```
 
 First launch opens a 6-step onboarding window — Welcome → Daemon → Token → Permissions → Connect → Done. You can:
@@ -44,27 +44,27 @@ make restart         # bootout + bootstrap the LaunchAgent
 
 | Action | Command |
 |---|---|
-| Start | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lapidakis.icloud-bridge.plist` |
-| Stop | `launchctl bootout gui/$(id -u)/com.lapidakis.icloud-bridge` |
+| Start | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lapidakis.deckard.plist` |
+| Stop | `launchctl bootout gui/$(id -u)/com.lapidakis.deckard` |
 | Restart | `make restart` |
-| Status | `launchctl print gui/$(id -u)/com.lapidakis.icloud-bridge \| grep -E "active count\|state"` |
+| Status | `launchctl print gui/$(id -u)/com.lapidakis.deckard \| grep -E "active count\|state"` |
 | Or use the menubar UI | "Open Settings… → Status → Start/Stop/Restart" |
 
 Process-level checks:
 
 ```sh
-ps -axo pid,etime,command | grep icloud-bridge
+ps -axo pid,etime,command | grep deckard
 lsof -nP -iTCP:8787 -sTCP:LISTEN     # what's bound to the loopback port
 ```
 
 ## Audit log
 
 ```sh
-icloud-bridge audit stats             # path, size, entry count, oldest, newest
-icloud-bridge audit tail -l 50        # last 50 entries
-icloud-bridge audit prune             # manual sweep with config retention
-icloud-bridge audit prune --retention-days 7   # tighter sweep
-icloud-bridge audit path              # absolute path
+deckard audit stats             # path, size, entry count, oldest, newest
+deckard audit tail -l 50        # last 50 entries
+deckard audit prune             # manual sweep with config retention
+deckard audit prune --retention-days 7   # tighter sweep
+deckard audit path              # absolute path
 ```
 
 The audit JSONL format:
@@ -93,7 +93,7 @@ Argument *values* are not recorded by design. `arg_keys` tells you what was call
 ## Daemon logs
 
 ```sh
-tail -f ~/Library/Logs/iCloud-Bridge/stderr.log
+tail -f ~/Library/Logs/Deckard/stderr.log
 ```
 
 Look for:
@@ -108,25 +108,25 @@ The daemon hits TCC the first time it's asked to do anything reaching out:
 
 | Tool family | TCC service | First call triggers |
 |---|---|---|
-| `mail.*` | Apple Events → Mail.app | macOS prompt: "icloud-bridge wants to control Mail" |
-| `calendar.*` | Calendar (`kTCCServiceCalendar`) | macOS prompt: "iCloud-Bridge wants access to your calendars" |
-| `reminders.*` | Reminders (`kTCCServiceReminders`) | macOS prompt: "iCloud-Bridge wants access to your reminders" |
-| **Approval dialogs (any `.approve` tool)** | **Apple Events → System Events** | **macOS prompt: "icloud-bridge wants to control System Events"** — fires on the first `.approve` call. The dialog is wrapped in `tell application "System Events" / activate` so it lands on the user's active Space; without the System Events grant, the dialog times out at the `giving up after` deadline. |
+| `mail.*` | Apple Events → Mail.app | macOS prompt: "deckard wants to control Mail" |
+| `calendar.*` | Calendar (`kTCCServiceCalendar`) | macOS prompt: "Deckard wants access to your calendars" |
+| `reminders.*` | Reminders (`kTCCServiceReminders`) | macOS prompt: "Deckard wants access to your reminders" |
+| **Approval dialogs (any `.approve` tool)** | **Apple Events → System Events** | **macOS prompt: "deckard wants to control System Events"** — fires on the first `.approve` call. The dialog is wrapped in `tell application "System Events" / activate` so it lands on the user's active Space; without the System Events grant, the dialog times out at the `giving up after` deadline. |
 | `voice_memo.*` | none | Group Container is mode 644; no TCC needed |
 | `drive.*` | none | iCloud Drive is the user's own files |
 
 Grants are keyed by the binary's signing identity. Codesigning preserves them across rebuilds.
 
 To inspect or revoke:
-- System Settings → Privacy & Security → Automation / Calendar / Reminders → toggle iCloud-Bridge entries
+- System Settings → Privacy & Security → Automation / Calendar / Reminders → toggle Deckard entries
 - Menubar UI → Settings → Permissions tab shows what's currently granted with deep-links to the relevant pane
 
 To force a fresh prompt (rare; only useful if the grant got stuck):
 
 ```sh
-tccutil reset AppleEvents com.lapidakis.icloud-bridge   # for Mail + System Events
-tccutil reset Calendar com.lapidakis.icloud-bridge
-tccutil reset Reminders com.lapidakis.icloud-bridge
+tccutil reset AppleEvents com.lapidakis.deckard   # for Mail + System Events
+tccutil reset Calendar com.lapidakis.deckard
+tccutil reset Reminders com.lapidakis.deckard
 ```
 
 The single `AppleEvents` reset clears both Mail and System Events grants since they're under the same TCC service — you'll get a fresh prompt for each on the next call that needs it.
@@ -134,13 +134,13 @@ The single `AppleEvents` reset clears both Mail and System Events grants since t
 ## Backups
 
 The state to back up:
-- `~/Library/Application Support/iCloud-Bridge/config.toml` (declarative)
-- `~/Library/Application Support/iCloud-Bridge/tokens.toml` (secrets — back up encrypted)
-- `~/Library/Logs/iCloud-Bridge/audit.jsonl` (history)
+- `~/Library/Application Support/Deckard/config.toml` (declarative)
+- `~/Library/Application Support/Deckard/tokens.toml` (secrets — back up encrypted)
+- `~/Library/Logs/Deckard/audit.jsonl` (history)
 
 Skip:
 - The `.build/` directory (regenerated by `make build`)
-- `~/Library/LaunchAgents/com.lapidakis.icloud-bridge.plist` (regenerated by `icloud-bridge install`)
+- `~/Library/LaunchAgents/com.lapidakis.deckard.plist` (regenerated by `deckard install`)
 
 ## Troubleshooting
 
@@ -148,14 +148,14 @@ Skip:
 |---|---|---|
 | `ACL: tool '...' is not allowed` from agent | Tool not in the token's profile (or global ACL) | Edit `[acl.tools]` or the relevant `[acl.profiles.<name>.tools]`; `make restart` |
 | `AppleScript timed out after 30.0s` | Mail.app stalled mid-IPC | Was a real bug pre-v0.7; subprocess runner now kills hung osascript with SIGTERM. If still happening, paste stderr `tool_start`/`tool_error` rows. |
-| `AppleScript was blocked by macOS privacy` | Automation TCC denied previously | System Settings → Privacy & Security → Automation → enable Mail under iCloud-Bridge |
+| `AppleScript was blocked by macOS privacy` | Automation TCC denied previously | System Settings → Privacy & Security → Automation → enable Mail under Deckard |
 | `Calendar access denied` / `Reminders access denied` | TCC not granted | Trigger a tool call to surface the prompt; or System Settings → Privacy & Security → Calendar / Reminders |
-| `HTTP 401` from a client that should work | Stale token / wrong header | `icloud-bridge auth show <label>` to re-fetch; verify `Authorization: Bearer <secret>` header |
+| `HTTP 401` from a client that should work | Stale token / wrong header | `deckard auth show <label>` to re-fetch; verify `Authorization: Bearer <secret>` header |
 | `HTTP 400 Session already initialized` | SDK's stale-session bug from a prior client connection | Self-heal handles this; if you see it, transport recreate failed — check stderr for `Failed to recreate transport`, `make restart` is the fallback |
-| Tailscale listener never starts | `tailscale` CLI not in PATH or not logged in | `which tailscale && tailscale status`; install or `tailscale up`. Use `icloud-bridge tailscale status` to see what the daemon sees. |
-| Tailnet request returns 403 with no audit row | Peer not in `[tailscale] allowed_peers` / `allowed_users` | `icloud-bridge tailscale whois <ip>` shows the resolved peer + allowlist decision. Add the peer or user to the allowlist; `make restart`. |
+| Tailscale listener never starts | `tailscale` CLI not in PATH or not logged in | `which tailscale && tailscale status`; install or `tailscale up`. Use `deckard tailscale status` to see what the daemon sees. |
+| Tailnet request returns 403 with no audit row | Peer not in `[tailscale] allowed_peers` / `allowed_users` | `deckard tailscale whois <ip>` shows the resolved peer + allowlist decision. Add the peer or user to the allowlist; `make restart`. |
 | Approval dialog never appears, audits as `timeout` after 60s | Apple Events → System Events not granted, or first call after rebuild needs the prompt | Trigger the call once and click Allow on the System Events Automation prompt. Inspect via Settings → Permissions in the menubar UI. Persists across rebuilds because the bridge is codesigned. |
-| Reminders calls hang for hours then time out | EventKit framework call wedges in non-UI LaunchAgent context | Already mitigated: `RemindersAdapter` races the call against a 10s timeout via `CheckedContinuation` + DispatchQueue. If you see this happening after deploy, run `tccutil reset Reminders com.lapidakis.icloud-bridge` to force a fresh consent. |
+| Reminders calls hang for hours then time out | EventKit framework call wedges in non-UI LaunchAgent context | Already mitigated: `RemindersAdapter` races the call against a 10s timeout via `CheckedContinuation` + DispatchQueue. If you see this happening after deploy, run `tccutil reset Reminders com.lapidakis.deckard` to force a fresh consent. |
 | `voice_memo.read_audio` errors with placeholder hint | iCloud Optimize Storage offloaded the file | Open the recording in Voice Memos.app once to download; it stays cached |
 | `drive.read` errors with placeholder | Same `.icloud` stub issue for Drive | `drive.materialize {path: "..."}` (sync) or set `auto_materialize: true` in the read call |
 | `tools/list` returns fewer tools than I added | Working as designed — tools/list filters by ACL | Either grant the tool in this token's profile, or check via curl with a different token |
@@ -166,29 +166,29 @@ If something gets really tangled:
 
 ```sh
 # Stop the daemon
-launchctl bootout gui/$(id -u)/com.lapidakis.icloud-bridge
+launchctl bootout gui/$(id -u)/com.lapidakis.deckard
 
 # Optional: blow away config + tokens (you'll lose all auth)
-rm -i ~/Library/Application\ Support/iCloud-Bridge/config.toml
-rm -i ~/Library/Application\ Support/iCloud-Bridge/tokens.toml
-rm -i ~/Library/Logs/iCloud-Bridge/audit.jsonl
+rm -i ~/Library/Application\ Support/Deckard/config.toml
+rm -i ~/Library/Application\ Support/Deckard/tokens.toml
+rm -i ~/Library/Logs/Deckard/audit.jsonl
 
 # Reinitialize
-.build/debug/icloud-bridge config init
-.build/debug/icloud-bridge install --force
+.build/debug/deckard config init
+.build/debug/deckard install --force
 ```
 
 ## Uninstall
 
 ```sh
-.build/debug/icloud-bridge uninstall          # removes LaunchAgent
-rm -rf ~/Library/Application\ Support/iCloud-Bridge
-rm -rf ~/Library/Logs/iCloud-Bridge
+.build/debug/deckard uninstall          # removes LaunchAgent
+rm -rf ~/Library/Application\ Support/Deckard
+rm -rf ~/Library/Logs/Deckard
 
 # Optional: revoke TCC grants
-tccutil reset AppleEvents com.lapidakis.icloud-bridge
-tccutil reset Calendar com.lapidakis.icloud-bridge
-tccutil reset Reminders com.lapidakis.icloud-bridge
+tccutil reset AppleEvents com.lapidakis.deckard
+tccutil reset Calendar com.lapidakis.deckard
+tccutil reset Reminders com.lapidakis.deckard
 ```
 
 The repo + `.build/` directory can be deleted normally afterward.

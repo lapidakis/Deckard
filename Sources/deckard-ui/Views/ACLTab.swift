@@ -3,7 +3,7 @@ import BridgeConfig
 
 /// Read-only display of the current ACL (global + profiles). Editing lands
 /// in the next pass — for now, edit `config.toml` directly and bounce the
-/// daemon (or use `icloud-bridge` CLI).
+/// daemon (or use `deckard` CLI).
 struct ACLTab: View {
     struct ToolRow: Identifiable, Hashable {
         var id: String { tool }

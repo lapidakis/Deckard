@@ -12,7 +12,7 @@ struct WelcomeStep: View {
             Image(systemName: "icloud.fill")
                 .font(.system(size: 48, weight: .light))
                 .foregroundStyle(.tint)
-            Text("Welcome to iCloud-Bridge")
+            Text("Welcome to Deckard")
                 .font(.title.bold())
             Text("This Mac is about to become an MCP server that exposes Mail, Calendar, iCloud Drive, Voice Memos, and Reminders to AI agents — local or remote.")
                 .foregroundStyle(.secondary)
@@ -57,18 +57,18 @@ struct DaemonStep: View {
                         label: "LaunchAgent installed",
                         detail: plistInstalled
                             ? OnboardingState.launchAgentPlistPath
-                            : "Run `icloud-bridge install` from the terminal"
+                            : "Run `deckard install` from the terminal"
                     )
                     if !plistInstalled {
                         HStack {
-                            Text("icloud-bridge install")
+                            Text("deckard install")
                                 .font(.callout.monospaced())
                                 .padding(6)
                                 .background(Color.gray.opacity(0.15))
                                 .clipShape(RoundedRectangle(cornerRadius: 4))
                             Button("Copy") {
                                 NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString("icloud-bridge install", forType: .string)
+                                NSPasteboard.general.setString("deckard install", forType: .string)
                             }
                             .buttonStyle(.borderless)
                             Spacer()
@@ -150,7 +150,7 @@ struct TokenStep: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("\(existingTokenCount) token\(existingTokenCount == 1 ? "" : "s") already configured")
                         .font(.headline)
-                    Text("Use the Settings → Tokens tab (or the `icloud-bridge auth` CLI) to view, rotate, or add more.")
+                    Text("Use the Settings → Tokens tab (or the `deckard auth` CLI) to view, rotate, or add more.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -321,7 +321,7 @@ struct ConnectStep: View {
                     } else {
                         fieldRow(
                             label: "Bearer Token",
-                            value: "Use a token from the Tokens tab — `icloud-bridge auth show <label>` prints the secret.",
+                            value: "Use a token from the Tokens tab — `deckard auth show <label>` prints the secret.",
                             mono: false
                         )
                     }
@@ -344,7 +344,7 @@ struct ConnectStep: View {
 
     private var claudeCodeSnippet: String {
         let token = onboarding.generatedTokenSecret ?? "<paste-bearer-token-here>"
-        return "claude mcp add --transport http icloud-bridge \(url) --header \"Authorization: Bearer \(token)\""
+        return "claude mcp add --transport http deckard \(url) --header \"Authorization: Bearer \(token)\""
     }
 
     private func fieldRow(label: String, value: String, mono: Bool = true) -> some View {

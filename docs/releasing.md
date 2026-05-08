@@ -1,6 +1,6 @@
 # Releasing
 
-Maintainer-facing checklist for cutting a release. End users install from the [Releases page](https://github.com/lapidakis/iCloud-Bridge/releases) — they don't need this doc.
+Maintainer-facing checklist for cutting a release. End users install from the [Releases page](https://github.com/lapidakis/Deckard/releases) — they don't need this doc.
 
 ## One-time setup (per maintainer / fork)
 
@@ -26,8 +26,8 @@ base64 -i ~/Downloads/cert.p12 | pbcopy
 ```
 
 Optional overrides (not usually needed):
-- `ICB_BUNDLE_ID` — defaults to `com.lapidakis.icloud-bridge`
-- `ICB_UI_BUNDLE_ID` — defaults to `com.lapidakis.icloud-bridge.ui`
+- `DECKARD_BUNDLE_ID` — defaults to `com.lapidakis.deckard`
+- `DECKARD_UI_BUNDLE_ID` — defaults to `com.lapidakis.deckard.ui`
 
 If you fork the repo and use different bundle ids, set both.
 
@@ -86,7 +86,7 @@ Download the DMG from the Releases page, mount it, drag the app to Applications,
 
 ```sh
 # Verify the SHA-256 against the sidecar:
-shasum -a 256 -c iCloud-Bridge-v1.0.0-beta.2.dmg.sha256
+shasum -a 256 -c Deckard-v1.0.0-beta.2.dmg.sha256
 ```
 
 ### 5. Mark stable when ready
@@ -128,7 +128,7 @@ swift build -c release
 ./scripts/build-ui-app.sh release
 
 # 2. Notarize the daemon
-ditto -c -k --keepParent .build/release/icloud-bridge /tmp/daemon.zip
+ditto -c -k --keepParent .build/release/deckard /tmp/daemon.zip
 xcrun notarytool submit /tmp/daemon.zip \
     --apple-id you@example.com \
     --team-id NZL3HS8AH4 \
@@ -136,9 +136,9 @@ xcrun notarytool submit /tmp/daemon.zip \
     --wait
 
 # 3. Notarize the .app
-ditto -c -k --keepParent .build/release/iCloud-Bridge.app /tmp/app.zip
+ditto -c -k --keepParent .build/release/Deckard.app /tmp/app.zip
 xcrun notarytool submit /tmp/app.zip --apple-id ... --team-id ... --password ... --wait
-xcrun stapler staple .build/release/iCloud-Bridge.app
+xcrun stapler staple .build/release/Deckard.app
 
 # 4. Package DMG, attach to a release manually via `gh release create`
 ```
