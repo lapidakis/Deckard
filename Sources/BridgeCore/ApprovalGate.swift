@@ -62,39 +62,65 @@ public struct OsaScriptApprovalGate: ApprovalGate {
 
     public func request(_ req: ApprovalRequest) async -> ApprovalDecision {
         let body = formatDialog(req: req)
+        // `tell application "System Events" to activate` is the difference
+        // between a dialog the user actually sees and a phantom dialog that
+        // lands on a hidden Space (or behind a fullscreen app) where it ages
+        // out at the `giving up after` timeout without ever being clicked.
+        // Observed on macOS 26: bare `display dialog` from a LaunchAgent's
+        // osascript subprocess often appears on whichever Space the daemon
+        // first launched on, not the user's current one. Routing through
+        // System Events forces the dialog into the active Space and brings
+        // its window to the front. The daemon already holds gui-domain
+        // window-server access, so this only fails the first time when TCC
+        // hasn't yet granted Automation → System Events to icloud-bridge.
         let script = """
-        try
-            display dialog "\(applescriptEscape(body))" \
-                with title "iCloud-Bridge approval" \
-                buttons {"Deny", "Allow"} \
-                default button "Deny" \
-                cancel button "Deny" \
-                with icon caution \
-                giving up after \(timeoutSeconds)
-            return button returned of result
-        on error errMsg number errNum
-            return "ERROR:" & errNum & ":" & errMsg
-        end try
+        tell application "System Events"
+            activate
+            try
+                set theResult to display dialog "\(applescriptEscape(body))" \
+                    with title "iCloud-Bridge approval" \
+                    buttons {"Deny", "Allow"} \
+                    default button "Deny" \
+                    cancel button "Deny" \
+                    with icon caution \
+                    giving up after \(timeoutSeconds)
+                if gave up of theResult then
+                    return "TIMEOUT"
+                end if
+                return button returned of theResult
+            on error errMsg number errNum
+                return "ERROR:" & errNum & ":" & errMsg
+            end try
+        end tell
         """
 
+        logger.info("Approval prompt opening for tool=\(req.tool) caller=\(req.caller.auditCaller) timeout=\(timeoutSeconds)s")
         let result = await runOsa(script: script)
         switch result {
         case .stdout(let text):
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed == "Allow" {
+            switch trimmed {
+            case "Allow":
+                logger.info("Approval granted for tool=\(req.tool)")
                 return .approved
-            }
-            if trimmed == "Deny" {
+            case "Deny":
+                logger.info("Approval denied for tool=\(req.tool)")
                 return .denied
-            }
-            if trimmed == "" {
+            case "TIMEOUT", "":
+                // Empty fallback covers the legacy `gave up of result` path
+                // (different macOS versions emit slightly different shapes).
                 logger.info("Approval timed out for tool=\(req.tool)")
                 return .timeout
+            default:
+                if trimmed.hasPrefix("ERROR:") {
+                    logger.error("osascript approval errored for tool=\(req.tool): \(trimmed)")
+                } else {
+                    logger.warning("Approval gate: unexpected output '\(trimmed)' for tool=\(req.tool) — denying")
+                }
+                return .denied
             }
-            logger.warning("Approval gate: unexpected output '\(trimmed)' — denying")
-            return .denied
         case .failed(let stderr):
-            logger.error("osascript approval failed: \(stderr)")
+            logger.error("osascript approval failed for tool=\(req.tool): \(stderr)")
             return .denied
         }
     }
