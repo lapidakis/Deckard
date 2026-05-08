@@ -150,13 +150,19 @@ struct UpdateEventTool: ToolHandler, ApprovalSummarizing {
     func approvalSummary(for arguments: [String: Value]?) -> [String] {
         var lines: [String] = ["Update event"]
         if let id = arguments?["event_id"]?.stringValue { lines.append("Event: \(id)") }
-        let changes: [(String, String)] = [
-            ("title", arguments?["title"]?.stringValue ?? ""),
-            ("start", arguments?["start"]?.stringValue ?? ""),
-            ("end", arguments?["end"]?.stringValue ?? ""),
-            ("location", arguments?["location"]?.stringValue ?? ""),
-            ("notes", arguments?["notes"]?.stringValue ?? ""),
-        ].filter { !$1.isEmpty }
+        // Build the tuple list element-by-element rather than as a single
+        // literal — Swift 6's type checker on Xcode 16 / macos-15 hits a
+        // "compiler is unable to type-check this expression in reasonable
+        // time" cliff on a 5-entry [(String, String)] literal where every
+        // value is a chained `arguments?[...]?.stringValue ?? ""`. Splitting
+        // dodges the inference cost without changing the result.
+        var changes: [(String, String)] = []
+        for key in ["title", "start", "end", "location", "notes"] {
+            let value = arguments?[key]?.stringValue ?? ""
+            if !value.isEmpty {
+                changes.append((key, value))
+            }
+        }
         for (k, v) in changes {
             lines.append("\(k) → \(String(v.prefix(200)))")
         }

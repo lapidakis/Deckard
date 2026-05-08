@@ -41,19 +41,38 @@ public actor CalendarAdapter {
     }
 
     /// Lazily request access on first use. Subsequent calls are no-ops.
+    ///
+    /// Uses the completion-handler API rather than the @MainActor-isolated
+    /// async overload — Swift 6's strict sendable checker on macos-15 / Xcode
+    /// 16 rejects `await store.requestFullAccessToEvents()` from within an
+    /// actor with "sending 'self'-isolated 'self.store' to nonisolated
+    /// instance method risks causing data races." The completion-handler
+    /// variant doesn't trip the check, and as a bonus we get the same
+    /// continuation pattern the Reminders adapter already uses for its
+    /// 10-second framework-call timeout.
     private func ensureAccess() async throws {
         if accessGranted { return }
+        let store = self.store
+        let granted: Bool
         do {
-            let granted = try await store.requestFullAccessToEvents()
-            if !granted {
-                throw CalendarError.accessDenied("user denied or system blocked Full Calendar Access")
+            granted = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Bool, Error>) in
+                store.requestFullAccessToEvents { granted, error in
+                    if let error = error {
+                        cont.resume(throwing: error)
+                    } else {
+                        cont.resume(returning: granted)
+                    }
+                }
             }
-            accessGranted = true
         } catch let err as CalendarError {
             throw err
         } catch {
             throw CalendarError.accessDenied("\(error)")
         }
+        if !granted {
+            throw CalendarError.accessDenied("user denied or system blocked Full Calendar Access")
+        }
+        accessGranted = true
     }
 
     // MARK: - Read
