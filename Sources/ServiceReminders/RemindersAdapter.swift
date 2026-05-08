@@ -38,12 +38,10 @@ public actor RemindersAdapter {
     /// then fails with "Transport already started".
     private var accessTask: Task<Bool, Error>?
 
-    /// Hard ceiling on `requestFullAccessToReminders`. Apple's async wrapper
-    /// does not expose a timeout; in some macOS states (LaunchAgent without
-    /// foreground UI, TCC state mismatch after re-sign) it never resumes.
-    /// 10s is enough for a real prompt-and-grant flow to complete; longer
-    /// than that, treat as denied so the agent gets a real error instead of
-    /// dragging the whole MCP session into stale-session land.
+    /// Hard ceiling on `requestFullAccessToReminders`. Apple's framework call
+    /// can wedge indefinitely in non-UI LaunchAgent contexts when TCC needs
+    /// to revalidate the binary signature (observed: 11+ hour hang after a
+    /// re-codesign). 10s is enough for a real prompt-and-grant flow.
     private static let accessRequestTimeoutSec: UInt64 = 10
 
     public init(logger: Logger = Logger(label: "bridge.reminders")) {
@@ -76,37 +74,43 @@ public actor RemindersAdapter {
         }
     }
 
-    /// Race the framework call against a timeout. Both subtasks are awaited
-    /// from this actor, so they capture `self` (Sendable) rather than the
-    /// non-Sendable `EKEventStore`. In normal grant-already-cached operation
-    /// the framework call resolves in single-digit milliseconds; the timeout
-    /// only fires when something is genuinely wrong (TCC state mismatch
-    /// after re-codesign, MainActor wedged, etc.).
     private func makeAccessTask() -> Task<Bool, Error> {
         let timeoutNs = Self.accessRequestTimeoutSec * 1_000_000_000
         return Task<Bool, Error> { [weak self] in
             guard let self else { return false }
-            return try await withThrowingTaskGroup(of: Bool.self) { group in
-                group.addTask { [weak self] in
-                    guard let self else { return false }
-                    return try await self.callRequestAccess()
-                }
-                group.addTask {
-                    try await Task.sleep(nanoseconds: timeoutNs)
-                    throw AdapterError.accessDenied("Reminders access request timed out — open System Settings → Privacy & Security → Reminders, enable icloud-bridge, then retry")
-                }
-                defer { group.cancelAll() }
-                return try await group.next()!
-            }
+            return try await self.performAccessRequest(timeoutNs: timeoutNs)
         }
     }
 
-    private func callRequestAccess() async throws -> Bool {
-        do {
-            return try await store.requestFullAccessToReminders()
-        } catch {
-            logger.error("requestFullAccessToReminders threw: \(error)")
-            throw error
+    /// Race the EventKit completion-handler API against a Dispatch timeout via
+    /// a single continuation guarded by a resume latch. We deliberately do NOT
+    /// use `withThrowingTaskGroup` here: TaskGroup waits for *all* child tasks
+    /// to terminate before returning, and `cancelAll()` cannot stop a wedged
+    /// `@MainActor`-isolated framework call. With a continuation, whichever
+    /// signal fires first (callback or timeout) resumes the caller and the
+    /// other path becomes a no-op — even if EventKit's internal request
+    /// remains stuck, the bridge's request-handling tasks unblock on time.
+    private func performAccessRequest(timeoutNs: UInt64) async throws -> Bool {
+        let store = self.store
+        let logger = self.logger
+        let latch = ResumeLatch()
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Bool, Error>) in
+            store.requestFullAccessToReminders { granted, error in
+                guard latch.tryResume() else { return }
+                if let error = error {
+                    logger.error("requestFullAccessToReminders error: \(error)")
+                    cont.resume(throwing: error)
+                } else {
+                    cont.resume(returning: granted)
+                }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(timeoutNs))) {
+                guard latch.tryResume() else { return }
+                logger.error("Reminders access request timed out after \(timeoutNs / 1_000_000_000)s")
+                cont.resume(throwing: AdapterError.accessDenied(
+                    "Reminders access request timed out — open System Settings → Privacy & Security → Reminders, enable icloud-bridge, then retry"
+                ))
+            }
         }
     }
 
@@ -406,5 +410,20 @@ public actor RemindersAdapter {
         let g = Int(round(comps[1] * 255))
         let b = Int(round(comps[2] * 255))
         return String(format: "#%02X%02X%02X", r, g, b)
+    }
+}
+
+/// Single-shot resume latch shared between the EventKit completion handler
+/// and the timeout. `tryResume()` returns true exactly once; subsequent calls
+/// from the loser of the race become no-ops, which preserves the
+/// CheckedContinuation single-resume invariant.
+private final class ResumeLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var consumed = false
+    func tryResume() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if consumed { return false }
+        consumed = true
+        return true
     }
 }

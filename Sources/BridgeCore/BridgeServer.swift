@@ -144,12 +144,24 @@ public struct BridgeServer: Sendable {
                             port: config.tailscale.port,
                             transportLabel: .tailnet
                         )
+                        let allowlist = TailscaleAllowlist(
+                            allowedPeers: config.tailscale.allowedPeers,
+                            allowedUsers: config.tailscale.allowedUsers
+                        )
+                        let enforcement = HTTPRunner.TailscaleEnforcement(
+                            probe: probe, allowlist: allowlist
+                        )
                         let runner = HTTPRunner(
                             bind: bind, sessions: sessions,
-                            requireToken: config.auth.requireToken, logger: logger
+                            requireToken: config.auth.requireToken,
+                            tailscale: enforcement, logger: logger
                         )
                         group.addTask { try await runner.run() }
-                        logger.info("Tailscale listener: \(ip):\(config.tailscale.port)")
+                        if allowlist.isOpen {
+                            logger.warning("Tailscale listener \(ip):\(config.tailscale.port) is OPEN — every tailnet peer with a valid bearer token can reach this bridge. Set [tailscale] allowed_peers or allowed_users to restrict.")
+                        } else {
+                            logger.info("Tailscale listener: \(ip):\(config.tailscale.port) peers=\(allowlist.allowedPeers) users=\(allowlist.allowedUsers)")
+                        }
                     } catch {
                         logger.error("Tailscale enabled but probe failed — skipping tailnet listener: \(error)")
                     }

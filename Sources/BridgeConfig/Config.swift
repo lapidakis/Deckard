@@ -303,15 +303,40 @@ public struct ACLConfig: Codable, Sendable, Equatable {
     }
 }
 
+/// How a profile handles tools whose ACL decision is `.approve`. The
+/// approval gate (osascript dialog on the host) only makes sense when the
+/// operator is at the Mac. Remote tokens going over Tailscale need a way to
+/// say "this token is trusted; auto-approve" instead of waiting on a popup
+/// no one will see.
+public enum InteractiveApprovalMode: String, Codable, Sendable, Equatable {
+    /// Auto-approve any `.approve` outcome. The audit row records
+    /// `decision="approved_by_policy"` so post-hoc review can tell apart a
+    /// user-clicked approval from a policy-waived one.
+    case never
+    /// Invoke the approval gate for every `.approve` outcome. Default; matches
+    /// the original behavior so existing configs aren't silently relaxed.
+    case always
+}
+
 /// One ACL profile — a complete (default + tools) policy bound to a token.
 /// Same shape as `ACLConfig` minus the `profiles` map (no nesting).
 public struct ProfileConfig: Codable, Sendable, Equatable {
     public var `default`: ACLDecision
     public var tools: [String: ACLDecision]
+    /// How this profile handles tools whose ACL decision is `.approve`.
+    /// Defaults to `.always` (route through the host's approval gate). Set to
+    /// `.never` for trusted remote tokens where the operator can't see the
+    /// host popup.
+    public var interactiveApproval: InteractiveApprovalMode
 
-    public init(default: ACLDecision = .deny, tools: [String: ACLDecision] = [:]) {
+    public init(
+        default: ACLDecision = .deny,
+        tools: [String: ACLDecision] = [:],
+        interactiveApproval: InteractiveApprovalMode = .always
+    ) {
         self.default = `default`
         self.tools = tools
+        self.interactiveApproval = interactiveApproval
     }
 
     public func decision(for tool: String) -> ACLDecision {
@@ -320,6 +345,7 @@ public struct ProfileConfig: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case `default`, tools
+        case interactiveApproval = "interactive_approval"
     }
 
     public init(from decoder: Decoder) throws {
@@ -327,5 +353,6 @@ public struct ProfileConfig: Codable, Sendable, Equatable {
         let d = ProfileConfig()
         self.default = try c.decodeIfPresent(ACLDecision.self, forKey: .default) ?? d.default
         self.tools = try c.decodeIfPresent([String: ACLDecision].self, forKey: .tools) ?? d.tools
+        self.interactiveApproval = try c.decodeIfPresent(InteractiveApprovalMode.self, forKey: .interactiveApproval) ?? d.interactiveApproval
     }
 }

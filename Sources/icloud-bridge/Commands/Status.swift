@@ -22,7 +22,14 @@ struct Status: AsyncParsableCommand {
             let cfg = try store.load()
             print("")
             print("  loopback:  \(cfg.server.bindLoopback ? "127.0.0.1:\(cfg.server.loopbackPort)" : "off")")
-            print("  tailnet:   \(cfg.tailscale.enabled ? "on (port \(cfg.tailscale.port))" : "off")")
+            if cfg.tailscale.enabled {
+                let peers = cfg.tailscale.allowedPeers.isEmpty ? "<open>" : cfg.tailscale.allowedPeers.joined(separator: ",")
+                let users = cfg.tailscale.allowedUsers.isEmpty ? "<open>" : cfg.tailscale.allowedUsers.joined(separator: ",")
+                print("  tailnet:   on (port \(cfg.tailscale.port), peers=\(peers), users=\(users))")
+                print("             use `icloud-bridge tailscale status` for probe details")
+            } else {
+                print("  tailnet:   off")
+            }
             print("  auth:      \(cfg.auth.requireToken ? "bearer required" : "OPEN — no token check")")
             print("  acl:       default=\(cfg.acl.default.rawValue), \(cfg.acl.tools.count) overrides")
         }

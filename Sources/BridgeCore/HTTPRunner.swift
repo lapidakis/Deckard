@@ -2,6 +2,7 @@ import Foundation
 import Logging
 import Hummingbird
 import HTTPTypes
+import NIOCore
 import MCP
 import BridgeAuth
 import BridgeConfig
@@ -25,20 +26,36 @@ public struct HTTPRunner: Sendable {
         }
     }
 
+    /// Bundles the tailnet enforcement policy a listener applies.
+    /// Loopback runners pass `nil` here; the tailnet runner gets a populated
+    /// instance so it can resolve the source IP to a peer name and reject
+    /// non-allowlisted hosts before the bearer token is consulted.
+    public struct TailscaleEnforcement: Sendable {
+        public let probe: TailscaleProbe
+        public let allowlist: TailscaleAllowlist
+        public init(probe: TailscaleProbe, allowlist: TailscaleAllowlist) {
+            self.probe = probe
+            self.allowlist = allowlist
+        }
+    }
+
     private let bind: Bind
     private let sessions: TokenSessions
     private let requireToken: Bool
+    private let tailscale: TailscaleEnforcement?
     private let logger: Logger
 
     public init(
         bind: Bind,
         sessions: TokenSessions,
         requireToken: Bool,
+        tailscale: TailscaleEnforcement? = nil,
         logger: Logger = Logger(label: "bridge.http")
     ) {
         self.bind = bind
         self.sessions = sessions
         self.requireToken = requireToken
+        self.tailscale = tailscale
         self.logger = logger
     }
 
@@ -46,16 +63,27 @@ public struct HTTPRunner: Sendable {
         let runnerLogger = logger
         let sessions = self.sessions
         let requireToken = self.requireToken
+        let bind = self.bind
+        let tailscale = self.tailscale
 
-        let router = Router()
+        let router = Router(context: PeerAwareRequestContext.self)
         router.on("/mcp", method: .post) { req, ctx -> Response in
-            try await Self.handle(req: req, ctx: ctx, sessions: sessions, requireToken: requireToken, logger: runnerLogger)
+            try await Self.handle(
+                req: req, ctx: ctx, bind: bind, sessions: sessions,
+                requireToken: requireToken, tailscale: tailscale, logger: runnerLogger
+            )
         }
         router.on("/mcp", method: .get) { req, ctx -> Response in
-            try await Self.handle(req: req, ctx: ctx, sessions: sessions, requireToken: requireToken, logger: runnerLogger)
+            try await Self.handle(
+                req: req, ctx: ctx, bind: bind, sessions: sessions,
+                requireToken: requireToken, tailscale: tailscale, logger: runnerLogger
+            )
         }
         router.on("/mcp", method: .delete) { req, ctx -> Response in
-            try await Self.handle(req: req, ctx: ctx, sessions: sessions, requireToken: requireToken, logger: runnerLogger)
+            try await Self.handle(
+                req: req, ctx: ctx, bind: bind, sessions: sessions,
+                requireToken: requireToken, tailscale: tailscale, logger: runnerLogger
+            )
         }
 
         // Catch-all for unrouted paths (OAuth discovery probes, etc.).
@@ -73,18 +101,49 @@ public struct HTTPRunner: Sendable {
             ),
             logger: logger
         )
-        logger.info("HTTP server binding \(bind.host):\(bind.port) (tokens=\(sessions.count))")
+        logger.info("HTTP server binding \(bind.host):\(bind.port) transport=\(bind.transportLabel.rawValue) tokens=\(sessions.count)\(tailscale.map { _ in " tailscale=enforced" } ?? "")")
         try await app.runService()
     }
 
     private static func handle(
         req: Request,
-        ctx: BasicRequestContext,
+        ctx: PeerAwareRequestContext,
+        bind: Bind,
         sessions: TokenSessions,
         requireToken: Bool,
+        tailscale: TailscaleEnforcement?,
         logger: Logger
     ) async throws -> Response {
+        let remoteIP = ctx.remoteAddress?.ipAddress
+
+        // Tailnet listener: enforce peer allowlist BEFORE bearer auth so a
+        // non-allowlisted peer never even gets to attempt token auth. Failed
+        // whois is treated as deny when an allowlist is configured (no IP →
+        // can't prove allowed); when both lists are empty (`isOpen`), we
+        // skip whois entirely and the bearer token is the only gate.
+        var resolvedPeer: TailscaleProbe.PeerInfo? = nil
+        if let ts = tailscale, !ts.allowlist.isOpen {
+            guard let ip = remoteIP else {
+                logger.warning("Tailnet request with no resolvable remote IP — rejecting")
+                return jsonError(status: .forbidden, message: "Cannot determine source IP")
+            }
+            let info = await ts.probe.whois(remoteIP: ip)
+            resolvedPeer = info
+            switch ts.allowlist.decide(peer: info?.hostname, user: info?.user) {
+            case .allow:
+                break
+            case .deny(let reason):
+                logger.warning("Tailnet allowlist deny: ip=\(ip) \(reason)")
+                return jsonError(status: .forbidden, message: "Forbidden: peer not in allowlist")
+            }
+        } else if let ts = tailscale, let ip = remoteIP {
+            // Open tailnet listener — still resolve peer (best-effort) so the
+            // audit row can show who connected even when no allowlist is set.
+            resolvedPeer = await ts.probe.whois(remoteIP: ip)
+        }
+
         var resolvedHolder: SessionHolder?
+        var resolvedLabel: String?
         if requireToken {
             guard let token = extractBearer(from: req.headers) else {
                 return unauthorized(reason: "missing_token", message: "Missing bearer token")
@@ -93,16 +152,18 @@ public struct HTTPRunner: Sendable {
                 return unauthorized(reason: "invalid_token", message: "Invalid bearer token")
             }
             resolvedHolder = entry.holder
+            resolvedLabel = entry.label
         } else {
             // require_token = false (rare/dev). Pick the first available
             // session holder. With no token, identity is unknowable.
             resolvedHolder = sessions.entry(for: "")?.holder
+            resolvedLabel = sessions.entry(for: "")?.label
             if resolvedHolder == nil {
                 return jsonError(status: .internalServerError, message: "No session holder configured")
             }
         }
 
-        guard let holder = resolvedHolder else {
+        guard let holder = resolvedHolder, let label = resolvedLabel else {
             return unauthorized(reason: "invalid_token", message: "Invalid bearer token")
         }
 
@@ -126,8 +187,19 @@ public struct HTTPRunner: Sendable {
             path: req.uri.path
         )
 
+        // Build the per-call AuthContext: transport reflects the listener that
+        // received this request, identity adopts a `.tailscale(...)` flavor
+        // when whois succeeded so audit rows can attribute "ts:hermes:mike"
+        // instead of just "bearer:rocky", and remoteDescription captures the
+        // raw IP for forensic use.
+        let perCallAuth = makePerCallAuth(
+            bind: bind, label: label, remoteIP: remoteIP, peer: resolvedPeer
+        )
+
         let transport = await holder.currentTransport()
-        var mcpResponse = await transport.handleRequest(mcpRequest)
+        var mcpResponse = await BridgeCallContext.$override.withValue(perCallAuth) {
+            await transport.handleRequest(mcpRequest)
+        }
 
         // Self-heal: the SDK's StatefulHTTPServerTransport keeps a session in
         // memory across MCP-client reconnects and rejects fresh initialize
@@ -138,13 +210,50 @@ public struct HTTPRunner: Sendable {
             do {
                 try await holder.recreate()
                 let fresh = await holder.currentTransport()
-                mcpResponse = await fresh.handleRequest(mcpRequest)
+                mcpResponse = await BridgeCallContext.$override.withValue(perCallAuth) {
+                    await fresh.handleRequest(mcpRequest)
+                }
             } catch {
                 logger.error("Failed to recreate transport: \(error)")
             }
         }
 
         return convert(mcpResponse, logger: logger)
+    }
+
+    private static func makePerCallAuth(
+        bind: Bind,
+        label: String,
+        remoteIP: String?,
+        peer: TailscaleProbe.PeerInfo?
+    ) -> AuthContext {
+        let transport = bind.transportLabel
+        let identity: AuthContext.Identity
+        if transport == .tailnet, let peer = peer, peer.hostname != nil || peer.user != nil {
+            identity = .tailscale(peer: peer.hostname ?? peer.ip, user: peer.user)
+        } else {
+            identity = .bearer(tokenLabel: label)
+        }
+        let remoteDescription: String
+        switch transport {
+        case .tailnet:
+            if let p = peer {
+                let host = p.hostname ?? p.ip
+                let user = p.user.map { ":\($0)" } ?? ""
+                remoteDescription = "tailnet:\(host)\(user)"
+            } else {
+                remoteDescription = "tailnet:\(remoteIP ?? "?")"
+            }
+        case .loopback:
+            remoteDescription = remoteIP ?? "127.0.0.1"
+        case .stdio:
+            remoteDescription = remoteIP ?? "stdio"
+        }
+        return AuthContext(
+            transport: transport,
+            identity: identity,
+            remoteDescription: remoteDescription
+        )
     }
 
     private static func isStaleSessionError(_ response: MCP.HTTPResponse, request: MCP.HTTPRequest) -> Bool {
@@ -221,5 +330,19 @@ public struct HTTPRunner: Sendable {
         var fields = HTTPFields()
         fields.append(HTTPField(name: .contentType, value: "application/json"))
         return Response(status: .notFound, headers: fields, body: .init(byteBuffer: ByteBuffer(string: json)))
+    }
+}
+
+/// Custom Hummingbird request context that exposes the connecting peer's
+/// `SocketAddress`. Required for tailnet allowlist enforcement (we need the
+/// remote IP to run `tailscale whois`) and for richer audit-log
+/// `remoteDescription` strings on loopback as well.
+public struct PeerAwareRequestContext: Hummingbird.RequestContext, RemoteAddressRequestContext {
+    public var coreContext: CoreRequestContextStorage
+    public let remoteAddress: SocketAddress?
+
+    public init(source: ApplicationRequestContextSource) {
+        self.coreContext = .init(source: source)
+        self.remoteAddress = source.channel.remoteAddress
     }
 }

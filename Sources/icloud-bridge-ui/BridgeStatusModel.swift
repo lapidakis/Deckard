@@ -40,25 +40,35 @@ final class BridgeStatusModel: ObservableObject {
         refreshing = true
         defer { refreshing = false }
 
-        // Process state via pgrep — robust against launchctl print noise.
-        let psResult = Self.run("/bin/ps", ["-axo", "pid,command"])
-        let lines = (psResult.stdout).split(separator: "\n")
-        var foundPID: Int32? = nil
-        for line in lines where line.contains("icloud-bridge serve") && !line.contains("grep") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            let firstField = trimmed.split(separator: " ").first.map(String.init) ?? ""
-            if let p = Int32(firstField) {
-                foundPID = p
-                break
+        // Subprocess work runs off the main actor — `Process.waitUntilExit()`
+        // blocks its calling thread, and the polling Task is MainActor-isolated.
+        // Without this hop, ps + lsof every 5s would freeze MenuBarExtra clicks.
+        let snapshot = await Task.detached { () -> (pid: Int32?, portBound: Bool) in
+            // ps without `-ww` truncates the COMMAND column to the controlling
+            // tty width (defaults to 80 cols when there isn't one). The bridge's
+            // build path is ~88 chars, so the trailing `serve` gets clipped and
+            // a `contains("icloud-bridge serve")` match fails — the icon then
+            // appears slashed even when the daemon is healthy. `-ww` disables
+            // truncation; keep it.
+            let psResult = Self.run("/bin/ps", ["-axww", "-o", "pid,command"])
+            var foundPID: Int32? = nil
+            for line in psResult.stdout.split(separator: "\n")
+                where line.contains("icloud-bridge serve") && !line.contains("grep") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                let firstField = trimmed.split(separator: " ").first.map(String.init) ?? ""
+                if let p = Int32(firstField) {
+                    foundPID = p
+                    break
+                }
             }
-        }
 
-        self.pid = foundPID
-        self.isRunning = foundPID != nil
+            let lsof = Self.run("/usr/sbin/lsof", ["-nP", "-iTCP:8787", "-sTCP:LISTEN"])
+            return (foundPID, lsof.stdout.contains("icloud-br"))
+        }.value
 
-        // Port binding via lsof (cheap quick check).
-        let lsof = Self.run("/usr/sbin/lsof", ["-nP", "-iTCP:8787", "-sTCP:LISTEN"])
-        self.portBound = lsof.stdout.contains("icloud-br")
+        self.pid = snapshot.pid
+        self.isRunning = snapshot.pid != nil
+        self.portBound = snapshot.portBound
 
         // Audit log quick stats.
         let auditURL = URL(fileURLWithPath: NSString("~/Library/Logs/iCloud-Bridge/audit.jsonl").expandingTildeInPath)
@@ -81,10 +91,11 @@ final class BridgeStatusModel: ObservableObject {
     // MARK: - Control actions
 
     func start() async {
-        let r = Self.run("/bin/launchctl", [
-            "bootstrap", "gui/\(getuid())",
-            NSString("~/Library/LaunchAgents/com.lapidakis.icloud-bridge.plist").expandingTildeInPath
-        ])
+        let uid = getuid()
+        let plistPath = NSString("~/Library/LaunchAgents/com.lapidakis.icloud-bridge.plist").expandingTildeInPath
+        let r = await Task.detached {
+            Self.run("/bin/launchctl", ["bootstrap", "gui/\(uid)", plistPath])
+        }.value
         if r.exitCode != 0 {
             lastError = "launchctl bootstrap exit \(r.exitCode): \(r.stderr.trimmingCharacters(in: .whitespacesAndNewlines))"
         } else {
@@ -95,7 +106,11 @@ final class BridgeStatusModel: ObservableObject {
     }
 
     func stop() async {
-        let r = Self.run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
+        let uid = getuid()
+        let label = self.label
+        let r = await Task.detached {
+            Self.run("/bin/launchctl", ["bootout", "gui/\(uid)/\(label)"])
+        }.value
         if r.exitCode != 0 {
             lastError = "launchctl bootout exit \(r.exitCode): \(r.stderr.trimmingCharacters(in: .whitespacesAndNewlines))"
         } else {
@@ -113,13 +128,13 @@ final class BridgeStatusModel: ObservableObject {
 
     // MARK: - Helpers
 
-    struct CommandResult {
+    struct CommandResult: Sendable {
         let exitCode: Int32
         let stdout: String
         let stderr: String
     }
 
-    static func run(_ exe: String, _ args: [String]) -> CommandResult {
+    nonisolated static func run(_ exe: String, _ args: [String]) -> CommandResult {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: exe)
         proc.arguments = args
@@ -129,16 +144,54 @@ final class BridgeStatusModel: ObservableObject {
         proc.standardError = errPipe
         do {
             try proc.run()
+            // Drain both pipes concurrently *before* waiting on exit. Calling
+            // waitUntilExit() with un-drained pipes deadlocks any child whose
+            // output exceeds the kernel pipe buffer (~64KB on macOS) — the
+            // child blocks on write while we block on wait. `ps -axww` here
+            // is ~200KB on a typical machine, so this matters.
+            let outBuf = DrainBuffer()
+            let errBuf = DrainBuffer()
+            outPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                    outBuf.markDone()
+                } else {
+                    outBuf.append(chunk)
+                }
+            }
+            errPipe.fileHandleForReading.readabilityHandler = { handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                    errBuf.markDone()
+                } else {
+                    errBuf.append(chunk)
+                }
+            }
             proc.waitUntilExit()
-            let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-            let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
+            // After exit, the child's pipe ends close; readabilityHandler will
+            // fire one more time with empty data and call markDone(). Wait for
+            // that so we don't truncate the tail of output.
+            outBuf.waitDone()
+            errBuf.waitDone()
             return CommandResult(
                 exitCode: proc.terminationStatus,
-                stdout: String(data: outData, encoding: .utf8) ?? "",
-                stderr: String(data: errData, encoding: .utf8) ?? ""
+                stdout: String(data: outBuf.data, encoding: .utf8) ?? "",
+                stderr: String(data: errBuf.data, encoding: .utf8) ?? ""
             )
         } catch {
             return CommandResult(exitCode: -1, stdout: "", stderr: "\(error)")
         }
+    }
+
+    private final class DrainBuffer: @unchecked Sendable {
+        private let lock = NSLock()
+        private let done = DispatchSemaphore(value: 0)
+        private var _data = Data()
+        var data: Data { lock.lock(); defer { lock.unlock() }; return _data }
+        func append(_ d: Data) { lock.lock(); _data.append(d); lock.unlock() }
+        func markDone() { done.signal() }
+        func waitDone() { _ = done.wait(timeout: .now() + .seconds(2)) }
     }
 }

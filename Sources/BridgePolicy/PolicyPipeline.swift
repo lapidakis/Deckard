@@ -13,11 +13,16 @@ public struct PolicyPipeline: Sendable {
     private let acl: ACLEvaluator
     private let audit: AuditSink
     private let logger: Logger
+    /// Mode to use when the ACL says `.approve`. Sourced from the bound
+    /// profile; defaults to `.always` for the global (no-profile) pipeline so
+    /// behavior of legacy configs is unchanged.
+    public let interactiveApprovalMode: InteractiveApprovalMode
 
     public init(config: Config, audit: AuditSink, logger: Logger = Logger(label: "bridge.policy")) {
         self.acl = ACLEvaluator(acl: config.acl)
         self.audit = audit
         self.logger = logger
+        self.interactiveApprovalMode = .always
     }
 
     /// Build a pipeline scoped to a per-token profile. Falls back to the
@@ -25,8 +30,10 @@ public struct PolicyPipeline: Sendable {
     public init(acl: ACLConfig, profile: ProfileConfig?, audit: AuditSink, logger: Logger = Logger(label: "bridge.policy")) {
         if let profile {
             self.acl = ACLEvaluator(profile: profile)
+            self.interactiveApprovalMode = profile.interactiveApproval
         } else {
             self.acl = ACLEvaluator(acl: acl)
+            self.interactiveApprovalMode = .always
         }
         self.audit = audit
         self.logger = logger

@@ -61,8 +61,21 @@ write_allowed_prefixes = []
 |---|---|---|
 | `enabled` | `false` | Off by default. When true, daemon also binds the tailnet IPv4 reported by `tailscale ip -4`. |
 | `port` | `8787` | Port for the tailnet listener. |
-| `allowed_peers` | `[]` | Reserved for future per-peer identity (currently unused; bearer is the only check). |
-| `allowed_users` | `[]` | Same. |
+| `allowed_peers` | `[]` | Tailnet hostnames (short form, e.g. `"hermes"`) permitted to reach the bridge. Case-insensitive. Empty list with empty `allowed_users` = open to any peer with a valid bearer token. |
+| `allowed_users` | `[]` | Tailnet `LoginName`s permitted (e.g. `"mike@github"`). Case-insensitive. |
+
+When the listener boots and either list is non-empty, every incoming request runs `tailscale whois --json <source-ip>`; the resulting `(hostname, user)` pair is matched against the allowlists. **Either axis matches → allow** (so you can allow specific machines, specific accounts, or both). Both empty means "open" — the listener logs a warning and treats any tailnet peer with a valid bearer token as allowed.
+
+Failure modes — failed whois, missing remote address, etc. — are treated as **deny** when an allowlist is configured. The denied request never reaches token validation, so a non-allowlisted peer can't spend rate-limit budget against your bearer secrets.
+
+Audit rows from tailnet calls record `transport=tailnet` and (when whois succeeds) `caller=ts:<peer>:<user>` instead of `bearer:<label>`.
+
+Inspect at runtime:
+
+```sh
+icloud-bridge tailscale status        # config + probe state
+icloud-bridge tailscale whois 100.x.y.z   # resolve a tailnet IP and show allow/deny
+```
 
 ### `[auth]`
 
@@ -85,11 +98,25 @@ Profile shape (each profile is a sub-block):
 ```toml
 [acl.profiles.<name>]
 default = "deny"
+interactive_approval = "always"   # | "never"
 [acl.profiles.<name>.tools]
 "<tool-name>" = "allow"   # | "deny" | "approve"
 ```
 
 When a token references a profile that doesn't exist, the daemon falls back to the global `[acl]` (typo-safe).
+
+#### `interactive_approval`
+
+Controls what happens when a tool's ACL is `approve` for this profile.
+
+| Value | Behavior | Audit decision |
+|---|---|---|
+| `"always"` (default) | Show the host approval dialog (osascript) and wait for the operator. | `approved` / `denied` / `timeout` |
+| `"never"` | Skip the dialog and proceed. | `approved_by_policy` |
+
+Use `never` for trusted remote tokens (e.g. a daemon agent reaching the bridge over Tailscale) — the host popup is invisible to a remote operator and stalls the call until the 60s timeout. The audit row's distinct decision string keeps a clean record of which approvals were policy-waived vs. user-clicked.
+
+The default `always` preserves prior behavior for any profile that doesn't set the field.
 
 ### `[redaction]`
 

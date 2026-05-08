@@ -1,5 +1,23 @@
 import Foundation
 
+/// Per-request override for the AuthContext bound to a SessionHolder at boot.
+///
+/// HTTP listeners (loopback + tailnet) share a single MCP `Server` per bearer
+/// token; the boot-time `AuthContext` carries the token label but not which
+/// listener carried the call or who the remote peer was. The runner sets this
+/// TaskLocal around `transport.handleRequest`, and `MCPHostBuilder.dispatch`
+/// reads it when building the audit row — so a tailnet call from `hermes`
+/// shows up as `transport=tailnet caller=ts:hermes:mike@github` instead of
+/// the static `transport=loopback caller=bearer:rocky` baked in at boot.
+///
+/// Structured `Task { ... }` inherits TaskLocals from the spawning context,
+/// which covers the SDK's transport handling. If a future SDK release switches
+/// to `Task.detached`, this propagation breaks silently — write a regression
+/// test if you change the wiring.
+public enum BridgeCallContext {
+    @TaskLocal public static var override: AuthContext?
+}
+
 /// Identifies the caller making an MCP request. Populated by the auth layer
 /// before the request reaches the policy pipeline.
 public struct AuthContext: Sendable, Equatable {

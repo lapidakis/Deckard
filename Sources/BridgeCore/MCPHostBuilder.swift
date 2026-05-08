@@ -2,6 +2,7 @@ import Foundation
 import Logging
 import MCP
 import BridgeAuth
+import BridgeConfig
 import BridgePolicy
 
 /// Builds a configured MCP `Server` and registers tools through the policy pipeline.
@@ -89,7 +90,12 @@ public struct MCPHostBuilder: Sendable {
         logger: Logger
     ) async -> CallTool.Result {
         let argKeys = params.arguments.map { Array($0.keys) } ?? []
-        let request = PolicyRequest(auth: auth, tool: params.name, argKeys: argKeys)
+        // BridgeCallContext.override lets HTTP listeners attach per-call
+        // transport+peer info on top of the SessionHolder's static auth (which
+        // only knows the bearer-token label). When unset (e.g. stdio), fall
+        // back to the bound auth.
+        let effectiveAuth = BridgeCallContext.override ?? auth
+        let request = PolicyRequest(auth: effectiveAuth, tool: params.name, argKeys: argKeys)
 
         guard let handler = handlers[params.name] else {
             // Audit-log unknown tool calls before short-circuiting. Return the
@@ -107,19 +113,30 @@ public struct MCPHostBuilder: Sendable {
         case .deny(let reason):
             return CallTool.Result(content: [.text(text: reason, annotations: nil, _meta: nil)], isError: true)
         case .requireApproval(let reason):
-            let summary = handler.approvalSummary(for: params.arguments)
-            let decision = await approval.request(ApprovalRequest(
-                tool: params.name, caller: auth, reason: reason, summary: summary
-            ))
-            switch decision {
-            case .approved:
-                await policy.recordApprovalDecision(request, decision: "approved")
-            case .denied:
-                await policy.recordApprovalDecision(request, decision: "denied")
-                return CallTool.Result(content: [.text(text: "Action denied by user.", annotations: nil, _meta: nil)], isError: true)
-            case .timeout:
-                await policy.recordApprovalDecision(request, decision: "timeout")
-                return CallTool.Result(content: [.text(text: "Approval prompt timed out.", annotations: nil, _meta: nil)], isError: true)
+            // Per-token policy controls whether the approval gate runs at all.
+            // Trusted remote tokens (e.g. Tailnet daemon agents) set
+            // `interactive_approval = "never"` so .approve outcomes don't wait
+            // on a host popup the operator can't see. The audit row uses a
+            // distinct decision string so post-hoc review can tell apart
+            // user-clicked approvals from policy-waived ones.
+            switch policy.interactiveApprovalMode {
+            case .never:
+                await policy.recordApprovalDecision(request, decision: "approved_by_policy")
+            case .always:
+                let summary = handler.approvalSummary(for: params.arguments)
+                let decision = await approval.request(ApprovalRequest(
+                    tool: params.name, caller: effectiveAuth, reason: reason, summary: summary
+                ))
+                switch decision {
+                case .approved:
+                    await policy.recordApprovalDecision(request, decision: "approved")
+                case .denied:
+                    await policy.recordApprovalDecision(request, decision: "denied")
+                    return CallTool.Result(content: [.text(text: "Action denied by user.", annotations: nil, _meta: nil)], isError: true)
+                case .timeout:
+                    await policy.recordApprovalDecision(request, decision: "timeout")
+                    return CallTool.Result(content: [.text(text: "Approval prompt timed out.", annotations: nil, _meta: nil)], isError: true)
+                }
             }
         case .allow:
             break
@@ -128,7 +145,7 @@ public struct MCPHostBuilder: Sendable {
         let start = ContinuousClock().now
         // Breadcrumb at start so a hung call shows up in stderr.log before the
         // audit row lands (audit only writes on completion).
-        logger.info("tool_start tool=\(params.name) caller=\(auth.auditCaller) arg_keys=\(request.argKeys.joined(separator: ","))")
+        logger.info("tool_start tool=\(params.name) caller=\(effectiveAuth.auditCaller) arg_keys=\(request.argKeys.joined(separator: ","))")
         do {
             let raw = try await handler.call(arguments: params.arguments)
             let toolMs = elapsedMs(since: start)

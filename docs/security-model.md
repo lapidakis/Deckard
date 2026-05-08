@@ -51,6 +51,7 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 - Tools with ACL = `approve` invoke `OsaScriptApprovalGate.request(_:)` before the tool handler runs.
 - Each tool implements `ApprovalSummarizing` to populate the dialog with semantically meaningful info (recipients + body preview for `mail.send`, file path + mode + size for `drive.write`, title + when + where for `calendar.create_event`).
 - Dialog is synchronous (blocks the tool call) and times out after 60 s with a tool-error. User decisions land in the audit log as `approved` / `denied` / `timeout`.
+- **Per-token gate policy.** Each profile sets `interactive_approval = "always" | "never"`. `always` (default) routes through the host dialog. `never` auto-approves and records the audit decision as `approved_by_policy`. The host popup is invisible to remote (Tailnet) operators and would otherwise stall every `.approve` call until timeout, so trusted remote tokens should set `never` and rely on the bearer-token grant itself as the trust decision.
 - Approval is plug-pointed: future menu-bar UI can register a custom gate that intercepts before falling through to osascript.
 
 ### 6. Audit log
