@@ -69,7 +69,7 @@ public actor DriveAdapter {
         limit: Int = 200,
         maxDepth: Int = DriveAdapter.defaultMaxDepth
     ) async throws -> [DriveItem] {
-        let dp = try DrivePath.resolve(relative)
+        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: dp.url.path, isDirectory: &isDir) else {
             throw DriveError.notFound(dp.relativePath)
@@ -124,7 +124,7 @@ public actor DriveAdapter {
     // MARK: - Stat
 
     public func stat(path relative: String) async throws -> DriveStat {
-        let dp = try DrivePath.resolve(relative)
+        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
         var isDir: ObjCBool = false
         let fm = FileManager.default
         let physicalExists = fm.fileExists(atPath: dp.url.path, isDirectory: &isDir)
@@ -174,7 +174,7 @@ public actor DriveAdapter {
         maxBytes: Int = DriveAdapter.defaultMaxReadBytes,
         autoMaterialize: Bool = false
     ) async throws -> DriveContent {
-        let dp = try DrivePath.resolve(relative)
+        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
         let fm = FileManager.default
         let cap = min(max(1, maxBytes), Self.absoluteMaxReadBytes)
 
@@ -233,7 +233,7 @@ public actor DriveAdapter {
         mode: String = "create",
         createDirs: Bool = false
     ) async throws -> DriveStat {
-        let dp = try DrivePath.resolve(relative)
+        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
         // Block writing to the root itself.
         guard !dp.relativePath.isEmpty else {
             throw DriveError.writeRefused("cannot write to the iCloud Drive root")
@@ -311,7 +311,7 @@ public actor DriveAdapter {
         limit: Int = 100,
         maxDepth: Int = 8
     ) async throws -> [DriveItem] {
-        let dp = try DrivePath.resolve(relative)
+        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: dp.url.path, isDirectory: &isDir),
               isDir.boolValue else {
@@ -350,6 +350,7 @@ public actor DriveAdapter {
     // MARK: - Usage
 
     public func usage() async throws -> DriveUsage {
+        try DrivePath.requireRootExists()
         let attrs = try FileManager.default.attributesOfFileSystem(forPath: DrivePath.iCloudRoot.path)
         let total = (attrs[.systemSize] as? NSNumber)?.int64Value ?? 0
         let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
@@ -360,7 +361,7 @@ public actor DriveAdapter {
     // MARK: - Materialize
 
     public func materialize(path relative: String, waitSeconds: Double = 0) async throws {
-        let dp = try DrivePath.resolve(relative)
+        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
         let result = run(["/usr/bin/brctl", "download", dp.url.path])
         if result.exitCode != 0 {
             throw DriveError.brctlFailed(exitCode: result.exitCode, output: result.stdout + result.stderr)

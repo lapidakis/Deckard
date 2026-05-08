@@ -39,6 +39,17 @@ public struct DrivePath: Sendable, Equatable {
         }
     }
 
+    /// Throws `.rootNotFound` if `~/Library/Mobile Documents/com~apple~CloudDocs`
+    /// doesn't exist on disk. Adapter methods that read/write should call this
+    /// at the top of every operation so the error is reported with a
+    /// "sign in to iCloud" hint rather than as an opaque FileManager failure.
+    public static func requireRootExists() throws {
+        let rootPath = iCloudRoot.standardizedFileURL.path
+        if !FileManager.default.fileExists(atPath: rootPath) {
+            throw DrivePathError.rootNotFound
+        }
+    }
+
     /// Resolve a caller-supplied relative path. Empty / "." / "/" all map to the root itself.
     public static func resolve(_ relative: String) throws -> DrivePath {
         let trimmed = relative.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -71,9 +82,12 @@ public struct DrivePath: Sendable, Equatable {
 
         let root = iCloudRoot
         let rootPath = root.standardizedFileURL.path
-        guard FileManager.default.fileExists(atPath: rootPath) else {
-            throw DrivePathError.rootNotFound
-        }
+        // Don't require the root to exist here — `resolve` is pure path
+        // canonicalization and is exercised by unit tests on machines
+        // (CI runners, sandboxed builders) that have never signed in to
+        // iCloud Drive. Adapter methods that touch the filesystem call
+        // `requireRootExists()` separately so the error surface stays
+        // actionable when a real user hits a missing-root situation.
 
         let targetPath: String
         let targetURL: URL
