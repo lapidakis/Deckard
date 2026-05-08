@@ -17,8 +17,10 @@ private let batchIdsLimit = 500
 
 /// Resolves `id` or `ids` into a single normalized [String]. Returns nil
 /// when both are absent or the array contains a non-stringifiable element.
-/// `oneOf` in the schema means the agent should send exactly one form;
-/// when both are present we honor `ids` (the more general case).
+/// The schema can't express "exactly one of" because the Anthropic API
+/// rejects top-level `oneOf`/`allOf`/`anyOf` in tool input_schema, so the
+/// rule lives in the field descriptions + here at runtime: when both are
+/// present we honor `ids` (the more general case).
 private func resolveIds(_ arguments: [String: Value]?) -> [String]? {
     if case .array(let arr)? = arguments?["ids"] {
         var ids: [String] = []
@@ -37,18 +39,25 @@ private func resolveIds(_ arguments: [String: Value]?) -> [String]? {
 }
 
 /// Builds the input schema shared by all three tools — extra fields are
-/// merged in by the caller. The `oneOf` over `id` vs `ids` is the entire
-/// reason the agent can use a single tool for both single and batch paths.
+/// merged in by the caller.
+///
+/// The "send `id` OR `ids`, not both" constraint cannot be expressed via
+/// `oneOf` because the Anthropic API rejects top-level `oneOf`/`allOf`/
+/// `anyOf` in tool input_schema. We enforce it at runtime (`resolveIds`
+/// returns nil when neither is set; the call handler errors on nil)
+/// and explain the rule in each field's description so the agent picks
+/// one form. Both fields are absent from `required` for that reason —
+/// the model cooperates by emitting exactly one based on the prose.
 private func writeToolSchema(extraProperties: [String: Value], extraRequired: [String]) -> Value {
     var props: [String: Value] = [
         "id": .object([
             "type": .string("string"),
-            "description": .string("Single message id (mutually exclusive with `ids`)."),
+            "description": .string("Single message id. Provide EITHER `id` OR `ids`, not both."),
         ]),
         "ids": .object([
             "type": .string("array"),
             "items": .object(["type": .string("string")]),
-            "description": .string("Up to \(batchIdsLimit) per-mailbox message ids (mutually exclusive with `id`). All ids must come from the same source (account, mailbox)."),
+            "description": .string("Up to \(batchIdsLimit) per-mailbox message ids for batch ops. Provide EITHER `id` OR `ids`, not both. All ids must share the same source (account, mailbox)."),
         ]),
         "account": .object(["type": .string("string")]),
         "mailbox": .object(["type": .string("string")]),
@@ -60,10 +69,6 @@ private func writeToolSchema(extraProperties: [String: Value], extraRequired: [S
         "type": .string("object"),
         "properties": .object(props),
         "required": .array(required),
-        "oneOf": .array([
-            .object(["required": .array([.string("id")])]),
-            .object(["required": .array([.string("ids")])]),
-        ]),
         "additionalProperties": .bool(false),
     ])
 }
