@@ -373,39 +373,6 @@ enum MailScripts {
         """
     }
 
-    /// Sets read state on a single message, scoped by (account, mailbox, id).
-    static func setReadState(account: String, mailbox: String, id: String, read: Bool) -> String {
-        let acctEsc = applescriptEscape(account)
-        let mboxEsc = applescriptEscape(mailbox)
-        let idEsc = applescriptEscape(id)
-        return """
-        set theAcct to "\(acctEsc)"
-        set theMbox to "\(mboxEsc)"
-        set theID to "\(idEsc)"
-        tell application "Mail"
-            set found to missing value
-            repeat with a in accounts
-                if (name of a as string) = theAcct then
-                    repeat with mbox in mailboxes of a
-                        if (name of mbox as string) = theMbox then
-                            try
-                                set found to (first message of mbox whose id is (theID as integer))
-                            end try
-                            exit repeat
-                        end if
-                    end repeat
-                    exit repeat
-                end if
-            end repeat
-            if found is missing value then
-                error "message_not_found"
-            end if
-            set read status of found to \(read ? "true" : "false")
-            return "ok"
-        end tell
-        """
-    }
-
     /// Batch-move messages from one (account, mailbox) to another mailbox in
     /// one AppleScript invocation. Resolves source/dest mailboxes once, then
     /// collects message references in a loop (capturing per-id resolution
@@ -580,63 +547,4 @@ enum MailScripts {
         return "{\(joined)}"
     }
 
-    /// Moves a message to a target mailbox (optionally in a different account).
-    static func moveMessage(
-        account: String, mailbox: String, id: String,
-        targetAccount: String, targetMailbox: String
-    ) -> String {
-        let acctEsc = applescriptEscape(account)
-        let mboxEsc = applescriptEscape(mailbox)
-        let idEsc = applescriptEscape(id)
-        let tgtAcctEsc = applescriptEscape(targetAccount)
-        let tgtMboxEsc = applescriptEscape(targetMailbox)
-        return """
-        set theAcct to "\(acctEsc)"
-        set theMbox to "\(mboxEsc)"
-        set theID to "\(idEsc)"
-        set tgtAcct to "\(tgtAcctEsc)"
-        set tgtMbox to "\(tgtMboxEsc)"
-        tell application "Mail"
-            set found to missing value
-            repeat with a in accounts
-                if (name of a as string) = theAcct then
-                    repeat with mbox in mailboxes of a
-                        if (name of mbox as string) = theMbox then
-                            try
-                                set found to (first message of mbox whose id is (theID as integer))
-                            end try
-                            exit repeat
-                        end if
-                    end repeat
-                    exit repeat
-                end if
-            end repeat
-            if found is missing value then
-                error "source_message_not_found"
-            end if
-            set destAccount to missing value
-            repeat with a in accounts
-                if (name of a as string) = tgtAcct then
-                    set destAccount to a
-                    exit repeat
-                end if
-            end repeat
-            if destAccount is missing value then
-                error "target_account_not_found"
-            end if
-            set destMbox to missing value
-            repeat with mbox in mailboxes of destAccount
-                if (name of mbox as string) = tgtMbox then
-                    set destMbox to mbox
-                    exit repeat
-                end if
-            end repeat
-            if destMbox is missing value then
-                error "target_mailbox_not_found"
-            end if
-            move found to destMbox
-            return "moved"
-        end tell
-        """
-    }
 }

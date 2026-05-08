@@ -22,9 +22,6 @@ public struct MailTools: ToolProvider {
             MailMarkReadTool(adapter: adapter),
             MailMarkUnreadTool(adapter: adapter),
             MailMoveMessageTool(adapter: adapter),
-            MailBatchMoveTool(adapter: adapter),
-            MailBatchMarkReadTool(adapter: adapter),
-            MailBatchMarkUnreadTool(adapter: adapter),
         ]
     }
 }

@@ -4,47 +4,118 @@ import BridgeCore
 
 /// Triage write tools — Eleanor-style "read inbox, mark/move messages."
 ///
+/// Each tool accepts EITHER a single `id` OR an `ids` array (up to
+/// `batchIdsLimit`). The bridge always routes through the batch adapter
+/// path internally, so the response shape is uniform regardless of input
+/// — `BatchResult` (`matched`, `missing`, `failed`, `elapsed_ms`).
+///
 /// `mark_read` / `mark_unread` are low-risk (toggleable state); default ACL
 /// can safely be `allow`. `move_message` can hide messages from the user's
 /// view; recommended ACL = `approve`.
+
+private let batchIdsLimit = 500
+
+/// Resolves `id` or `ids` into a single normalized [String]. Returns nil
+/// when both are absent or the array contains a non-stringifiable element.
+/// `oneOf` in the schema means the agent should send exactly one form;
+/// when both are present we honor `ids` (the more general case).
+private func resolveIds(_ arguments: [String: Value]?) -> [String]? {
+    if case .array(let arr)? = arguments?["ids"] {
+        var ids: [String] = []
+        ids.reserveCapacity(arr.count)
+        for v in arr {
+            if let s = v.stringValue { ids.append(s) }
+            else if let i = v.intValue { ids.append("\(i)") }
+            else { return nil }
+        }
+        return ids
+    }
+    if let single = arguments?["id"]?.stringValue {
+        return [single]
+    }
+    return nil
+}
+
+/// Builds the input schema shared by all three tools — extra fields are
+/// merged in by the caller. The `oneOf` over `id` vs `ids` is the entire
+/// reason the agent can use a single tool for both single and batch paths.
+private func writeToolSchema(extraProperties: [String: Value], extraRequired: [String]) -> Value {
+    var props: [String: Value] = [
+        "id": .object([
+            "type": .string("string"),
+            "description": .string("Single message id (mutually exclusive with `ids`)."),
+        ]),
+        "ids": .object([
+            "type": .string("array"),
+            "items": .object(["type": .string("string")]),
+            "description": .string("Up to \(batchIdsLimit) per-mailbox message ids (mutually exclusive with `id`). All ids must come from the same source (account, mailbox)."),
+        ]),
+        "account": .object(["type": .string("string")]),
+        "mailbox": .object(["type": .string("string")]),
+    ]
+    for (k, v) in extraProperties { props[k] = v }
+    var required: [Value] = [.string("account"), .string("mailbox")]
+    for r in extraRequired { required.append(.string(r)) }
+    return .object([
+        "type": .string("object"),
+        "properties": .object(props),
+        "required": .array(required),
+        "oneOf": .array([
+            .object(["required": .array([.string("id")])]),
+            .object(["required": .array([.string("ids")])]),
+        ]),
+        "additionalProperties": .bool(false),
+    ])
+}
+
+/// Approval summary helper — adapts the wording to whether the agent sent
+/// a single id or a batch. Keeps the dialog concise (we describe the
+/// shape of the action, not enumerate every id).
+private func describeIds(_ arguments: [String: Value]?) -> String {
+    let ids = resolveIds(arguments) ?? []
+    if ids.count == 1 { return "Message id: \(ids[0])" }
+    return "Batch: \(ids.count) message\(ids.count == 1 ? "" : "s")"
+}
 
 struct MailMarkReadTool: ToolHandler, ApprovalSummarizing {
     let name = "mail.mark_read"
     let spec = Tool(
         name: "mail.mark_read",
         description: """
-        Mark one message as read. Idempotent: marking an already-read message
-        is a no-op. Scoped by (id, account, mailbox) — same identity rules as
-        mail.get_message because Mail.app integer ids are per-mailbox.
+        Mark message(s) as read. Accepts a single `id` OR an `ids` array
+        (up to \(batchIdsLimit)). Idempotent: already-read messages are
+        no-ops. All ids must share `(account, mailbox)` because Mail's
+        integer ids are per-mailbox.
+
+        Returns `{matched, missing, failed, elapsed_ms}`. `matched` is the
+        number of messages successfully updated; `missing` lists ids that
+        didn't resolve in the source mailbox; `failed` lists ids that
+        resolved but errored mid-action.
         """,
-        inputSchema: .object([
-            "type": .string("object"),
-            "properties": .object([
-                "id":      .object(["type": .string("string")]),
-                "account": .object(["type": .string("string")]),
-                "mailbox": .object(["type": .string("string")]),
-            ]),
-            "required": .array([.string("id"), .string("account"), .string("mailbox")]),
-            "additionalProperties": .bool(false),
-        ])
+        inputSchema: writeToolSchema(extraProperties: [:], extraRequired: [])
     )
     let adapter: MailAdapter
 
     func call(arguments: [String: Value]?) async throws -> CallTool.Result {
         guard
-            let id = arguments?["id"]?.stringValue,
+            let ids = resolveIds(arguments), !ids.isEmpty,
             let account = arguments?["account"]?.stringValue,
             let mailbox = arguments?["mailbox"]?.stringValue
-        else { return errorResult("id, account, mailbox required") }
-        try await adapter.setReadState(account: account, mailbox: mailbox, id: id, read: true)
-        return CallTool.Result(content: [.text(text: #"{"marked":"read"}"#, annotations: nil, _meta: nil)], isError: false)
+        else { return errorResult("account, mailbox, and exactly one of id|ids required") }
+        guard ids.count <= batchIdsLimit else {
+            return errorResult("ids exceeds batch limit (\(batchIdsLimit))")
+        }
+        let result = try await adapter.batchSetReadState(
+            account: account, mailbox: mailbox, ids: ids, read: true
+        )
+        return jsonResult(result)
     }
 
     func approvalSummary(for arguments: [String: Value]?) -> [String] {
-        ["Mark message read",
+        ["Mark read",
          "Mailbox: \(arguments?["mailbox"]?.stringValue ?? "?")",
          "Account: \(arguments?["account"]?.stringValue ?? "?")",
-         "Message id: \(arguments?["id"]?.stringValue ?? "?")"]
+         describeIds(arguments)]
     }
 }
 
@@ -52,91 +123,72 @@ struct MailMarkUnreadTool: ToolHandler, ApprovalSummarizing {
     let name = "mail.mark_unread"
     let spec = Tool(
         name: "mail.mark_unread",
-        description: "Mark one message as unread. Idempotent. Scoped by (id, account, mailbox).",
-        inputSchema: .object([
-            "type": .string("object"),
-            "properties": .object([
-                "id":      .object(["type": .string("string")]),
-                "account": .object(["type": .string("string")]),
-                "mailbox": .object(["type": .string("string")]),
-            ]),
-            "required": .array([.string("id"), .string("account"), .string("mailbox")]),
-            "additionalProperties": .bool(false),
-        ])
+        description: """
+        Mark message(s) as unread. Accepts a single `id` OR an `ids` array
+        (up to \(batchIdsLimit)). Idempotent. All ids must share
+        `(account, mailbox)`. Result shape matches mail.mark_read.
+        """,
+        inputSchema: writeToolSchema(extraProperties: [:], extraRequired: [])
     )
     let adapter: MailAdapter
 
     func call(arguments: [String: Value]?) async throws -> CallTool.Result {
         guard
-            let id = arguments?["id"]?.stringValue,
+            let ids = resolveIds(arguments), !ids.isEmpty,
             let account = arguments?["account"]?.stringValue,
             let mailbox = arguments?["mailbox"]?.stringValue
-        else { return errorResult("id, account, mailbox required") }
-        try await adapter.setReadState(account: account, mailbox: mailbox, id: id, read: false)
-        return CallTool.Result(content: [.text(text: #"{"marked":"unread"}"#, annotations: nil, _meta: nil)], isError: false)
+        else { return errorResult("account, mailbox, and exactly one of id|ids required") }
+        guard ids.count <= batchIdsLimit else {
+            return errorResult("ids exceeds batch limit (\(batchIdsLimit))")
+        }
+        let result = try await adapter.batchSetReadState(
+            account: account, mailbox: mailbox, ids: ids, read: false
+        )
+        return jsonResult(result)
     }
 
     func approvalSummary(for arguments: [String: Value]?) -> [String] {
-        ["Mark message unread",
+        ["Mark unread",
          "Mailbox: \(arguments?["mailbox"]?.stringValue ?? "?")",
          "Account: \(arguments?["account"]?.stringValue ?? "?")",
-         "Message id: \(arguments?["id"]?.stringValue ?? "?")"]
+         describeIds(arguments)]
     }
 }
 
-// MARK: - Batch tools (single AppleScript invocation per call)
-
-private let batchIdsLimit = 500
-
-private func parseIds(_ arguments: [String: Value]?) -> [String]? {
-    guard case .array(let arr)? = arguments?["ids"] else { return nil }
-    var ids: [String] = []
-    ids.reserveCapacity(arr.count)
-    for v in arr {
-        if let s = v.stringValue { ids.append(s) }
-        else if let i = v.intValue { ids.append("\(i)") }
-        else { return nil }
-    }
-    return ids
-}
-
-struct MailBatchMoveTool: ToolHandler, ApprovalSummarizing {
-    let name = "mail.batch_move"
+struct MailMoveMessageTool: ToolHandler, ApprovalSummarizing {
+    let name = "mail.move_message"
     let spec = Tool(
-        name: "mail.batch_move",
+        name: "mail.move_message",
         description: """
-        Move many messages from one mailbox to another in a single Mail.app
-        round-trip. All ids must come from the same source (account, mailbox)
-        — Mail's integer ids are per-mailbox. Up to \(batchIdsLimit) ids per call.
+        Move message(s) to a different mailbox (and optionally a different
+        account). Accepts a single `id` OR an `ids` array (up to
+        \(batchIdsLimit)). All ids must come from the same source
+        (account, mailbox). Recommended ACL is `approve` — moving messages
+        out of INBOX hides them from the user's normal view.
 
-        Returns matched count, the list of ids that couldn't be resolved
-        (e.g. already moved by another caller), and elapsed bridge time.
-        Compared with N×mail.move_message, expect roughly 10-100x faster
-        depending on batch size and account type — Mail batches IMAP/EWS
-        STORE commands on its side once we hand off the whole list.
+        Cross-account moves require IMAP support on both sides; if a
+        message fails to move it lands in `failed` so the agent can retry
+        that subset without re-walking the whole batch.
+
+        Returns `{matched, missing, failed, elapsed_ms}`.
         """,
-        inputSchema: .object([
-            "type": .string("object"),
-            "properties": .object([
-                "ids":             .object(["type": .string("array"), "items": .object(["type": .string("string")]), "description": .string("Per-mailbox integer ids as strings.")]),
-                "account":         .object(["type": .string("string")]),
-                "mailbox":         .object(["type": .string("string")]),
-                "target_mailbox":  .object(["type": .string("string")]),
-                "target_account":  .object(["type": .string("string"), "description": .string("Defaults to source account when empty.")]),
-            ]),
-            "required": .array([.string("ids"), .string("account"), .string("mailbox"), .string("target_mailbox")]),
-            "additionalProperties": .bool(false),
-        ])
+        inputSchema: writeToolSchema(
+            extraProperties: [
+                "target_mailbox": .object(["type": .string("string")]),
+                "target_account": .object(["type": .string("string"), "description": .string("Defaults to source account when empty.")]),
+            ],
+            extraRequired: ["target_mailbox"]
+        )
     )
     let adapter: MailAdapter
 
     func call(arguments: [String: Value]?) async throws -> CallTool.Result {
         guard
-            let ids = parseIds(arguments), !ids.isEmpty,
+            let ids = resolveIds(arguments), !ids.isEmpty,
             let account = arguments?["account"]?.stringValue,
             let mailbox = arguments?["mailbox"]?.stringValue,
             let target = arguments?["target_mailbox"]?.stringValue
-        else { return errorResult("ids (array of strings), account, mailbox, target_mailbox required") }
+        else { return errorResult("account, mailbox, target_mailbox, and exactly one of id|ids required") }
         guard ids.count <= batchIdsLimit else {
             return errorResult("ids exceeds batch limit (\(batchIdsLimit))")
         }
@@ -149,156 +201,13 @@ struct MailBatchMoveTool: ToolHandler, ApprovalSummarizing {
     }
 
     func approvalSummary(for arguments: [String: Value]?) -> [String] {
-        let ids = parseIds(arguments) ?? []
-        let tgtAcct = arguments?["target_account"]?.stringValue
-        let tgtAcctDisplay = (tgtAcct?.isEmpty == false) ? tgtAcct! : (arguments?["account"]?.stringValue ?? "?")
-        return [
-            "Batch-move \(ids.count) message\(ids.count == 1 ? "" : "s")",
-            "From: \(arguments?["mailbox"]?.stringValue ?? "?") (\(arguments?["account"]?.stringValue ?? "?"))",
-            "To:   \(arguments?["target_mailbox"]?.stringValue ?? "?") (\(tgtAcctDisplay))",
-        ]
-    }
-}
-
-struct MailBatchMarkReadTool: ToolHandler, ApprovalSummarizing {
-    let name = "mail.batch_mark_read"
-    let spec = Tool(
-        name: "mail.batch_mark_read",
-        description: """
-        Mark many messages as read in one Mail.app round-trip. All ids must
-        come from the same (account, mailbox). Up to \(batchIdsLimit) ids per call.
-        Idempotent: already-read messages are no-ops.
-        """,
-        inputSchema: .object([
-            "type": .string("object"),
-            "properties": .object([
-                "ids":     .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
-                "account": .object(["type": .string("string")]),
-                "mailbox": .object(["type": .string("string")]),
-            ]),
-            "required": .array([.string("ids"), .string("account"), .string("mailbox")]),
-            "additionalProperties": .bool(false),
-        ])
-    )
-    let adapter: MailAdapter
-
-    func call(arguments: [String: Value]?) async throws -> CallTool.Result {
-        guard
-            let ids = parseIds(arguments), !ids.isEmpty,
-            let account = arguments?["account"]?.stringValue,
-            let mailbox = arguments?["mailbox"]?.stringValue
-        else { return errorResult("ids (array of strings), account, mailbox required") }
-        guard ids.count <= batchIdsLimit else {
-            return errorResult("ids exceeds batch limit (\(batchIdsLimit))")
-        }
-        let result = try await adapter.batchSetReadState(
-            account: account, mailbox: mailbox, ids: ids, read: true
-        )
-        return jsonResult(result)
-    }
-
-    func approvalSummary(for arguments: [String: Value]?) -> [String] {
-        let ids = parseIds(arguments) ?? []
-        return [
-            "Batch-mark \(ids.count) message\(ids.count == 1 ? "" : "s") as read",
-            "Mailbox: \(arguments?["mailbox"]?.stringValue ?? "?")",
-            "Account: \(arguments?["account"]?.stringValue ?? "?")",
-        ]
-    }
-}
-
-struct MailBatchMarkUnreadTool: ToolHandler, ApprovalSummarizing {
-    let name = "mail.batch_mark_unread"
-    let spec = Tool(
-        name: "mail.batch_mark_unread",
-        description: "Mark many messages as unread in one Mail.app round-trip. Same shape as mail.batch_mark_read.",
-        inputSchema: .object([
-            "type": .string("object"),
-            "properties": .object([
-                "ids":     .object(["type": .string("array"), "items": .object(["type": .string("string")])]),
-                "account": .object(["type": .string("string")]),
-                "mailbox": .object(["type": .string("string")]),
-            ]),
-            "required": .array([.string("ids"), .string("account"), .string("mailbox")]),
-            "additionalProperties": .bool(false),
-        ])
-    )
-    let adapter: MailAdapter
-
-    func call(arguments: [String: Value]?) async throws -> CallTool.Result {
-        guard
-            let ids = parseIds(arguments), !ids.isEmpty,
-            let account = arguments?["account"]?.stringValue,
-            let mailbox = arguments?["mailbox"]?.stringValue
-        else { return errorResult("ids (array of strings), account, mailbox required") }
-        guard ids.count <= batchIdsLimit else {
-            return errorResult("ids exceeds batch limit (\(batchIdsLimit))")
-        }
-        let result = try await adapter.batchSetReadState(
-            account: account, mailbox: mailbox, ids: ids, read: false
-        )
-        return jsonResult(result)
-    }
-
-    func approvalSummary(for arguments: [String: Value]?) -> [String] {
-        let ids = parseIds(arguments) ?? []
-        return [
-            "Batch-mark \(ids.count) message\(ids.count == 1 ? "" : "s") as unread",
-            "Mailbox: \(arguments?["mailbox"]?.stringValue ?? "?")",
-            "Account: \(arguments?["account"]?.stringValue ?? "?")",
-        ]
-    }
-}
-
-struct MailMoveMessageTool: ToolHandler, ApprovalSummarizing {
-    let name = "mail.move_message"
-    let spec = Tool(
-        name: "mail.move_message",
-        description: """
-        Move a message to a different mailbox (and optionally a different
-        account). Default ACL recommended is `approve` — moving a message
-        out of INBOX hides it from the user's normal view. Cross-account
-        moves require IMAP support on both sides; if it fails the error
-        propagates as a tool error.
-        """,
-        inputSchema: .object([
-            "type": .string("object"),
-            "properties": .object([
-                "id":              .object(["type": .string("string")]),
-                "account":         .object(["type": .string("string")]),
-                "mailbox":         .object(["type": .string("string")]),
-                "target_mailbox":  .object(["type": .string("string")]),
-                "target_account":  .object(["type": .string("string"), "description": .string("Defaults to source account when empty.")]),
-            ]),
-            "required": .array([.string("id"), .string("account"), .string("mailbox"), .string("target_mailbox")]),
-            "additionalProperties": .bool(false),
-        ])
-    )
-    let adapter: MailAdapter
-
-    func call(arguments: [String: Value]?) async throws -> CallTool.Result {
-        guard
-            let id = arguments?["id"]?.stringValue,
-            let account = arguments?["account"]?.stringValue,
-            let mailbox = arguments?["mailbox"]?.stringValue,
-            let target = arguments?["target_mailbox"]?.stringValue
-        else { return errorResult("id, account, mailbox, target_mailbox required") }
-        let tgtAccount = arguments?["target_account"]?.stringValue
-        try await adapter.moveMessage(
-            account: account, mailbox: mailbox, id: id,
-            targetAccount: tgtAccount, targetMailbox: target
-        )
-        return CallTool.Result(content: [.text(text: #"{"moved":true}"#, annotations: nil, _meta: nil)], isError: false)
-    }
-
-    func approvalSummary(for arguments: [String: Value]?) -> [String] {
         let tgtAcct = arguments?["target_account"]?.stringValue
         let tgtAcctDisplay = (tgtAcct?.isEmpty == false) ? tgtAcct! : (arguments?["account"]?.stringValue ?? "?")
         return [
             "Move message",
             "From: \(arguments?["mailbox"]?.stringValue ?? "?") (\(arguments?["account"]?.stringValue ?? "?"))",
             "To:   \(arguments?["target_mailbox"]?.stringValue ?? "?") (\(tgtAcctDisplay))",
-            "Message id: \(arguments?["id"]?.stringValue ?? "?")",
+            describeIds(arguments),
         ]
     }
 }

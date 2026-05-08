@@ -89,25 +89,6 @@ public actor MailAdapter {
         return Self.sortByMostRecent(raw).prefix(limit).map { $0 }
     }
 
-    /// Marks one message read or unread.
-    public func setReadState(account: String, mailbox: String, id: String, read: Bool) async throws {
-        let src = MailScripts.setReadState(account: account, mailbox: mailbox, id: id, read: read)
-        _ = try await runner.run(source: src, timeoutSeconds: 30)
-    }
-
-    /// Moves a message between mailboxes (and optionally accounts).
-    public func moveMessage(
-        account: String, mailbox: String, id: String,
-        targetAccount: String?, targetMailbox: String
-    ) async throws {
-        let tgtAcct = targetAccount?.isEmpty == false ? targetAccount! : account
-        let src = MailScripts.moveMessage(
-            account: account, mailbox: mailbox, id: id,
-            targetAccount: tgtAcct, targetMailbox: targetMailbox
-        )
-        _ = try await runner.run(source: src, timeoutSeconds: 30)
-    }
-
     public struct BatchResult: Codable, Sendable {
         /// Successfully completed operations (resolve + action both succeeded).
         public let matched: Int
