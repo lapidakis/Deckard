@@ -4,10 +4,11 @@ import SwiftUI
 /// matches the System Settings style.
 struct SettingsView: View {
     @ObservedObject var status: BridgeStatusModel
+    @ObservedObject var onboarding: OnboardingState
 
     var body: some View {
         TabView {
-            StatusTab(status: status)
+            StatusTab(status: status, onboarding: onboarding)
                 .tabItem { Label("Status", systemImage: "checkmark.circle") }
 
             TokensTab()

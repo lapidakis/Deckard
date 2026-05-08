@@ -2,6 +2,8 @@ import SwiftUI
 
 struct StatusTab: View {
     @ObservedObject var status: BridgeStatusModel
+    @ObservedObject var onboarding: OnboardingState
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Form {
@@ -32,6 +34,20 @@ struct StatusTab: View {
                     Button("Restart") { Task { await status.restart() } }
                     Spacer()
                     Button("Refresh") { Task { await status.refresh() } }
+                }
+            }
+
+            Section("Setup") {
+                HStack {
+                    Text("Walk through the first-run setup again — daemon, token, permissions, client connection details.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Show Onboarding…") {
+                        onboarding.forceOpen()
+                        openWindow(id: "onboarding")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
                 }
             }
 

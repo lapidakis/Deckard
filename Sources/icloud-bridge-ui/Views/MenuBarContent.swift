@@ -4,7 +4,9 @@ import SwiftUI
 /// + control buttons + link into the Settings window.
 struct MenuBarContent: View {
     @ObservedObject var status: BridgeStatusModel
+    @ObservedObject var onboarding: OnboardingState
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -64,6 +66,14 @@ struct MenuBarContent: View {
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }
+
+            Button("Show Onboarding…") {
+                onboarding.forceOpen()
+                openWindow(id: "onboarding")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .buttonStyle(.borderless)
+            .font(.caption)
 
             Divider()
 
