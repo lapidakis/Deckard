@@ -20,6 +20,9 @@ struct SettingsView: View {
             PermissionsTab()
                 .tabItem { Label("Permissions", systemImage: "hand.raised.fill") }
 
+            TailscaleTab(status: status)
+                .tabItem { Label("Tailscale", systemImage: "network") }
+
             LogsTab()
                 .tabItem { Label("Logs", systemImage: "doc.text") }
         }

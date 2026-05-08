@@ -4,6 +4,7 @@
 - [Security model](security-model.md) — threat model and the layered defenses each request passes through, including tailnet whois-then-allowlist enforcement and approval-dialog visibility on macOS 26
 - [Configuration](configuration.md) — `config.toml` and `tokens.toml` reference, profile examples, mail batch operation shape
 - [Operations](operations.md) — install, update, onboarding flow, daemon control, TCC grants (incl. System Events for the approval gate), audit, troubleshooting
+- [Releasing](releasing.md) — maintainer-facing guide to cutting a tagged release through the GitHub Actions notarization pipeline
 
 Tooling references and per-service notes live here over time. Today the closest thing is the source: `Sources/Service<Mail|Calendar|Drive|VoiceMemo|Reminders>/<Service>Tools.swift` for each tool's spec, description, and arguments.
 
