@@ -51,7 +51,9 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 - Tools with ACL = `approve` invoke `OsaScriptApprovalGate.request(_:)` before the tool handler runs.
 - Each tool implements `ApprovalSummarizing` to populate the dialog with semantically meaningful info (recipients + body preview for `mail.send`, file path + mode + size for `drive.write`, title + when + where for `calendar.create_event`).
 - Dialog is synchronous (blocks the tool call) and times out after 60 s with a tool-error. User decisions land in the audit log as `approved` / `denied` / `timeout`.
+- **Dialog visibility.** The script is wrapped in `tell application "System Events" / activate` so the dialog lands on the user's currently-active Space, not whichever Space the LaunchAgent first attached to. macOS 26 routes a bare `display dialog` from a non-frontmost subprocess onto a hidden Space where it ages out at the timeout without ever being clicked. The wrapper requires Apple Events automation grant for System Events — first `.approve` call after a fresh deploy triggers a one-time TCC prompt; subsequent calls are durable.
 - **Per-token gate policy.** Each profile sets `interactive_approval = "always" | "never"`. `always` (default) routes through the host dialog. `never` auto-approves and records the audit decision as `approved_by_policy`. The host popup is invisible to remote (Tailnet) operators and would otherwise stall every `.approve` call until timeout, so trusted remote tokens should set `never` and rely on the bearer-token grant itself as the trust decision.
+- **Output classifier fails closed.** `OsaScriptApprovalGate.classifyStdout(_:)` maps "Allow" → approved, "Deny" → denied, "TIMEOUT"/empty → timeout, ERROR-prefixed or unrecognized output → denied. A future macOS change that returns a different button-name string lands as denied, never auto-approved.
 - Approval is plug-pointed: future menu-bar UI can register a custom gate that intercepts before falling through to osascript.
 
 ### 6. Audit log
@@ -66,11 +68,14 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 - TCC grants key on the signed identity, not the binary hash. Every fresh `make build` preserves the user's previously-granted Automation, Calendar, Reminders permissions.
 - Without codesigning, every rebuild would lose grants. The build is structured so `make build` always re-signs; a bare `swift build` would produce an adhoc binary, lose grants, and silently fail at the next call. The Makefile chains both steps.
 
-### 8. Loopback by default
+### 8. Loopback by default; Tailnet enforcement when opt-in
 
 - HTTP transport binds `127.0.0.1` only unless `[tailscale] enabled = true` is set explicitly in config.
 - Tailscale opt-in adds a second listener on the tailnet IPv4 reported by the `tailscale` CLI. Same bearer auth applies. Same ACL profiles.
-- Tailscale ACLs (network-layer) and the bridge's bearer-and-profile gates layer cleanly.
+- **Per-request peer enforcement.** When `allowed_peers` / `allowed_users` is non-empty, every tailnet request runs `tailscale whois --json <source-ip>` and checks the result against both lists. **Either-axis match satisfies** (allowing by hostname OR by user). The check runs BEFORE bearer auth — non-allowlisted peers receive 403 Forbidden without ever spending rate-limit budget against bearer secrets. Failed whois under a non-empty allowlist is treated as deny.
+- **Open allowlist warning.** Both lists empty = "any tailnet peer with a valid bearer can connect." This is logged as a warning at startup (`Tailscale listener … is OPEN`); whois still runs (best-effort) so audit rows can attribute the call to a peer hostname even without enforcement.
+- **Audit identity.** Tailnet calls record `transport=tailnet` and (when whois succeeded) `caller=ts:<peer>:<user>` instead of the static `bearer:<label>`. The per-call AuthContext flows through `BridgeCallContext.override` (TaskLocal) so the audit row reflects the actual session, not the SessionHolder's bound auth.
+- Tailscale's network-layer ACLs and the bridge's bearer + profile + allowlist gates layer cleanly. Defense in depth: a misconfigured Tailscale ACL still trips the bridge's allowlist, and a leaked bearer still trips the network-layer policy.
 
 ## Things this model does *not* protect against
 

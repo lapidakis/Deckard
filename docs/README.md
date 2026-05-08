@@ -1,14 +1,20 @@
 # Docs index
 
-- [Architecture](architecture.md) — module map, request flow, design principles
-- [Security model](security-model.md) — threat model and the layered defenses each request passes through
-- [Configuration](configuration.md) — `config.toml` and `tokens.toml` reference, profile examples
-- [Operations](operations.md) — install, update, daemon control, audit, troubleshooting
+- [Architecture](architecture.md) — module map, request flow (loopback + tailnet), per-call AuthContext via TaskLocal, schema invariants enforced at test time
+- [Security model](security-model.md) — threat model and the layered defenses each request passes through, including tailnet whois-then-allowlist enforcement and approval-dialog visibility on macOS 26
+- [Configuration](configuration.md) — `config.toml` and `tokens.toml` reference, profile examples, mail batch operation shape
+- [Operations](operations.md) — install, update, onboarding flow, daemon control, TCC grants (incl. System Events for the approval gate), audit, troubleshooting
 
 Tooling references and per-service notes live here over time. Today the closest thing is the source: `Sources/Service<Mail|Calendar|Drive|VoiceMemo|Reminders>/<Service>Tools.swift` for each tool's spec, description, and arguments.
 
 ## Testing
 
+- 116 unit tests in `Tests/BridgeTests/`. Highlights:
+  - `SchemaTests` — meta-test that walks every registered tool's `inputSchema` and rejects top-level `oneOf`/`allOf`/`anyOf`, missing `type` keywords, required fields not in `properties`, name/spec.name mismatches, duplicate names. Failing this is a ship-blocker.
+  - `MCPHostBuilderTests` — drives `dispatch` directly to verify allow / deny / approve+always / approve+never / approve+denied / unknown-tool / tool-error / TaskLocal-AuthContext-override paths.
+  - `HTTPRunnerTests` — bearer extraction, makePerCallAuth across loopback/tailnet/whois-failed, RFC 6750 `WWW-Authenticate: Bearer` envelopes.
+  - `TokenRegistryTests` — CRUD against a temp-dir URL override, including the 0600 mode invariant.
+  - `TailscaleTests` — allowlist matcher, AuthContext rendering for `.tailscale` identity, TaskLocal inheritance into structured Task children.
 - [Voice memo smoke test](testing/voice-memos-smoke.md) — agent-driven end-to-end checks for the voice memo surface
 
 ## Contributing

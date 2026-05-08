@@ -13,18 +13,23 @@ Plus six library targets — five service adapters and a shared core.
 │
 │   Transports: stdio | HTTP loopback | HTTP tailnet (opt-in)
 │   ↓
-│   HTTPRunner → token lookup → SessionHolder for that token
+│   HTTPRunner → tailnet allowlist (whois, allowed_peers/users)
+│              → bearer token lookup
+│              → BridgeCallContext.$override.withValue(perCallAuth)
+│              → SessionHolder for that token
 │   ↓
 │   MCP Server (per token) → Server.start(transport:)
 │   ↓
 │   Method handler closure (CallTool):
+│     effectiveAuth = BridgeCallContext.override ?? boundAuth
 │     PolicyPipeline.preflight (ACL evaluate)
 │       deny     → audit + return error
-│       approve  → osascript dialog → audited
+│       approve  → interactive_approval=always: osascript dialog
+│                  interactive_approval=never:  audit as approved_by_policy
 │       allow    → continue
 │     Tool handler.call(...)
 │     Result middleware (Redactor → InjectionTagger)
-│     Audit row (decision + latency + bytes)
+│     Audit row (decision + latency + bytes, w/ effectiveAuth)
 │     Result with _meta.duration_ms
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -50,16 +55,21 @@ Dependency direction: imports only flow from Service* down through BridgeCore do
 ## Request flow (HTTP path)
 
 1. **Client sends** `POST /mcp` with `Authorization: Bearer <secret>` and a JSON-RPC message body.
-2. **HTTPRunner** extracts the bearer, looks it up in TokenSessions (`[secret → SessionHolder]` built at daemon startup from TokenRegistry).
-3. **Per-token SessionHolder** owns its own `MCP.Server` instance (with auth context already set to `bearer:<label>`) and `StatefulHTTPServerTransport`.
-4. **Self-heal:** if the SDK returns "Session already initialized" (stale state from a previous client), HTTPRunner recreates the SessionHolder in place and retries once.
-5. **Server dispatches** the JSON-RPC into the registered method handler. For `CallTool`:
-   - **Lookup tool handler** by name; unknown names short-circuit to a tool-error.
+2. **HTTPRunner** pulls the source IP from the connection's `SocketAddress` (via `PeerAwareRequestContext`).
+3. **Tailnet allowlist enforcement** (only on the tailnet listener). When `allowed_peers` / `allowed_users` is non-empty, runs `tailscale whois --json <ip>`, matches against the allowlist (either-axis satisfies). Failure modes (failed whois, missing IP) under a non-empty allowlist = HTTP 403 — the request never reaches bearer auth, so non-allowlisted peers can't spend rate-limit budget against bearer secrets.
+4. **Bearer extraction + lookup** in TokenSessions (`[secret → SessionHolder]` built at daemon startup from TokenRegistry). 401 with `WWW-Authenticate: Bearer` on miss.
+5. **Per-call AuthContext.** HTTPRunner builds a per-request `AuthContext` carrying the actual transport (loopback vs tailnet), peer identity (whois result becomes `.tailscale(peer:user:)`; falls back to `.bearer(label:)` on whois failure under an open allowlist), and remote description. This is set on `BridgeCallContext.$override` (a TaskLocal) before invoking the SDK transport, so structured Task children inherit it. `MCPHostBuilder.dispatch` reads the override at audit-write time.
+6. **Per-token SessionHolder** owns its own `MCP.Server` instance and `StatefulHTTPServerTransport`. The boot-time `AuthContext` baked into the Server is just a fallback — the TaskLocal override is what lands in the audit row in HTTP-served calls.
+7. **Self-heal:** if the SDK returns "Session already initialized" (stale state from a previous client), HTTPRunner recreates the SessionHolder in place and retries once.
+8. **Server dispatches** the JSON-RPC into the registered method handler. For `CallTool`:
+   - **Lookup tool handler** by name; unknown names short-circuit to a tool-error + audit row.
    - **PolicyPipeline.preflight** evaluates the ACL. Returns `allow` / `deny(reason)` / `requireApproval(reason)`.
-   - **Approval gate** (when required) calls `OsaScriptApprovalGate.request(_:)` which runs `osascript display dialog`. User decides per call.
+   - **Approval gate** (when required) consults `policy.interactiveApprovalMode`:
+     - `.always` → `OsaScriptApprovalGate.request(_:)` which runs `osascript display dialog` (wrapped in `tell application "System Events" / activate` so the dialog lands on the user's active Space). Audit logs `approved` / `denied` / `timeout`.
+     - `.never` → auto-approve, audit logs `approved_by_policy` (distinct token so post-hoc forensics can tell user-clicked from policy-waived approvals).
    - **Tool handler.call(arguments:)** runs.
    - **Middleware**: Redactor (regex replaces secrets in text content), then InjectionTagger (wraps untrusted content). Order matters — redaction first so injection tags don't accidentally hide a secret.
-   - **Audit**: AuditSink appends a JSONL row with caller, transport, tool, arg-keys (no values), decision, latency, byte count, error.
+   - **Audit**: AuditSink appends a JSONL row with caller, transport, tool, arg-keys (no values), decision, latency, byte count, error. Caller + transport come from the TaskLocal-overridden AuthContext, not the SessionHolder's bound auth.
    - **Response** carries `_meta.duration_ms`, `_meta.bridge_version`, etc. so agents can see bridge-side timing.
 
 ## Stdio path
@@ -87,6 +97,19 @@ Same evaluator powers `tools/list` filtering — tools whose decision is `deny` 
 `AuditSink` is an actor that serializes both writes and the periodic prune. JSONL format, fsync per write. Retention is configured in `[audit] retention_days` (default 30). On daemon startup the sink reads the file, drops entries older than the cutoff, atomically rewrites; a background task in the daemon's main TaskGroup re-runs the sweep every `prune_interval_hours` (default 6).
 
 The pruner parses just the `ts` field per line — no full JSON decode — so reading a 100MB log to keep 99 MB is sub-second.
+
+## Schema invariants
+
+`SchemaTests` walks the same provider list `Serve.swift` registers in production and asserts six invariants on every tool's `inputSchema` at test time:
+
+1. `tool.name == tool.spec.name`
+2. Root `type == "object"`
+3. No top-level `oneOf` / `allOf` / `anyOf` (Anthropic API rejects these with HTTP 400 — caught a real production bug in May)
+4. Every entry in `required` exists in `properties`
+5. Every property declares a `type` keyword
+6. No duplicate names across providers (`Dictionary(uniqueKeysWithValues:)` in `MCPHostBuilder.build` would crash the daemon)
+
+Adding a tool that breaks any of these fails `swift test` before the agent ever sees the broken schema.
 
 ## What runs where
 

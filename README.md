@@ -4,7 +4,7 @@ A Mac-resident MCP server that proxies Apple-native services — Mail, Calendar,
 
 The bridge is built around a simple premise: an LLM agent talking to your iCloud should look more like a service account with scoped permissions than a fully-trusted user. Every call passes through the same policy pipeline (auth → ACL → redaction → injection-tagging → approval-gate → audit), and every layer is configurable per token.
 
-**Status:** v0.10.1, 35 tools across 5 services, signed Developer ID build, ~50 unit tests, daemon + menubar UI shipping. Designed for personal homelab use; security model documented in [`docs/security-model.md`](docs/security-model.md).
+**Status:** v0.11.0, 35 tools across 5 services, signed Developer ID build, **116 unit tests** (incl. a schema validator that walks every registered tool), daemon + menubar UI shipping with first-launch onboarding. Designed for personal homelab use; security model documented in [`docs/security-model.md`](docs/security-model.md).
 
 ---
 
@@ -17,8 +17,10 @@ iCloud-Bridge sits between the agent and macOS and adds:
 - **Default-deny ACL** with per-token profiles. A "triage" agent gets `mail.list_messages` + `mail.mark_read` + nothing else. A "trusted" agent gets the full surface but `mail.send` still routes through an approval dialog. A "readonly" experiment can't write anything anywhere.
 - **Outbound redaction.** Before any tool result reaches the model, secret-shaped substrings are replaced with `[REDACTED:<rule>]`: AWS keys, OpenAI / Anthropic keys, GitHub PATs, Slack tokens, RSA private blocks, SSN-like patterns. New rules drop in via config.
 - **Inbound prompt-injection tagging.** Mail bodies, calendar event notes, voice-memo titles, drive-file contents — anything the user didn't author — comes back wrapped in `<untrusted>…</untrusted>` so the agent treats it as data, not instructions. When known injection patterns ("ignore previous instructions", role-impersonation prefixes, etc.) are detected, the wrapper escalates to a strong warning banner.
-- **Approval gating** for destructive actions. `mail.send`, `drive.write`, `calendar.delete_event`, `reminders.delete_reminder` — set their ACL to `approve` and every call pops a macOS dialog showing what's about to happen (recipients, body preview, file path, event title) before it executes.
+- **Approval gating** for destructive actions. `mail.send`, `drive.write`, `calendar.delete_event`, `reminders.delete_reminder` — set their ACL to `approve` and every call pops a macOS dialog showing what's about to happen (recipients, body preview, file path, event title) before it executes. Per-token `interactive_approval = "never"` lets trusted remote tokens skip the dialog (audit logs as `approved_by_policy` for forensics).
 - **Multi-token auth with scoped profiles.** Different agents get different secrets and different capabilities. Audit shows `caller: "bearer:eleanor"` instead of `bearer:default`.
+- **Tailnet enforcement** (opt-in). When `[tailscale] enabled = true`, every tailnet request runs `tailscale whois` and is checked against `allowed_peers` / `allowed_users` before bearer auth. Audit rows for tailnet calls record `transport=tailnet caller=ts:hermes:mike@github`.
+- **Batch mail ops.** `mail.move_message`, `mail.mark_read`, `mail.mark_unread` accept a single `id` OR an `ids: [string]` array (up to 500). The batch path is one osascript invocation regardless of N — one Mail.app activation, one audit row, one approval dialog.
 - **Append-only audit log** with configurable retention (default 30 days). Every call records caller, transport, tool, arg-keys, decision, latency, byte count, error.
 - **Loopback by default.** Tailscale binding is opt-in via config; nothing listens on a public interface.
 - **Per-tool tool-list filtering.** Agents only see what their token can call. Denied tools don't surface in `tools/list`, so context isn't burned on capabilities they can't use.
@@ -56,6 +58,8 @@ make ui
 open .build/debug/iCloud-Bridge.app
 ```
 
+First launch opens a 6-step onboarding window (Welcome → Daemon → Token → Permissions → Connect → Done) that walks through token creation, surfaces required TCC grants with deep-links to System Settings, and gives you a copy-paste `claude mcp add` snippet. Reopen anytime via Settings → Status → "Show Onboarding…" or the menubar popup. Closing the window mid-flow counts as Skip — won't auto-reopen.
+
 The icloud icon turns green when the daemon's running, slashed-red when stopped. Click for status; "Open Settings…" for the multi-tab window.
 
 To codesign with your own identity, set `ICB_SIGN_IDENTITY` before running `make build` / `make ui`. Default is mine; the build will fail with a clear cert-not-found message if yours isn't installed.
@@ -85,7 +89,7 @@ Verify in any Claude Code session with `/mcp` — should show `icloud  ✓ conne
 
 ---
 
-## What's in the box (35 tools, v0.10.1)
+## What's in the box (35 tools, v0.11.0)
 
 **Built-in**
 - `health.ping` — liveness probe; tiny payload, useful diagnostic
@@ -94,7 +98,7 @@ Verify in any Claude Code session with `/mcp` — should show `icloud  ✓ conne
 - `mail.list_mailboxes`, `mail.list_messages`, `mail.search`
 - `mail.get_message`
 - `mail.create_draft` (safe — opens in Mail.app for user), `mail.send` (approval-gated)
-- `mail.mark_read`, `mail.mark_unread`, `mail.move_message`
+- `mail.mark_read`, `mail.mark_unread`, `mail.move_message` — each accepts single `id` OR `ids: [string]` (up to 500), returns `BatchResult { matched, missing, failed, elapsed_ms }`
 
 **Calendar (Phase 2)** — native EventKit
 - `calendar.list_calendars`, `calendar.list_events`, `calendar.search_events`
@@ -138,7 +142,8 @@ Per-tool detail in [`docs/configuration.md`](docs/configuration.md).
 
 - iMessage (Phase 5) — read `chat.db`, send via AppleScript, sender allowlist
 - ACL editor in the menubar UI (currently view-only; mutations via CLI)
-- Token CRUD UI (currently CLI)
-- Per-peer Tailscale identity in the audit log (currently bearer label only)
+- Token CRUD in the menubar UI (creation lives in the onboarding flow; rotate / revoke / setProfile still CLI-only)
+- XPC channel from daemon to menubar UI for approval dialogs — would let `.approve` outcomes prompt remote tokens reliably without falling back to `interactive_approval = "never"`
 - Voice memo transcription via Apple Speech framework (currently agent-side STT)
 - Notarization for distribution to other Macs without Gatekeeper warnings
+- `SessionHolder.recreate()` should drain in-flight requests before swapping the transport — closes the rare "Transport already started" race in the stale-session self-heal path

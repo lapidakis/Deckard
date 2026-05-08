@@ -192,6 +192,38 @@ After any change, restart the daemon so the in-memory token registry rebinds.
 
 ---
 
+## Mail batch operations
+
+`mail.move_message`, `mail.mark_read`, and `mail.mark_unread` accept either a single `id` or an `ids: [string]` array. All ids must come from the same source `(account, mailbox)` since Mail.app's integer message ids are per-mailbox. Up to 500 ids per call.
+
+```jsonc
+// Single
+{"id": "162967", "account": "iCloud", "mailbox": "INBOX"}
+
+// Batch — same tool
+{"ids": ["162967", "162968", "162969"], "account": "iCloud", "mailbox": "INBOX"}
+```
+
+Both forms return the same shape:
+
+```json
+{
+  "matched": 47,
+  "missing": ["12348"],
+  "failed": [],
+  "elapsedMs": 820
+}
+```
+
+- `matched`: count of operations that succeeded (resolve + action both worked)
+- `missing`: ids that didn't resolve in the source mailbox (already moved, wrong mailbox, non-integer cast)
+- `failed`: ids that resolved but the action errored mid-loop (rare — locked, deleted in race)
+- `elapsedMs`: AppleScript phase timing only (the response `_meta.duration_ms` is end-to-end bridge time)
+
+The batch path is one osascript invocation regardless of N (one Mail.app activation, one approval dialog if ACL = `approve`, one audit row). Singletons go through the same path as a length-1 batch — there's no separate "fast path" to know about.
+
+---
+
 ## Putting it together: trust tiers
 
 A working `config.toml` skeleton with three profiles:

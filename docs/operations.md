@@ -23,6 +23,13 @@ make ui
 open .build/debug/iCloud-Bridge.app
 ```
 
+First launch opens a 6-step onboarding window — Welcome → Daemon → Token → Permissions → Connect → Done. You can:
+- Create the first bearer token from the Token step (calls `TokenRegistry.add` directly; the plaintext secret is shown ONCE with a copy button).
+- See per-surface TCC state (Calendar / Reminders / Apple Events → Mail / Apple Events → System Events) and deep-link to the relevant System Settings pane.
+- Get a copy-paste `claude mcp add` command pre-populated with the URL and token in the Connect step.
+
+Closing the window mid-flow counts as Skip — won't auto-reopen on next launch. Reopen anytime via Settings → Status → "Show Onboarding…" or the menubar popup's "Show Onboarding…" link. Manual reopen resets to step 1 without clearing the suppression flag.
+
 ## Update
 
 ```sh
@@ -104,6 +111,7 @@ The daemon hits TCC the first time it's asked to do anything reaching out:
 | `mail.*` | Apple Events → Mail.app | macOS prompt: "icloud-bridge wants to control Mail" |
 | `calendar.*` | Calendar (`kTCCServiceCalendar`) | macOS prompt: "iCloud-Bridge wants access to your calendars" |
 | `reminders.*` | Reminders (`kTCCServiceReminders`) | macOS prompt: "iCloud-Bridge wants access to your reminders" |
+| **Approval dialogs (any `.approve` tool)** | **Apple Events → System Events** | **macOS prompt: "icloud-bridge wants to control System Events"** — fires on the first `.approve` call. The dialog is wrapped in `tell application "System Events" / activate` so it lands on the user's active Space; without the System Events grant, the dialog times out at the `giving up after` deadline. |
 | `voice_memo.*` | none | Group Container is mode 644; no TCC needed |
 | `drive.*` | none | iCloud Drive is the user's own files |
 
@@ -116,10 +124,12 @@ To inspect or revoke:
 To force a fresh prompt (rare; only useful if the grant got stuck):
 
 ```sh
-tccutil reset AppleEvents com.lapidakis.icloud-bridge   # for Mail
+tccutil reset AppleEvents com.lapidakis.icloud-bridge   # for Mail + System Events
 tccutil reset Calendar com.lapidakis.icloud-bridge
 tccutil reset Reminders com.lapidakis.icloud-bridge
 ```
+
+The single `AppleEvents` reset clears both Mail and System Events grants since they're under the same TCC service — you'll get a fresh prompt for each on the next call that needs it.
 
 ## Backups
 
@@ -142,7 +152,10 @@ Skip:
 | `Calendar access denied` / `Reminders access denied` | TCC not granted | Trigger a tool call to surface the prompt; or System Settings → Privacy & Security → Calendar / Reminders |
 | `HTTP 401` from a client that should work | Stale token / wrong header | `icloud-bridge auth show <label>` to re-fetch; verify `Authorization: Bearer <secret>` header |
 | `HTTP 400 Session already initialized` | SDK's stale-session bug from a prior client connection | Self-heal handles this; if you see it, transport recreate failed — check stderr for `Failed to recreate transport`, `make restart` is the fallback |
-| Tailscale listener never starts | `tailscale` CLI not in PATH or not logged in | `which tailscale && tailscale status`; install or `tailscale up` |
+| Tailscale listener never starts | `tailscale` CLI not in PATH or not logged in | `which tailscale && tailscale status`; install or `tailscale up`. Use `icloud-bridge tailscale status` to see what the daemon sees. |
+| Tailnet request returns 403 with no audit row | Peer not in `[tailscale] allowed_peers` / `allowed_users` | `icloud-bridge tailscale whois <ip>` shows the resolved peer + allowlist decision. Add the peer or user to the allowlist; `make restart`. |
+| Approval dialog never appears, audits as `timeout` after 60s | Apple Events → System Events not granted, or first call after rebuild needs the prompt | Trigger the call once and click Allow on the System Events Automation prompt. Inspect via Settings → Permissions in the menubar UI. Persists across rebuilds because the bridge is codesigned. |
+| Reminders calls hang for hours then time out | EventKit framework call wedges in non-UI LaunchAgent context | Already mitigated: `RemindersAdapter` races the call against a 10s timeout via `CheckedContinuation` + DispatchQueue. If you see this happening after deploy, run `tccutil reset Reminders com.lapidakis.icloud-bridge` to force a fresh consent. |
 | `voice_memo.read_audio` errors with placeholder hint | iCloud Optimize Storage offloaded the file | Open the recording in Voice Memos.app once to download; it stays cached |
 | `drive.read` errors with placeholder | Same `.icloud` stub issue for Drive | `drive.materialize {path: "..."}` (sync) or set `auto_materialize: true` in the read call |
 | `tools/list` returns fewer tools than I added | Working as designed — tools/list filters by ACL | Either grant the tool in this token's profile, or check via curl with a different token |

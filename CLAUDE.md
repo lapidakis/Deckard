@@ -4,7 +4,7 @@ A Mac-resident MCP server that proxies iCloud-bound services to AI agents over s
 
 Read this file before making changes. README.md is end-user-facing; this file is for the contributor. `docs/` has the deep dives — `architecture.md`, `security-model.md`, `configuration.md`, `operations.md`.
 
-## Status (v0.10.1)
+## Status (v0.11.0)
 
 | Phase | What | Status |
 |---|---|---|
@@ -16,11 +16,15 @@ Read this file before making changes. README.md is end-user-facing; this file is
 | 4.5 | Reminders (full CRUD via EventKit `.reminder`) | Done |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
-35 MCP tools total. Codesigned with Developer ID (`com.lapidakis.icloud-bridge`, team `NZL3HS8AH4`). Hardened runtime. ~50 unit tests.
+35 MCP tools total. Codesigned with Developer ID (`com.lapidakis.icloud-bridge`, team `NZL3HS8AH4`). Hardened runtime. **116 unit tests.**
 
-Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). Self-healing MCP session transport for stale-session SDK bug. Menubar UI scaffold (v0.10 series) with native macOS look.
+Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). Self-healing MCP session transport for stale-session SDK bug. Menubar UI scaffold (v0.10 series) with native macOS look. First-launch onboarding flow (v0.11+) walks through daemon → token → permissions → connect.
 
 Per-token `interactive_approval` mode (`always` / `never`) lets trusted remote tokens skip the host osascript dialog — `.approve` outcomes record `approved_by_policy` instead of stalling on a popup an off-host operator can't see.
+
+**Tailscale (v0.11.0) is real now.** Listener boots when `[tailscale] enabled = true`, runs `tailscale whois` on every request, enforces `allowed_peers` / `allowed_users` allowlist before bearer auth. Per-call AuthContext via `BridgeCallContext.override` TaskLocal so audit rows show `transport=tailnet caller=ts:hermes:mike@github` rather than the static SessionHolder identity.
+
+**Mail write tools accept `id` OR `ids: [string]`** — single tool, both shapes, returns `BatchResult { matched, missing, failed, elapsed_ms }`. Singletons go through the batch path internally (length-1 batch); response shape is uniform. Schema avoids top-level `oneOf` (Anthropic API rejects it).
 
 ## Module map
 
@@ -120,6 +124,8 @@ State lives at:
 5. Add a unit test if there's logic worth testing in isolation (date parsing, path safety, etc.).
 6. Update `docs/configuration.md` trust-tier example with the new tool name in `trusted` / `triage` / `readonly` profiles.
 
+`SchemaTests` will automatically validate your tool's `inputSchema` on the next `swift test` — no top-level `oneOf`/`allOf`/`anyOf`, every property declares a `type`, every required field exists in `properties`, `name == spec.name`, no duplicate names across providers. The schema validator caught a real Anthropic-API 400 in May; treat its failures as ship-blockers.
+
 ## Codesigning is load-bearing
 
 Codesigned with Developer ID Application (`com.lapidakis.icloud-bridge`, team `NZL3HS8AH4`). Use `make build` / `make release` so the post-build `scripts/codesign.sh` runs; bare `swift build` produces an adhoc binary that will lose TCC grants.
@@ -158,6 +164,12 @@ The UI has its own bundle id (`com.lapidakis.icloud-bridge.ui`) and entitlements
 - **Reminders sendability.** `EKReminder` isn't Sendable; `RemindersAdapter.listReminders` filters/sorts/maps inside the EventKit completion handler before resuming the continuation. `summarize`/`detail`/`dueAsDate` are `nonisolated static`.
 - **Per-token Server design.** Each bearer token gets its own `MCP.Server` instance with auth context and PolicyPipeline pre-bound. The MCP swift-sdk doesn't expose per-call session context to handler closures, so `tools/call` resolves to the right server via the bearer-secret-to-SessionHolder map in HTTPRunner. Side effect: tools/list per-token filtering works because each Server can filter its own spec list at registration time.
 - **Stale MCP session self-heal.** `StatefulHTTPServerTransport` keeps sessions in memory and rejects fresh `initialize` with HTTP 400 "Session already initialized". HTTPRunner detects this response and recreates the SessionHolder transparently. Don't try to "fix" by removing this; the SDK still has the underlying issue.
+- **Per-call AuthContext via TaskLocal.** `BridgeCallContext.override` is read by `MCPHostBuilder.dispatch` before building the audit row. HTTPRunner sets it (transport label + identity + remote peer info) inside `$override.withValue { transport.handleRequest(...) }` so the SDK's structured-Task children inherit it. If the SDK ever switches to `Task.detached` for dispatch, this propagation breaks silently — `bridgeCallContextTaskLocalDefaultsToNil` test guards the boundary.
+- **Tailscale enforcement order.** Whois + allowlist runs BEFORE bearer auth. A non-allowlisted tailnet peer never gets to attempt token auth — protects bearer secrets from rate-limit spending. When the allowlist is empty (`isOpen`), whois still runs (best-effort) so the audit row shows who connected.
+- **Mail batch tools' AppleScript shape.** `move <list> to <mbox>` and `set read status of <list> to <bool>` BOTH fail in Mail.app on macOS 26 with -10006. The batch path resolves message refs, then iterates per-message in the action loop. The osascript invocation + Mail.app activation is a single ~600ms cost; loop iterations are sub-ms. Don't switch back to list-target forms without re-testing on the target macOS.
+- **Approval dialog visibility.** A bare `display dialog` from the LaunchAgent's osascript subprocess lands on whichever Space the daemon first attached to — typically not the user's current one — and times out at `giving up after`. Wrap with `tell application "System Events" / activate` to force the dialog onto the active Space + frontmost. First call after a fresh deploy triggers a one-time "icloud-bridge wants to control System Events" Automation TCC prompt; subsequent calls are durable.
+- **Top-level JSON Schema keywords are rejected by Anthropic API.** `oneOf`, `allOf`, `anyOf` at the root of a tool's `inputSchema` returns HTTP 400 from the Claude API even though the MCP spec allows them. Express mutual-exclusion via field descriptions + runtime validation; `SchemaTests.noToolUsesTopLevelOneOfAllOfAnyOf` is the regression guard.
+- **HTTPRunner handler order**: tailscale enforcement happens BEFORE the bearer check. A non-allowlisted peer gets 403 Forbidden, not 401 — exposing 401 would invite token-guessing. Don't reorder without thinking through the privilege chain.
 
 ## What I should not do without asking
 
