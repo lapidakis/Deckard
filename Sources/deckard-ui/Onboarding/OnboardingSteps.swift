@@ -431,7 +431,14 @@ struct DoneStep: View {
 }
 
 // MARK: - shared row
+//
+// SwiftUI primitives like `Spacer()` are MainActor-isolated under strict
+// Swift 6 concurrency on macOS 15+. Free functions returning `some View`
+// must therefore be marked @MainActor, otherwise the call site is
+// "synchronous nonisolated" and the build fails on CI even though it
+// compiles on macOS 14 dev machines.
 
+@MainActor
 private func statusRow(ok: Bool, label: String, detail: String) -> some View {
     HStack(alignment: .top, spacing: 10) {
         Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
@@ -445,6 +452,7 @@ private func statusRow(ok: Bool, label: String, detail: String) -> some View {
     }
 }
 
+@MainActor
 private func bullet(_ s: String) -> some View {
     HStack(alignment: .top, spacing: 8) {
         Image(systemName: "circle.fill").font(.system(size: 4)).foregroundStyle(.secondary).padding(.top, 7)
