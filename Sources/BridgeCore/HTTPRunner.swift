@@ -221,7 +221,7 @@ public struct HTTPRunner: Sendable {
         return convert(mcpResponse, logger: logger)
     }
 
-    private static func makePerCallAuth(
+    static func makePerCallAuth(
         bind: Bind,
         label: String,
         remoteIP: String?,
@@ -264,7 +264,7 @@ public struct HTTPRunner: Sendable {
         return s.contains("Session already initialized")
     }
 
-    private static func extractBearer(from headers: HTTPFields) -> String? {
+    static func extractBearer(from headers: HTTPFields) -> String? {
         guard let raw = headers[.authorization] else { return nil }
         let prefix = "Bearer "
         guard raw.hasPrefix(prefix) else { return nil }
@@ -303,7 +303,7 @@ public struct HTTPRunner: Sendable {
         }
     }
 
-    private static func jsonError(status: HTTPResponse.Status, message: String) -> Response {
+    static func jsonError(status: HTTPResponse.Status, message: String) -> Response {
         let json = "{\"error\":\"\(message)\"}"
         var fields = HTTPFields()
         fields.append(HTTPField(name: .contentType, value: "application/json"))
@@ -313,7 +313,7 @@ public struct HTTPRunner: Sendable {
     /// 401 with a `WWW-Authenticate: Bearer` header so MCP clients fall back to
     /// the bearer token in their config instead of attempting OAuth discovery
     /// (RFC 6750).
-    private static func unauthorized(reason: String, message: String) -> Response {
+    static func unauthorized(reason: String, message: String) -> Response {
         let json = #"{"error":"\#(message)"}"#
         var fields = HTTPFields()
         fields.append(HTTPField(name: .contentType, value: "application/json"))

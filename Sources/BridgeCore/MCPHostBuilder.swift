@@ -80,7 +80,10 @@ public struct MCPHostBuilder: Sendable {
         return server
     }
 
-    private static func dispatch(
+    /// Internal so tests can drive the dispatch directly without booting
+    /// a full MCP transport. Production code reaches it via the
+    /// `withMethodHandler(CallTool.self)` closure registered in `build()`.
+    static func dispatch(
         params: CallTool.Parameters,
         handlers: [String: any ToolHandler],
         auth: AuthContext,

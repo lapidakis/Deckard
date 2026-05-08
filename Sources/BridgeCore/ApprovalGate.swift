@@ -98,30 +98,48 @@ public struct OsaScriptApprovalGate: ApprovalGate {
         let result = await runOsa(script: script)
         switch result {
         case .stdout(let text):
+            let decision = Self.classifyStdout(text)
+            switch decision {
+            case .approved: logger.info("Approval granted for tool=\(req.tool)")
+            case .denied:   logger.info("Approval denied for tool=\(req.tool)")
+            case .timeout:  logger.info("Approval timed out for tool=\(req.tool)")
+            }
+            // Surface the raw output for unexpected cases the classifier
+            // mapped to .denied — they're worth investigating in stderr.log.
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            switch trimmed {
-            case "Allow":
-                logger.info("Approval granted for tool=\(req.tool)")
-                return .approved
-            case "Deny":
-                logger.info("Approval denied for tool=\(req.tool)")
-                return .denied
-            case "TIMEOUT", "":
-                // Empty fallback covers the legacy `gave up of result` path
-                // (different macOS versions emit slightly different shapes).
-                logger.info("Approval timed out for tool=\(req.tool)")
-                return .timeout
-            default:
+            if decision == .denied, !["Deny"].contains(trimmed) {
                 if trimmed.hasPrefix("ERROR:") {
                     logger.error("osascript approval errored for tool=\(req.tool): \(trimmed)")
-                } else {
-                    logger.warning("Approval gate: unexpected output '\(trimmed)' for tool=\(req.tool) — denying")
+                } else if !trimmed.isEmpty {
+                    logger.warning("Approval gate: unexpected output '\(trimmed)' for tool=\(req.tool) — treating as deny")
                 }
-                return .denied
             }
+            return decision
         case .failed(let stderr):
             logger.error("osascript approval failed for tool=\(req.tool): \(stderr)")
             return .denied
+        }
+    }
+
+    /// Maps the raw stdout from the AppleScript dialog into an
+    /// `ApprovalDecision`. Pure function so tests don't have to spawn
+    /// osascript — feeds in the exact byte sequences the script produces:
+    ///   "Allow"     → .approved   (user clicked Allow)
+    ///   "Deny"      → .denied     (user clicked Deny / Esc / Cmd-.)
+    ///   "TIMEOUT"   → .timeout    (giving-up-after fired with our sentinel)
+    ///   ""          → .timeout    (legacy: empty stdout when AppleScript
+    ///                              returns the empty `button returned of
+    ///                              result` after a give-up — older macOS)
+    ///   "ERROR:..." → .denied     (script's on-error branch — fail closed)
+    ///   anything else → .denied   (defensive default — unexpected output
+    ///                              is never an "approved")
+    public static func classifyStdout(_ raw: String) -> ApprovalDecision {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch trimmed {
+        case "Allow":           return .approved
+        case "Deny":            return .denied
+        case "TIMEOUT", "":     return .timeout
+        default:                return .denied
         }
     }
 

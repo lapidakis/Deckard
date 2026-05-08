@@ -1,6 +1,7 @@
 import Foundation
 import EventKit
 import Logging
+import BridgeCore
 
 /// Reminders via EventKit. Same `EKEventStore` shape as Calendar but uses
 /// `entityType: .reminder` paths and `requestFullAccessToReminders()`.
@@ -413,17 +414,3 @@ public actor RemindersAdapter {
     }
 }
 
-/// Single-shot resume latch shared between the EventKit completion handler
-/// and the timeout. `tryResume()` returns true exactly once; subsequent calls
-/// from the loser of the race become no-ops, which preserves the
-/// CheckedContinuation single-resume invariant.
-private final class ResumeLatch: @unchecked Sendable {
-    private let lock = NSLock()
-    private var consumed = false
-    func tryResume() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        if consumed { return false }
-        consumed = true
-        return true
-    }
-}
