@@ -108,6 +108,87 @@ public actor MailAdapter {
         _ = try await runner.run(source: src, timeoutSeconds: 30)
     }
 
+    public struct BatchResult: Codable, Sendable {
+        /// Successfully completed operations (resolve + action both succeeded).
+        public let matched: Int
+        /// Ids the source mailbox couldn't resolve at all (already moved,
+        /// wrong mailbox, non-integer cast, …). Cast errors land here too.
+        public let missing: [String]
+        /// Ids that resolved but failed during the action (locked, deleted
+        /// between resolve and act, etc). Rare; observable so the agent can
+        /// retry that subset.
+        public let failed: [String]
+        public let elapsedMs: Int
+
+        public init(matched: Int, missing: [String], failed: [String], elapsedMs: Int) {
+            self.matched = matched
+            self.missing = missing
+            self.failed = failed
+            self.elapsedMs = elapsedMs
+        }
+    }
+
+    public func batchMoveMessages(
+        account: String, mailbox: String, ids: [String],
+        targetAccount: String?, targetMailbox: String
+    ) async throws -> BatchResult {
+        let tgtAcct = targetAccount?.isEmpty == false ? targetAccount! : account
+        let src = MailScripts.batchMoveMessages(
+            account: account, mailbox: mailbox, ids: ids,
+            targetAccount: tgtAcct, targetMailbox: targetMailbox
+        )
+        let start = ContinuousClock().now
+        // Generous timeout: batches of 200+ messages can take many seconds
+        // on slow IMAP backends. The script itself runs locally fast; the
+        // wait is on Mail.app's network call.
+        let out = try await runner.run(source: src, timeoutSeconds: 180)
+        let elapsed = elapsedMs(since: start)
+        return Self.parseBatchResult(out, elapsedMs: elapsed)
+    }
+
+    public func batchSetReadState(
+        account: String, mailbox: String, ids: [String], read: Bool
+    ) async throws -> BatchResult {
+        let src = MailScripts.batchSetReadState(
+            account: account, mailbox: mailbox, ids: ids, read: read
+        )
+        let start = ContinuousClock().now
+        let out = try await runner.run(source: src, timeoutSeconds: 120)
+        let elapsed = elapsedMs(since: start)
+        return Self.parseBatchResult(out, elapsedMs: elapsed)
+    }
+
+    /// Parses the line-delimited output of `batchMoveMessages` /
+    /// `batchSetReadState`. Format:
+    ///     MATCHED:<int>
+    ///     MISSING:<id>          (zero or more — couldn't resolve)
+    ///     FAILED:<id>           (zero or more — resolved but op failed)
+    /// Anything else is ignored; an empty/garbled response yields
+    /// matched=0/missing=[]/failed=[], which is the safe interpretation.
+    static func parseBatchResult(_ raw: String, elapsedMs: Int) -> BatchResult {
+        var matched = 0
+        var missing: [String] = []
+        var failed: [String] = []
+        for line in raw.split(separator: "\n") {
+            let s = line.trimmingCharacters(in: .whitespaces)
+            if s.hasPrefix("MATCHED:") {
+                let v = String(s.dropFirst("MATCHED:".count))
+                matched = Int(v) ?? 0
+            } else if s.hasPrefix("MISSING:") {
+                missing.append(String(s.dropFirst("MISSING:".count)))
+            } else if s.hasPrefix("FAILED:") {
+                failed.append(String(s.dropFirst("FAILED:".count)))
+            }
+        }
+        return BatchResult(matched: matched, missing: missing, failed: failed, elapsedMs: elapsedMs)
+    }
+
+    private nonisolated func elapsedMs(since start: ContinuousClock.Instant) -> Int {
+        let d = ContinuousClock().now - start
+        return Int(d.components.seconds * 1000) +
+            Int(d.components.attoseconds / 1_000_000_000_000_000)
+    }
+
     static func resolveTz(_ id: String?) -> TimeZone {
         if let id, !id.isEmpty, let tz = TimeZone(identifier: id) { return tz }
         return .current
