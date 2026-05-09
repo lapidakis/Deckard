@@ -163,6 +163,7 @@ final class OnboardingState: ObservableObject {
         let probes: [(String, String, String?, String?)] = [
             ("Calendar",                "kTCCServiceCalendar",   nil,                      "com.apple.preference.security?Privacy_Calendars"),
             ("Reminders",               "kTCCServiceReminders",  nil,                      "com.apple.preference.security?Privacy_Reminders"),
+            ("Contacts",                "kTCCServiceContactsFull", nil,                    "com.apple.preference.security?Privacy_Contacts"),
             ("Apple Events → Mail",     "kTCCServiceAppleEvents", "com.apple.mail",        "com.apple.preference.security?Privacy_Automation"),
             ("Apple Events → System Events", "kTCCServiceAppleEvents", "com.apple.systemevents", "com.apple.preference.security?Privacy_Automation"),
         ]

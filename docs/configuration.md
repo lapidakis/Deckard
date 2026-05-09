@@ -266,6 +266,14 @@ default = "deny"
 "reminders.update_reminder" = "approve"
 "reminders.complete_reminder" = "allow"
 "reminders.delete_reminder" = "approve"
+"contacts.search" = "allow"
+"contacts.get" = "allow"
+"contacts.list_groups" = "allow"
+"contacts.list_in_group" = "allow"
+"contacts.create" = "approve"
+"contacts.update" = "approve"
+"contacts.delete" = "approve"
+"contacts.set_groups" = "approve"
 
 [acl.profiles.triage]
 default = "deny"
@@ -279,6 +287,8 @@ default = "deny"
 "calendar.now" = "allow"
 "reminders.list_reminders" = "allow"
 "reminders.complete_reminder" = "allow"
+"contacts.search" = "allow"
+"contacts.get" = "allow"
 
 [acl.profiles.readonly]
 default = "deny"
@@ -291,6 +301,9 @@ default = "deny"
 "drive.read" = "allow"
 "drive.list" = "allow"
 "reminders.list_reminders" = "allow"
+"contacts.search" = "allow"
+"contacts.get" = "allow"
+"contacts.list_groups" = "allow"
 ```
 
 Then create tokens for each:

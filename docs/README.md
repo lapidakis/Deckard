@@ -7,7 +7,7 @@
 - [Releasing](releasing.md) — maintainer-facing guide to cutting a tagged release through the GitHub Actions notarization pipeline (incl. Homebrew tap setup + auto-bump)
 - [Migrating from iCloud-Bridge](migration-from-icloud-bridge.md) — what changed in the v1.0.0-beta.1 rename and what's automatic vs manual
 
-Tooling references and per-service notes live here over time. Today the closest thing is the source: `Sources/Service<Mail|Calendar|Drive|VoiceMemo|Reminders>/<Service>Tools.swift` for each tool's spec, description, and arguments.
+Tooling references and per-service notes live here over time. Today the closest thing is the source: `Sources/Service<Mail|Calendar|Drive|VoiceMemo|Reminders|Contacts>/<Service>Tools.swift` for each tool's spec, description, and arguments.
 
 ## Testing
 

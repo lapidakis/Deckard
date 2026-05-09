@@ -5,7 +5,7 @@ A single Swift binary built from one SPM package. Two executable targets:
 - `deckard` — the daemon. CLI entry point. Runs as a LaunchAgent in the user's GUI session.
 - `deckard-ui` — SwiftUI menubar app, packaged as a `.app` bundle. Reads the same files as the daemon; communicates with launchd, not the daemon.
 
-Plus six library targets — five service adapters and a shared core.
+Plus seven library targets — six service adapters and a shared core.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -50,6 +50,7 @@ Plus six library targets — five service adapters and a shared core.
 | `ServiceDrive` | iCloud Drive filesystem. DrivePath traversal guard. 7 tools. | BridgeCore, BridgeConfig, MCP |
 | `ServiceVoiceMemo` | CloudRecordings.db reader (SQLite C API), .m4a pull. 3 tools. | BridgeCore, MCP, SQLite3 |
 | `ServiceReminders` | EventKit `.reminder`. 7 tools. | BridgeCore, MCP, EventKit |
+| `ServiceContacts` | Contacts framework (`CNContactStore`). 8 tools (search/get/groups + CRUD + set_groups). | BridgeCore, MCP, Contacts |
 
 Dependency direction: imports only flow from Service* down through BridgeCore down through Bridge{Auth, Config, Policy}. No cycles. Adding a new service follows the existing pattern.
 
