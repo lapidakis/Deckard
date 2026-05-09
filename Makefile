@@ -39,23 +39,30 @@ uninstall:
 	.build/debug/deckard uninstall
 
 restart: build
-	-launchctl bootout gui/$(shell id -u)/com.lapidakis.deckard
-	@# launchd's bootout is async — the service entry can linger after the
-	@# command returns, and a too-quick bootstrap then fails with EIO
-	@# ("Bootstrap failed: 5: Input/output error"). Poll print until the
-	@# service is gone, then bootstrap. Bounded so a stuck teardown doesn't
-	@# wedge the make target forever.
-	@for i in 1 2 3 4 5 6 7 8 9 10; do \
-		if ! launchctl print gui/$(shell id -u)/com.lapidakis.deckard >/dev/null 2>&1; then \
-			break; \
-		fi; \
-		sleep 0.3; \
-	done
-	@# Retry bootstrap once on EIO — a few macOS releases still emit it
-	@# even when print reports the slot empty. The retry path almost
-	@# always succeeds; if it doesn't, surface the real error.
-	launchctl bootstrap gui/$(shell id -u) $(HOME)/Library/LaunchAgents/com.lapidakis.deckard.plist || \
-		(sleep 1 && launchctl bootstrap gui/$(shell id -u) $(HOME)/Library/LaunchAgents/com.lapidakis.deckard.plist)
+	@# Prefer `kickstart -k` when the service is currently loaded: it
+	@# terminates the running instance and restarts in place under the
+	@# same launchd entry. The plist resolves to a fixed binary path
+	@# that doesn't change between `make build` rebuilds, so the new
+	@# binary picks up automatically. This avoids the bootout/bootstrap
+	@# dance entirely — that pair has a known launchd race where the
+	@# service slot lingers after bootout and bootstrap then fails with
+	@# EIO ("Bootstrap failed: 5: Input/output error"), with no reliable
+	@# upper bound on the wait time.
+	@#
+	@# Bootstrap is reserved for the cold path: install / first-run /
+	@# the user manually unloaded the service. We retry there with
+	@# generous backoff because the service-was-just-unloaded race is
+	@# the same one kickstart sidesteps.
+	@uid=$(shell id -u); plist=$(HOME)/Library/LaunchAgents/com.lapidakis.deckard.plist; \
+	if launchctl print gui/$$uid/com.lapidakis.deckard >/dev/null 2>&1; then \
+		echo "launchctl kickstart -k gui/$$uid/com.lapidakis.deckard"; \
+		launchctl kickstart -k gui/$$uid/com.lapidakis.deckard; \
+	else \
+		echo "launchctl bootstrap gui/$$uid $$plist"; \
+		launchctl bootstrap gui/$$uid $$plist || \
+			(echo "bootstrap retry after 2s..."; sleep 2; launchctl bootstrap gui/$$uid $$plist) || \
+			(echo "bootstrap retry after 5s..."; sleep 5; launchctl bootstrap gui/$$uid $$plist); \
+	fi
 
 logs:
 	tail -f $(HOME)/Library/Logs/Deckard/stderr.log
