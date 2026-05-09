@@ -13,7 +13,7 @@ class Deckard < Formula
   homepage "https://github.com/lapidakis/Deckard"
   version "1.0.0-beta.3"
   url "https://github.com/lapidakis/Deckard/releases/download/v1.0.0-beta.3/deckard-v1.0.0-beta.3-arm64.tar.gz"
-  sha256 "6dc5569cebd4e026849dfd133b706d6049c0514ff2bfb8abb3510c9900a00921"
+  sha256 "f7d5c0b7221d16c6f878d54fa89c004a01316340aee1b271dd0f6260e308103d"
   license "MIT"
 
   # Apple Silicon only — Deckard's release pipeline currently targets arm64.
