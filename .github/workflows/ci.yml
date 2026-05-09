@@ -32,14 +32,18 @@ jobs:
 
       # Cache `.build/` keyed by Package.resolved so checkout-deps work
       # is amortized across runs without poisoning the cache when deps
-      # legitimately change.
+      # legitimately change. Repo name is included in the key because the
+      # PCH module cache embeds absolute paths — a repo rename invalidates
+      # those paths, but Package.resolved doesn't change, so without
+      # github.repository the post-rename run pulls a stale cache and
+      # fails with "PCH was compiled with module cache path .../old-name".
       - name: Cache .build
         uses: actions/cache@v4
         with:
           path: .build
-          key: spm-${{ runner.os }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          key: spm-${{ runner.os }}-${{ github.repository }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
           restore-keys: |
-            spm-${{ runner.os }}-
+            spm-${{ runner.os }}-${{ github.repository }}-
 
       - name: Resolve packages
         run: swift package resolve
