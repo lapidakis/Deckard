@@ -269,6 +269,18 @@ private func applyUpdate(release: ReleaseMeta, latest: String) async throws {
         // replacing the SwiftPM artifact would surprise them.
         throw RuntimeError("refusing to swap binary inside .build/ (\(currentBinary.path)). Run from an installed location.")
     }
+    if isHomebrewInstall(binary: currentBinary) {
+        // Homebrew tracks installed binaries via its own metadata; swapping
+        // out the file underneath leaves the receipt mismatched and the
+        // next `brew upgrade` would re-download to undo our work. Refuse
+        // and point the user at the brew-native upgrade path.
+        throw RuntimeError("""
+            \(currentBinary.path) is managed by Homebrew. Run \
+            `brew upgrade deckard` instead. Mixing self-update with brew \
+            install leaves brew's metadata stale and triggers re-downgrades \
+            on the next `brew upgrade` run.
+            """)
+    }
 
     print("Swapping \(currentBinary.path)…")
     try atomicSwap(new: newBinary, target: currentBinary)
@@ -349,6 +361,23 @@ private func resolveCurrentBinary() throws -> URL {
     // Fallback: argv0 resolution, mirroring what `deckard install` does.
     let argv0 = CommandLine.arguments.first ?? "deckard"
     return URL(fileURLWithPath: argv0).resolvingSymlinksInPath()
+}
+
+/// Does the resolved binary path live inside a Homebrew Cellar?
+///
+/// Homebrew installs binaries under `<prefix>/Cellar/<formula>/<version>/bin/`
+/// and links them into `<prefix>/bin/`. The standard prefixes are
+/// `/opt/homebrew` (Apple Silicon) and `/usr/local` (Intel / legacy), but
+/// users can pick custom prefixes. The `/Cellar/` segment is the universal
+/// fingerprint regardless of prefix, so check for that first; the prefix
+/// fallbacks catch hand-rolled symlinks into bin/ that don't resolve back
+/// to a Cellar path.
+private func isHomebrewInstall(binary: URL) -> Bool {
+    let path = binary.path
+    if path.contains("/Cellar/") { return true }
+    if path.hasPrefix("/opt/homebrew/") { return true }
+    if path.hasPrefix("/usr/local/Cellar/") { return true }
+    return false
 }
 
 private func atomicSwap(new: URL, target: URL) throws {

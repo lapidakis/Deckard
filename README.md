@@ -4,7 +4,7 @@ A Mac-resident MCP server that proxies Apple-native services — Mail, Calendar,
 
 The bridge is built around a simple premise: an LLM agent talking to your iCloud should look more like a service account with scoped permissions than a fully-trusted user. Every call passes through the same policy pipeline (auth → ACL → redaction → injection-tagging → approval-gate → audit), and every layer is configurable per token.
 
-**Status:** **v1.0.0-beta.1 (public beta).** 35 tools across 5 services, codesigned + notarized Developer ID build, **111 unit tests** (incl. a schema validator that walks every registered tool), daemon + menubar UI with first-launch onboarding, CI on every push. Designed for personal homelab use; security model documented in [`docs/security-model.md`](docs/security-model.md). Known beta issues + roadmap in [`CHANGELOG.md`](CHANGELOG.md).
+**Status:** **v1.0.0-beta.3 (public beta).** 35 tools across 5 services, codesigned + notarized Developer ID build, **111 unit tests** (incl. a schema validator that walks every registered tool), daemon + menubar UI with first-launch onboarding, auto-update via Sparkle (UI) and `deckard self-update` (CLI), CI on every push. Designed for personal homelab use; security model documented in [`docs/security-model.md`](docs/security-model.md). Known beta issues + roadmap in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -24,7 +24,8 @@ Deckard sits between the agent and macOS and adds:
 - **Append-only audit log** with configurable retention (default 30 days). Every call records caller, transport, tool, arg-keys, decision, latency, byte count, error.
 - **Loopback by default.** Tailscale binding is opt-in via config; nothing listens on a public interface.
 - **Per-tool tool-list filtering.** Agents only see what their token can call. Denied tools don't surface in `tools/list`, so context isn't burned on capabilities they can't use.
-- **Codesigned with Developer ID.** TCC grants persist across rebuilds. No re-prompting on every fresh `swift build`.
+- **Codesigned with Developer ID + notarized.** TCC grants persist across rebuilds; Gatekeeper accepts release artifacts on first open. No re-prompting on every fresh `swift build`.
+- **Auto-update with verification.** The menubar app uses Sparkle (EdDSA-signed appcast) for "Check for Updates…"; the headless daemon ships a `deckard self-update` subcommand that verifies SHA-256 + codesign + Developer ID team + Gatekeeper assess before swapping the binary and `kickstart`-ing the LaunchAgent.
 
 What it doesn't do:
 - It doesn't validate the agent's content before it leaves your network — that's the agent runtime's job.
@@ -51,12 +52,27 @@ The release artifacts are codesigned and notarized — Gatekeeper accepts them o
 
 The book icon turns green when the daemon's running, outline-only when stopped. Click for status; "Open Settings…" for the multi-tab window. Reopen onboarding anytime via Settings → Status → "Show Onboarding…".
 
-### Headless — daemon-only tarball
+### Headless — Homebrew
 
-For a Mac Mini sitting on a shelf or anything else where the menubar UI isn't wanted. Each release ships a notarized `deckard-<tag>-arm64.tar.gz` alongside the DMG.
+For a Mac Mini sitting on a shelf or any server-style deployment. The Homebrew tap pulls the same notarized release tarball the DMG uses; brew handles the version pinning and updates.
 
 ```sh
-TAG="v1.0.0-beta.1"   # latest tag from the Releases page
+brew tap lapidakis/deckard
+brew install deckard
+
+deckard config init
+deckard auth add default --profile trusted
+deckard install        # writes the LaunchAgent and bootstraps the daemon
+```
+
+Updates: `brew upgrade deckard`. `deckard self-update` refuses on Homebrew-managed binaries — brew owns the metadata, and a self-update would leave it stale.
+
+### Headless — direct tarball
+
+If brew isn't an option (offline install, locked-down server), grab the tarball asset directly:
+
+```sh
+TAG="v1.0.0-beta.3"   # latest tag from the Releases page
 curl -L -o deckard.tar.gz \
   "https://github.com/lapidakis/Deckard/releases/download/${TAG}/deckard-${TAG}-arm64.tar.gz"
 curl -L -o deckard.tar.gz.sha256 \
@@ -85,7 +101,7 @@ To uninstall:
 
 ```sh
 deckard uninstall                                    # bootouts + removes the LaunchAgent
-sudo rm /usr/local/bin/deckard
+sudo rm /usr/local/bin/deckard                       # or `brew uninstall deckard` if you used the tap
 rm -rf ~/Library/Application\ Support/Deckard ~/Library/Logs/Deckard
 ```
 
@@ -131,7 +147,7 @@ Verify in any Claude Code session with `/mcp` — should show `deckard  ✓ conn
 
 ---
 
-## What's in the box (35 tools, v1.0.0-beta.1)
+## What's in the box (35 tools, v1.0.0-beta.3)
 
 **Built-in**
 - `health.ping` — liveness probe; tiny payload, useful diagnostic
@@ -184,8 +200,7 @@ Per-tool detail in [`docs/configuration.md`](docs/configuration.md).
 
 - iMessage (Phase 5) — read `chat.db`, send via AppleScript, sender allowlist
 - ACL editor in the menubar UI (currently view-only; mutations via CLI)
-- Token CRUD in the menubar UI (creation lives in the onboarding flow; rotate / revoke / setProfile still CLI-only)
+- Token CRUD in the menubar UI (creation lives in the onboarding flow; rotate / revoke / set-profile still CLI-only)
 - XPC channel from daemon to menubar UI for approval dialogs — would let `.approve` outcomes prompt remote tokens reliably without falling back to `interactive_approval = "never"`
 - Voice memo transcription via Apple Speech framework (currently agent-side STT)
-- Notarization for distribution to other Macs without Gatekeeper warnings
 - `SessionHolder.recreate()` should drain in-flight requests before swapping the transport — closes the rare "Transport already started" race in the stale-session self-heal path

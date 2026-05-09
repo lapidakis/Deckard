@@ -4,7 +4,7 @@ A Mac-resident MCP server that proxies iCloud-bound services to AI agents over s
 
 Read this file before making changes. README.md is end-user-facing; this file is for the contributor. `docs/` has the deep dives — `architecture.md`, `security-model.md`, `configuration.md`, `operations.md`.
 
-## Status (v1.0.0-beta.1 — public beta)
+## Status (v1.0.0-beta.3 — public beta)
 
 | Phase | What | Status |
 |---|---|---|
@@ -25,6 +25,11 @@ Per-token `interactive_approval` mode (`always` / `never`) lets trusted remote t
 **Tailscale (v0.11.0) is real now.** Listener boots when `[tailscale] enabled = true`. Peer ACLs are delegated to tailscaled — the bridge does not maintain its own allowlist; if a request reaches the listener, your tailnet policy has already permitted it. `tailscale whois` runs per request for audit attribution only, so rows show `transport=tailnet caller=ts:laptop:user@github` rather than the static SessionHolder identity. Per-call AuthContext flows via `BridgeCallContext.override` TaskLocal.
 
 **Mail write tools accept `id` OR `ids: [string]`** — single tool, both shapes, returns `BatchResult { matched, missing, failed, elapsed_ms }`. Singletons go through the batch path internally (length-1 batch); response shape is uniform. Schema avoids top-level `oneOf` (Anthropic API rejects it).
+
+**Auto-update is live (v1.0.0-beta.2+).** Three parallel mechanisms, all pulling from the same GitHub Releases:
+- `deckard self-update` (CLI/headless) — verifies SHA-256 + `codesign --verify --strict` + TeamIdentifier=`NZL3HS8AH4` + `spctl --assess` before atomic-rename swap and `launchctl kickstart -k`. `--check` exits 0/2/3 for cron use. Refuses to swap binaries inside `.build/` or under a Homebrew Cellar.
+- Sparkle (menubar UI) — EdDSA-signed appcast at `https://lapidakis.github.io/Deckard/appcast.xml`, manual checks only (`SUEnableAutomaticChecks=false`) until the channel has been load-tested. Bundle embedding lives in `scripts/build-ui-app.sh`; CI signs releases via `sign_update` and appends entries to the gh-pages appcast.
+- **Homebrew tap** (`brew tap lapidakis/deckard && brew install deckard`) — `homebrew/Formula/deckard.rb` is the in-repo template; CI rewrites version/url/sha256 on each tag push and pushes the rendered formula to the `lapidakis/homebrew-deckard` tap repo via the `DECKARD_TAP_TOKEN` PAT. `brew upgrade deckard` is the brew-native upgrade path.
 
 ## Module map
 

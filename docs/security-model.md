@@ -68,7 +68,17 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 - TCC grants key on the signed identity, not the binary hash. Every fresh `make build` preserves the user's previously-granted Automation, Calendar, Reminders permissions.
 - Without codesigning, every rebuild would lose grants. The build is structured so `make build` always re-signs; a bare `swift build` would produce an adhoc binary, lose grants, and silently fail at the next call. The Makefile chains both steps.
 
-### 8. Loopback by default; Tailnet listener delegates peer ACLs to tailscaled
+### 8. Auto-update verification
+
+The daemon (`deckard self-update`) and the menubar app (Sparkle) both consume the same GitHub Releases as their update source. Each path enforces independent verification before applying anything:
+
+- **`deckard self-update`** verifies SHA-256 of the tarball against the release's `.sha256` sidecar, then runs `codesign --verify --strict` on the extracted binary, asserts `TeamIdentifier=NZL3HS8AH4` (compiled in — no runtime override), and finally runs `spctl --assess --type execute` to confirm Apple's notarization ticket is present and valid. Any single failure aborts the swap; the running binary is untouched. Refuses to swap when the running binary is inside a `.build/` tree (developer-build guard).
+- **Sparkle** ships an EdDSA-signed appcast. Each `<item>` is signed by a private key that lives only in CI's `DECKARD_ED_PRIVATE_KEY` secret; the matching public key is baked into the app bundle's `SUPublicEDKey`. A compromise of GitHub Releases (or the gh-pages branch) alone cannot ship a malicious update — the attacker would also need the private key.
+- `SUEnableAutomaticChecks=false` keeps the menubar app from polling on a timer until the channel has earned that trust. Today the user clicks "Check for Updates…" explicitly.
+
+The update channel is layered on top of Apple's notarization, not replacing it. Notarization proves Apple recognized the build as Developer-ID-signed; the bridge's TeamIdentifier check + Sparkle's EdDSA signature prove it was *this* project's release pipeline that produced the build.
+
+### 9. Loopback by default; Tailnet listener delegates peer ACLs to tailscaled
 
 - HTTP transport binds `127.0.0.1` only unless `[tailscale] enabled = true` is set explicitly in config.
 - Tailscale opt-in adds a second listener on the tailnet IPv4 reported by the `tailscale` CLI. Same bearer auth applies. Same ACL profiles.

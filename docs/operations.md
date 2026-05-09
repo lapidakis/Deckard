@@ -42,9 +42,20 @@ make restart         # bootout + bootstrap the LaunchAgent
 
 `tokens.toml` and `config.toml` survive across rebuilds. TCC grants survive too because the codesign step uses a stable signing identity.
 
+### Headless install (Homebrew)
+
+```sh
+brew upgrade deckard           # pulls the new tarball, bumps the binary
+deckard restart                # bootout + re-bootstrap against the upgraded path
+```
+
+`brew upgrade` replaces the binary in the Cellar and updates the symlink in `<prefix>/bin`. The LaunchAgent's plist still points at the symlink, so a restart picks up the new path automatically.
+
+`deckard self-update` refuses to swap a Homebrew-managed binary — running it from a brew install prints a "use `brew upgrade deckard` instead" message. Detection looks at the resolved binary path: anything inside `<prefix>/Cellar/` or under `/opt/homebrew/` is treated as brew-managed.
+
 ### Headless install (`deckard self-update`)
 
-The CLI binary can update itself from a published GitHub Release:
+For installs where the binary was placed manually (`/usr/local/bin/`, custom prefix, etc.), the CLI can update itself from a published GitHub Release:
 
 ```sh
 deckard self-update                  # check + notify (no changes applied)

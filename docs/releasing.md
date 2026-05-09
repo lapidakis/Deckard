@@ -117,6 +117,68 @@ git push origin :refs/tags/v1.0.0-beta.2     # delete the tag remotely
 
 Then cut a new release with the fix. Note that anyone who already downloaded the bad artifact still has it — rotate any leaked credentials.
 
+## Homebrew tap
+
+Each release ships a notarized `deckard-<tag>-arm64.tar.gz` headless tarball that the Homebrew formula points at. The release workflow auto-rewrites the version, URL, and SHA-256 in the tap repo's formula on every tag push.
+
+### One-time setup
+
+1. **Create the tap repo.** GitHub → New repository → name it exactly `homebrew-deckard` under your account. Convention: `<owner>/homebrew-<name>` is what `brew tap <owner>/<name>` resolves to. Default branch `main`. Keep it public — Homebrew can read private repos with PAT auth, but every user would then need their own PAT to install.
+
+2. **Seed the formula.** Copy the staged template from this repo into the new tap:
+
+   ```sh
+   git clone https://github.com/lapidakis/homebrew-deckard.git
+   cd homebrew-deckard
+   mkdir -p Formula
+   cp ../Deckard/homebrew/Formula/deckard.rb Formula/
+   git add Formula/deckard.rb
+   git commit -m "deckard 1.0.0-beta.3 (initial)"
+   git push origin main
+   ```
+
+   The version, URL, and SHA in `homebrew/Formula/deckard.rb` are the latest values committed in the source repo, so `brew install deckard` works immediately against the most recent published release. Subsequent CI runs keep them current.
+
+3. **Mint a PAT for CI.** GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens. Scope:
+   - **Resource owner:** your account
+   - **Repository access:** Only select repositories → `homebrew-deckard`
+   - **Repository permissions:** `Contents: Read and write`
+   - Expiration: pick a sensible window (90 days is the default; renew before it lapses)
+
+   Copy the token before navigating away — it's shown once.
+
+4. **Add the secret to the source repo.** From this repo's directory:
+
+   ```sh
+   gh secret set DECKARD_TAP_TOKEN -R lapidakis/Deckard
+   # paste the PAT, hit ^D
+   ```
+
+   Optional: `gh secret set DECKARD_TAP_REPO -R lapidakis/Deckard` if the tap lives somewhere other than the default `lapidakis/homebrew-deckard`.
+
+5. **Smoke test.** Cut a release (push a `v*` tag). The workflow's "Bump Homebrew tap formula" step should produce a new commit on the tap repo with the bumped version. Verify with:
+
+   ```sh
+   brew tap lapidakis/deckard
+   brew install deckard
+   deckard version
+   ```
+
+### What the CI step does
+
+After the headless tarball is built and uploaded to the GitHub Release, the workflow:
+
+1. Reads the tarball SHA-256 from the sidecar file.
+2. Loads `homebrew/Formula/deckard.rb` from this repo as the template.
+3. Rewrites the `version`, `url`, and `sha256` lines (regex-based, so the rest of the formula — caveats, livecheck, test block — stays in sync with main).
+4. Clones the tap repo with the PAT, drops in the rewritten file, commits as `deckard <version>`, and pushes.
+
+If `DECKARD_TAP_TOKEN` isn't set, the step is skipped with a warning. The release still succeeds — Homebrew users just stay on the previous version until the secret is configured.
+
+### Editing the formula
+
+Treat `homebrew/Formula/deckard.rb` in this repo as the source of truth for everything except `version`, `url`, and `sha256`. Changes to caveats, dependency declarations, the livecheck block, or test logic land there and ride the next release into the tap. Edits made directly in the tap repo will get overwritten on the next CI sync.
+
 ## Manual release (without CI)
 
 If GitHub Actions is unavailable, the same steps are runnable locally:

@@ -13,6 +13,9 @@ name: Release
 #   APPLE_ID_PASSWORD             app-specific password from appleid.apple.com (NOT the AppleID login)
 #   DECKARD_ED_PUBLIC_KEY         base-64 EdDSA public key (Sparkle's `generate_keys` output, "pub")
 #   DECKARD_ED_PRIVATE_KEY        base-64 EdDSA private key (matching "priv") — kept secret
+#   DECKARD_TAP_TOKEN             PAT with `contents: write` on the Homebrew tap repo
+#                                 (default repo: lapidakis/homebrew-deckard, override via DECKARD_TAP_REPO)
+#   DECKARD_TAP_REPO              owner/name of the tap repo (optional override)
 #   DECKARD_BUNDLE_ID                 com.lapidakis.deckard       (optional override)
 #   DECKARD_UI_BUNDLE_ID              com.lapidakis.deckard.ui    (optional override)
 #
@@ -46,6 +49,9 @@ jobs:
       DECKARD_BUNDLE_ID: ${{ secrets.DECKARD_BUNDLE_ID || 'com.lapidakis.deckard' }}
       DECKARD_UI_BUNDLE_ID: ${{ secrets.DECKARD_UI_BUNDLE_ID || 'com.lapidakis.deckard.ui' }}
       DECKARD_ED_PUBLIC_KEY: ${{ secrets.DECKARD_ED_PUBLIC_KEY }}
+      # Surfaced at job-env scope so step-level `if: env.DECKARD_TAP_TOKEN != ''`
+      # can short-circuit the tap-bump step before keys are configured.
+      DECKARD_TAP_TOKEN: ${{ secrets.DECKARD_TAP_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -420,4 +426,51 @@ jobs:
               --title "$TAG" \
               --prerelease \
               $NOTES_FLAG
+          fi
+
+      # Sync the Homebrew tap (lapidakis/homebrew-deckard).
+      # Skipped when DECKARD_TAP_TOKEN is absent — pre-tap-bootstrap
+      # window. Once the tap repo + PAT exist, every release auto-bumps
+      # the formula's version + url + sha256 and pushes a single commit.
+      - name: Bump Homebrew tap formula
+        if: env.DECKARD_TAP_TOKEN != ''
+        env:
+          DECKARD_TAP_TOKEN: ${{ secrets.DECKARD_TAP_TOKEN }}
+          DECKARD_TAP_REPO: ${{ secrets.DECKARD_TAP_REPO || 'lapidakis/homebrew-deckard' }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"
+          VERSION="${TAG#v}"
+          SHA256="$(awk '{print $1}' "$TAR_SHA")"
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/deckard-${TAG}-arm64.tar.gz"
+
+          TAP_DIR="$RUNNER_TEMP/tap"
+          # PAT auth — GITHUB_TOKEN is scoped to the source repo and
+          # can't push to a sibling. The PAT must have `contents: write`
+          # on the tap repo only; treat it like a release credential.
+          git clone "https://x-access-token:${DECKARD_TAP_TOKEN}@github.com/${DECKARD_TAP_REPO}.git" "$TAP_DIR"
+
+          mkdir -p "$TAP_DIR/Formula"
+          # Render the formula. The template lives in `homebrew/Formula/deckard.rb`
+          # in the source repo so it can be reviewed alongside code changes;
+          # CI rewrites the version/url/sha256 fields for the tap copy.
+          python3 - "$TAP_DIR/Formula/deckard.rb" "$VERSION" "$URL" "$SHA256" <<'PY'
+          import sys, pathlib, re
+          out, version, url, sha = sys.argv[1:]
+          src = pathlib.Path('homebrew/Formula/deckard.rb').read_text()
+          src = re.sub(r'version "[^"]*"', f'version "{version}"', src, count=1)
+          src = re.sub(r'url "[^"]*"', f'url "{url}"', src, count=1)
+          src = re.sub(r'sha256 "[^"]*"', f'sha256 "{sha}"', src, count=1)
+          pathlib.Path(out).write_text(src)
+          PY
+
+          cd "$TAP_DIR"
+          git config user.email "actions@github.com"
+          git config user.name "deckard release bot"
+          git add Formula/deckard.rb
+          if ! git diff --cached --quiet; then
+            git commit -m "deckard ${VERSION}"
+            git push origin HEAD
+          else
+            echo "Formula/deckard.rb unchanged for ${VERSION}; nothing to push"
           fi
