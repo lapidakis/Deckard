@@ -36,7 +36,7 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 ### 3. Outbound redaction
 
 - Before a tool result reaches the agent, the `Redactor` middleware walks every `.text` content item and replaces secret-shaped substrings with `[REDACTED:<rule>]`.
-- Built-in rule set covers: AWS access keys, AWS secret env-var assignments, OpenAI keys, Anthropic keys, GitHub PATs, Slack tokens, bearer header captures, SSN-like patterns, RSA / EC / OpenSSH / DSA / PGP private key blocks.
+- Built-in rule set covers: AWS access keys + secret env-var assignments + session tokens, OpenAI / Anthropic / Stripe / Twilio / Google / npm / DigitalOcean / Azure SharedKey API credentials, GitHub PATs, Slack tokens, JWTs, GCP service-account markers, bearer-header captures, SSN-like patterns, RSA / EC / OpenSSH / DSA / PGP private key blocks. Plus **one-time / verification credentials** likely to appear in transactional auth emails: 2FA / OTP / TOTP / MFA / sign-in / verification / confirmation / login codes (`otp_code` rule, digit-required so "expired" / "invalid" don't trigger), magic-link / password-reset / verification tokens in URL query parameters (`magic_link_token`), inline `password:` / `passwd=` / `passphrase:` assignments (`password_inline`), and labeled PINs (`pin_inline`).
 - Configurable in `[redaction]`: disable specific rules, add custom regex rules, fully off for debugging.
 - Conservative by design — false positives cost the agent information; false negatives cost a secret. New rules added when real misses surface.
 

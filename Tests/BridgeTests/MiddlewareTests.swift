@@ -72,6 +72,75 @@ private func extractText(_ result: CallTool.Result) -> String {
     #expect(masked.contains("[REDACTED:aws_access_key]"))         // others still applied
 }
 
+@Test func redactorMasksVerificationCode() {
+    let r = Redactor(config: RedactionConfig())
+    for input in [
+        "Your verification code is 482719. Don't share it.",
+        "Verification code: 482719",
+        "Use this sign-in code: 482719",
+        "Your security code is 482-719",
+        "Login code: ABC123",
+        "OTP: 482719",
+        "Your 2FA code is 482719",
+        "MFA token: 8K2Q9X",
+        "Your one-time password is 4827AB",
+    ] {
+        let masked = r.redact(input)
+        #expect(masked.contains("[REDACTED:otp_code]"), "should redact: \(input) → \(masked)")
+    }
+}
+
+@Test func redactorOTPLeavesNonDigitWordsAlone() {
+    let r = Redactor(config: RedactionConfig())
+    // The digit-required lookahead means "expired" / "invalid" — common
+    // English words that match [A-Z0-9-]{4,12} — must not be redacted.
+    let masked = r.redact("Your verification code expired. The login code is invalid.")
+    #expect(!masked.contains("[REDACTED:otp_code]"), "got: \(masked)")
+    #expect(masked.contains("expired"))
+    #expect(masked.contains("invalid"))
+}
+
+@Test func redactorMasksMagicLinkToken() {
+    let r = Redactor(config: RedactionConfig())
+    let masked = r.redact("Click https://example.com/login?token=AbCdEfGhIjKlMnOpQrStUvWxYz123456 to sign in")
+    #expect(masked.contains("[REDACTED:magic_link_token]"))
+    #expect(masked.contains("https://example.com/login"))   // host preserved
+    #expect(!masked.contains("AbCdEfGhIjKlMnOpQrStUvWxYz123456"))
+}
+
+@Test func redactorMagicLinkTokenIgnoresShortValues() {
+    let r = Redactor(config: RedactionConfig())
+    // Short query values aren't credential-shaped; threshold is 16 chars.
+    let masked = r.redact("https://api.example.com/search?key=us&otp=ab")
+    #expect(!masked.contains("[REDACTED:magic_link_token]"))
+}
+
+@Test func redactorMasksInlinePassword() {
+    let r = Redactor(config: RedactionConfig())
+    let masked = r.redact("creds — password: hunter2-special and passwd=abcdef!")
+    #expect(masked.contains("[REDACTED:password_inline]"))
+    #expect(!masked.contains("hunter2"))
+}
+
+@Test func redactorMasksInlinePIN() {
+    let r = Redactor(config: RedactionConfig())
+    for input in [
+        "Your PIN is 1234",
+        "PIN: 482719",
+        "pin number is 9876",
+        "PIN = 12345678",
+    ] {
+        let masked = r.redact(input)
+        #expect(masked.contains("[REDACTED:pin_inline]"), "should redact: \(input) → \(masked)")
+    }
+}
+
+@Test func redactorPINIgnoresNonDigitContext() {
+    let r = Redactor(config: RedactionConfig())
+    let masked = r.redact("the pin code is invalid and the spinach pin broke")
+    #expect(!masked.contains("[REDACTED:pin_inline]"))
+}
+
 @Test func redactorAppliesExtraRules() {
     let r = Redactor(config: RedactionConfig(
         enabled: true,

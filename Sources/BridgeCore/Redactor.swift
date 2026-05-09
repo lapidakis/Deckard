@@ -82,5 +82,38 @@ public struct Redactor: ResultMiddleware {
         ("npm_token",        #"\bnpm_[A-Za-z0-9]{32,}\b"#),
         ("digitalocean",     #"\bdop_v1_[a-f0-9]{60,}\b"#),
         ("azure_sharedkey",  #"SharedKey\s+[A-Za-z0-9._-]+:[A-Za-z0-9+/=]{20,}"#),
+
+        // One-time / verification codes anchored on auth context. Matches
+        // common transactional-auth shapes:
+        //   "Your verification code is 482719"
+        //   "Sign-in code: ABC-123"
+        //   "OTP: 482719"  •  "2FA: 4827"  •  "MFA token: 8K2Q9"
+        //   "Your one-time password is 4827AB"
+        // Lookahead `(?=[A-Z0-9-]*\d)` requires at least one digit in the
+        // matched value so plain words like "invalid" or "expired" don't
+        // trip the rule (a real OTP almost always contains digits).
+        ("otp_code", #"(?i)\b(?:(?:OTP|TOTP|2[- ]?FA|MFA)(?:[- ]?(?:code|password|passcode|pin|token))?|(?:verification|confirmation|security|login|sign[- ]?in|one[- ]?time|access|auth(?:entication|orization)?)[- ]?(?:code|password|passcode|pin|token))(?:\s+is)?\s*[:=\-]?\s*(?=[A-Z0-9\-]*\d)[A-Z0-9\-]{4,12}\b"#),
+
+        // Magic-link / password-reset / verification tokens in URL
+        // parameters. Anchors on auth-shaped param names with ≥16 chars of
+        // token-shaped value, so generic `?key=us` query strings don't
+        // match. Note: this redacts the param + value but leaves the rest
+        // of the URL intact, which is usually what you want — the agent
+        // still sees the host so it can describe what site sent the email.
+        ("magic_link_token", #"(?i)[?&](?:token|auth|otp|verify|verification|reset|magic|nonce|key|t)=[A-Za-z0-9._=\-]{16,}"#),
+
+        // "password: hunter2", "passwd=...", "passphrase: ...". Requires
+        // explicit label + delimiter + ≥6-char value, so "your password is
+        // being reset" (no value) and "password" alone don't match. Note
+        // there's overlap with `bearer_header` / `otp_code` — duplicate
+        // matches are harmless because earlier substitutions just leave
+        // `[REDACTED:<name>]` for the next rule to ignore.
+        ("password_inline", #"(?i)\b(?:password|passwd|passphrase)\s*[:=]\s*\S{6,}"#),
+
+        // "PIN: 1234", "pin number is 12345", "pin = 9876". 4–8 digits is
+        // the typical bank/auth range. Distinct rule from `otp_code`
+        // because PINs are usually pure digits and the surrounding label
+        // is shorter.
+        ("pin_inline", #"(?i)\bpin\s*(?:code|number|#)?\s*(?:is|:|=)\s*\d{4,8}\b"#),
     ]
 }
