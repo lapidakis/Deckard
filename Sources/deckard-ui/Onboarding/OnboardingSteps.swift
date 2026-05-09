@@ -15,7 +15,7 @@ struct WelcomeStep: View {
                 .foregroundStyle(.tint)
             Text("Welcome to Deckard")
                 .font(.title.bold())
-            Text("This Mac is about to become an MCP server that exposes Mail, Calendar, iCloud Drive, Voice Memos, and Reminders to AI agents — local or remote.")
+            Text("This Mac is about to become an MCP server that exposes Mail, Calendar, iCloud Drive, Voice Memos, Reminders, and Contacts to AI agents — local or remote.")
                 .foregroundStyle(.secondary)
             Text("This setup walks you through:")
                 .padding(.top, 8)

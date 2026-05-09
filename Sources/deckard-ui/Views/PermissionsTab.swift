@@ -64,6 +64,9 @@ struct PermissionsTab: View {
                     Button("Reminders") {
                         openPrefPane("com.apple.preference.security?Privacy_Reminders")
                     }
+                    Button("Contacts") {
+                        openPrefPane("com.apple.preference.security?Privacy_Contacts")
+                    }
                     Button("Full Disk Access") {
                         openPrefPane("com.apple.preference.security?Privacy_AllFiles")
                     }

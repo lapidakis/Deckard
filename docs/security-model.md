@@ -65,7 +65,7 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 ### 7. Codesigning + hardened runtime
 
 - Daemon and UI binaries are codesigned with a Developer ID Application certificate, hardened runtime enabled, entitlements declared explicitly.
-- TCC grants key on the signed identity, not the binary hash. Every fresh `make build` preserves the user's previously-granted Automation, Calendar, Reminders permissions.
+- TCC grants key on the signed identity, not the binary hash. Every fresh `make build` preserves the user's previously-granted Automation, Calendar, Reminders, Contacts permissions.
 - Without codesigning, every rebuild would lose grants. The build is structured so `make build` always re-signs; a bare `swift build` would produce an adhoc binary, lose grants, and silently fail at the next call. The Makefile chains both steps.
 
 ### 8. Auto-update verification

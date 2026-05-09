@@ -32,7 +32,7 @@ So the typical migration is just: `make build && deckard install` (or for DMG us
 
 ### Re-grant TCC
 
-macOS keys TCC grants on the binary's signing identity (team + bundle id). The bundle id changing from `com.lapidakis.icloud-bridge` to `com.lapidakis.deckard` invalidates every Mail / Calendar / Reminders / Apple Events grant you had. The first call to each surface after the rename re-prompts; click Allow on each.
+macOS keys TCC grants on the binary's signing identity (team + bundle id). The bundle id changing from `com.lapidakis.icloud-bridge` to `com.lapidakis.deckard` invalidates every Mail / Calendar / Reminders / Contacts / Apple Events grant you had. The first call to each surface after the rename re-prompts; click Allow on each.
 
 The Permissions tab in the menubar UI's Settings window queries TCC.db for both bundle ids during the v1.0.0 release, so you can see your old + new state side by side. The legacy clauses are dropped in v1.1.
 
