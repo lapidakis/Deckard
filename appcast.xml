@@ -16,5 +16,16 @@
                 type="application/octet-stream"
                 sparkle:edSignature="3w3W5JvPGuaz4cu3mmTvYOPbq0D+siljBKbR/S+eS15xgSFN8XSun2sXKXzusdhqYXSKvUjxnk3i5T+Xni/FCw==" length="1843182" />
         </item>
+        <item>
+            <title>1.0.0-beta.3</title>
+            <pubDate>Sat, 09 May 2026 16:00:11 +0000</pubDate>
+            <sparkle:version>1.0.0-beta.3</sparkle:version>
+            <sparkle:shortVersionString>1.0.0-beta.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure
+                url="https://github.com/lapidakis/Deckard/releases/download/v1.0.0-beta.3/Deckard-v1.0.0-beta.3.zip"
+                type="application/octet-stream"
+                sparkle:edSignature="w/Oset/dA6Jg73R5X7/ctAfESVNI2ebF/sdBfFNXATkatNfyW9WAo+HCux9Rt6P2H4jIh/3qAgYbgF8jVzCZAw==" length="1843173" />
+        </item>
     </channel>
 </rss>
