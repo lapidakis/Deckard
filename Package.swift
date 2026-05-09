@@ -23,6 +23,11 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-http-types.git", from: "1.3.0"),
         .package(url: "https://github.com/LebJe/TOMLKit.git", from: "0.6.0"),
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.5.0"),
+        // Sparkle is an XCFramework binary dep — handles auto-update for the
+        // menubar app. Only used by deckard-ui; the headless daemon has its
+        // own `deckard self-update` subcommand instead. Bundle-embedding +
+        // signing of Sparkle.framework lives in scripts/build-ui-app.sh.
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.6.0"),
     ],
     targets: [
         .executableTarget(
@@ -31,6 +36,7 @@ let package = Package(
                 "BridgeAuth",
                 "BridgeConfig",
                 "BridgePolicy",
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             path: "Sources/deckard-ui"
         ),

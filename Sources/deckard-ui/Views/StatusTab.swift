@@ -17,7 +17,7 @@ struct StatusTab: View {
                     }
                 }
                 LabeledContent("PID", value: status.pid.map { "\($0)" } ?? "—")
-                LabeledContent("Loopback :8787", value: status.portBound ? "bound" : "—")
+                LabeledContent("Loopback :\(status.loopbackPort)", value: status.portBound ? "bound" : "—")
             }
 
             Section("Audit") {

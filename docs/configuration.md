@@ -19,8 +19,6 @@ loopback_port = 8787
 [tailscale]
 enabled = false
 port = 8787
-allowed_peers = []
-allowed_users = []
 
 [auth]
 require_token = true
@@ -61,20 +59,16 @@ write_allowed_prefixes = []
 |---|---|---|
 | `enabled` | `false` | Off by default. When true, daemon also binds the tailnet IPv4 reported by `tailscale ip -4`. |
 | `port` | `8787` | Port for the tailnet listener. |
-| `allowed_peers` | `[]` | Tailnet hostnames (short form, e.g. `"hermes"`) permitted to reach the bridge. Case-insensitive. Empty list with empty `allowed_users` = open to any peer with a valid bearer token. |
-| `allowed_users` | `[]` | Tailnet `LoginName`s permitted (e.g. `"mike@github"`). Case-insensitive. |
 
-When the listener boots and either list is non-empty, every incoming request runs `tailscale whois --json <source-ip>`; the resulting `(hostname, user)` pair is matched against the allowlists. **Either axis matches → allow** (so you can allow specific machines, specific accounts, or both). Both empty means "open" — the listener logs a warning and treats any tailnet peer with a valid bearer token as allowed.
+Peer ACLs are intentionally **not** configured here — Deckard delegates them to `tailscaled`. If a peer can reach the listener at all, your tailnet policy (set in the Tailscale admin console) has already permitted it. Bearer-token auth still applies on top, so a non-tailnet attacker can't bypass authentication just by being on your tailnet.
 
-Failure modes — failed whois, missing remote address, etc. — are treated as **deny** when an allowlist is configured. The denied request never reaches token validation, so a non-allowlisted peer can't spend rate-limit budget against your bearer secrets.
-
-Audit rows from tailnet calls record `transport=tailnet` and (when whois succeeds) `caller=ts:<peer>:<user>` instead of `bearer:<label>`.
+`tailscale whois --json <source-ip>` runs per request for **audit attribution only** — the row records `transport=tailnet` and `caller=ts:<peer>:<user>` instead of `bearer:<label>`. Whois failure is non-fatal: the request still serves and audit falls back to the raw IP.
 
 Inspect at runtime:
 
 ```sh
 deckard tailscale status        # config + probe state
-deckard tailscale whois 100.x.y.z   # resolve a tailnet IP and show allow/deny
+deckard tailscale whois 100.x.y.z   # resolve a tailnet IP to peer + user
 ```
 
 ### `[auth]`

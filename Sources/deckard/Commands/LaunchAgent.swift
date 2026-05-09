@@ -76,6 +76,43 @@ struct Install: AsyncParsableCommand {
     }
 }
 
+struct Restart: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "restart",
+        abstract: "Bootout + bootstrap the LaunchAgent so config / token changes take effect.",
+        discussion: """
+        Equivalent to:
+            launchctl bootout gui/$(id -u)/\(launchAgentLabel)
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/\(launchAgentLabel).plist
+
+        Use after editing config.toml, adding / rotating / revoking a token, or
+        toggling the Tailscale listener. No-op safe — bootout returns
+        "Could not find specified service" if nothing is loaded; bootstrap
+        proceeds either way.
+        """
+    )
+
+    func run() async throws {
+        let target = "gui/\(getuid())"
+        let plistURL = launchAgentPlistURL
+
+        guard FileManager.default.fileExists(atPath: plistURL.path) else {
+            FileHandle.standardError.write(Data("LaunchAgent plist not found at \(plistURL.path). Run `deckard install` first.\n".utf8))
+            throw ExitCode(1)
+        }
+
+        // bootout is best-effort — service may not be loaded.
+        _ = runLaunchctl(["bootout", "\(target)/\(launchAgentLabel)"])
+
+        let result = runLaunchctl(["bootstrap", target, plistURL.path])
+        guard result.exitCode == 0 else {
+            FileHandle.standardError.write(Data("launchctl bootstrap failed (\(result.exitCode)): \(result.output)\n".utf8))
+            throw ExitCode(2)
+        }
+        print("Daemon restarted (\(launchAgentLabel) under \(target)).")
+    }
+}
+
 struct Uninstall: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "uninstall",

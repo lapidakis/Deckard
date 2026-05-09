@@ -11,7 +11,7 @@ Tooling references and per-service notes live here over time. Today the closest 
 
 ## Testing
 
-- 116 unit tests in `Tests/BridgeTests/`. Highlights:
+- 111 unit tests in `Tests/BridgeTests/`. Highlights:
   - `SchemaTests` — meta-test that walks every registered tool's `inputSchema` and rejects top-level `oneOf`/`allOf`/`anyOf`, missing `type` keywords, required fields not in `properties`, name/spec.name mismatches, duplicate names. Failing this is a ship-blocker.
   - `MCPHostBuilderTests` — drives `dispatch` directly to verify allow / deny / approve+always / approve+never / approve+denied / unknown-tool / tool-error / TaskLocal-AuthContext-override paths.
   - `HTTPRunnerTests` — bearer extraction, makePerCallAuth across loopback/tailnet/whois-failed, RFC 6750 `WWW-Authenticate: Bearer` envelopes.

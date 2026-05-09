@@ -13,7 +13,8 @@ Plus six library targets — five service adapters and a shared core.
 │
 │   Transports: stdio | HTTP loopback | HTTP tailnet (opt-in)
 │   ↓
-│   HTTPRunner → tailnet allowlist (whois, allowed_peers/users)
+│   HTTPRunner → tailnet whois (audit attribution only;
+│                 peer ACLs delegated to tailscaled)
 │              → bearer token lookup
 │              → BridgeCallContext.$override.withValue(perCallAuth)
 │              → SessionHolder for that token
@@ -56,9 +57,9 @@ Dependency direction: imports only flow from Service* down through BridgeCore do
 
 1. **Client sends** `POST /mcp` with `Authorization: Bearer <secret>` and a JSON-RPC message body.
 2. **HTTPRunner** pulls the source IP from the connection's `SocketAddress` (via `PeerAwareRequestContext`).
-3. **Tailnet allowlist enforcement** (only on the tailnet listener). When `allowed_peers` / `allowed_users` is non-empty, runs `tailscale whois --json <ip>`, matches against the allowlist (either-axis satisfies). Failure modes (failed whois, missing IP) under a non-empty allowlist = HTTP 403 — the request never reaches bearer auth, so non-allowlisted peers can't spend rate-limit budget against bearer secrets.
+3. **Tailnet whois (audit only).** On the tailnet listener, every request runs `tailscale whois --json <ip>` so the audit row can attribute the call to a peer hostname + user. The bridge does NOT maintain its own peer allowlist — peer ACLs are delegated to tailscaled, set in the Tailscale admin console. If the request reaches the listener at all, that policy has already permitted it. Whois failure is non-fatal; bearer auth still applies independently.
 4. **Bearer extraction + lookup** in TokenSessions (`[secret → SessionHolder]` built at daemon startup from TokenRegistry). 401 with `WWW-Authenticate: Bearer` on miss.
-5. **Per-call AuthContext.** HTTPRunner builds a per-request `AuthContext` carrying the actual transport (loopback vs tailnet), peer identity (whois result becomes `.tailscale(peer:user:)`; falls back to `.bearer(label:)` on whois failure under an open allowlist), and remote description. This is set on `BridgeCallContext.$override` (a TaskLocal) before invoking the SDK transport, so structured Task children inherit it. `MCPHostBuilder.dispatch` reads the override at audit-write time.
+5. **Per-call AuthContext.** HTTPRunner builds a per-request `AuthContext` carrying the actual transport (loopback vs tailnet), peer identity (whois result becomes `.tailscale(peer:user:)`; falls back to `.bearer(label:)` on whois failure), and remote description. This is set on `BridgeCallContext.$override` (a TaskLocal) before invoking the SDK transport, so structured Task children inherit it. `MCPHostBuilder.dispatch` reads the override at audit-write time.
 6. **Per-token SessionHolder** owns its own `MCP.Server` instance and `StatefulHTTPServerTransport`. The boot-time `AuthContext` baked into the Server is just a fallback — the TaskLocal override is what lands in the audit row in HTTP-served calls.
 7. **Self-heal:** if the SDK returns "Session already initialized" (stale state from a previous client), HTTPRunner recreates the SessionHolder in place and retries once.
 8. **Server dispatches** the JSON-RPC into the registered method handler. For `CallTool`:
@@ -74,7 +75,7 @@ Dependency direction: imports only flow from Service* down through BridgeCore do
 
 ## Stdio path
 
-Same dispatch logic, simpler transport. One server, one process, single AuthContext (`stdio:<pid>`). Used when launching the daemon as an MCP child process via `claude mcp add icloud -- /path/to/deckard serve --stdio`. No tokens required because the OS process boundary is the trust boundary.
+Same dispatch logic, simpler transport. One server, one process, single AuthContext (`stdio:<pid>`). Used when launching the daemon as an MCP child process via `claude mcp add deckard -- /path/to/deckard serve --stdio`. No tokens required because the OS process boundary is the trust boundary.
 
 ## Per-token Server design
 

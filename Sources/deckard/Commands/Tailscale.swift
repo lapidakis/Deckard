@@ -7,7 +7,7 @@ import BridgeConfig
 struct Tailscale: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "tailscale",
-        abstract: "Inspect Tailscale integration (probe, allowlist, peer lookup).",
+        abstract: "Inspect Tailscale integration (probe, peer lookup).",
         subcommands: [
             TailscaleStatus.self,
             TailscaleWhois.self,
@@ -31,8 +31,7 @@ struct TailscaleStatus: AsyncParsableCommand {
         print("Tailscale integration")
         print("  config_enabled:   \(cfg.tailscale.enabled)")
         print("  config_port:      \(cfg.tailscale.port)")
-        print("  allowed_peers:    \(cfg.tailscale.allowedPeers.isEmpty ? "<none — open to any tailnet peer with valid token>" : cfg.tailscale.allowedPeers.joined(separator: ", "))")
-        print("  allowed_users:    \(cfg.tailscale.allowedUsers.isEmpty ? "<none>" : cfg.tailscale.allowedUsers.joined(separator: ", "))")
+        print("  peer ACLs:        delegated to tailscaled (bearer token still required)")
 
         do {
             let bin = try await probe.findBinary()
@@ -80,17 +79,5 @@ struct TailscaleWhois: AsyncParsableCommand {
         print("ip:        \(info.ip)")
         print("hostname:  \(info.hostname ?? "<unknown>")")
         print("user:      \(info.user ?? "<unknown>")")
-
-        let cfg = try ConfigStore().load()
-        let allowlist = TailscaleAllowlist(
-            allowedPeers: cfg.tailscale.allowedPeers,
-            allowedUsers: cfg.tailscale.allowedUsers
-        )
-        switch allowlist.decide(peer: info.hostname, user: info.user) {
-        case .allow:
-            print("decision:  ALLOW (allowlist match or open allowlist)")
-        case .deny(let reason):
-            print("decision:  DENY (\(reason))")
-        }
     }
 }

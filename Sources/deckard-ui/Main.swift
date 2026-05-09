@@ -4,11 +4,12 @@ import SwiftUI
 struct DeckardUI: App {
     @StateObject private var status = BridgeStatusModel()
     @StateObject private var onboarding = OnboardingState()
+    @StateObject private var updater = AppUpdater()
 
     var body: some Scene {
         // Menubar item — compact status + control buttons + link to Settings.
         MenuBarExtra {
-            MenuBarContent(status: status, onboarding: onboarding)
+            MenuBarContent(status: status, onboarding: onboarding, updater: updater)
         } label: {
             // The label is rendered immediately on launch (the icon goes up
             // in the menubar before the user clicks anything), so this is
@@ -16,7 +17,7 @@ struct DeckardUI: App {
             // trigger via OnboardingLauncher's `.task`.
             OnboardingLauncher(
                 onboarding: onboarding,
-                icon: status.isRunning ? "icloud.fill" : "icloud.slash.fill"
+                icon: status.isRunning ? "book.closed.fill" : "book.closed"
             )
         }
         .menuBarExtraStyle(.window)

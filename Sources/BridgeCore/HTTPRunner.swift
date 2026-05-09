@@ -26,16 +26,16 @@ public struct HTTPRunner: Sendable {
         }
     }
 
-    /// Bundles the tailnet enforcement policy a listener applies.
-    /// Loopback runners pass `nil` here; the tailnet runner gets a populated
-    /// instance so it can resolve the source IP to a peer name and reject
-    /// non-allowlisted hosts before the bearer token is consulted.
+    /// Per-listener Tailscale state. Loopback runners pass `nil`; the
+    /// tailnet runner gets a probe so `tailscale whois` can resolve the
+    /// source IP to a peer name + user for audit attribution. The bridge
+    /// does NOT enforce its own peer allowlist — if a request reaches the
+    /// listener, tailscaled's ACLs have already permitted it. Bearer auth
+    /// still applies.
     public struct TailscaleEnforcement: Sendable {
         public let probe: TailscaleProbe
-        public let allowlist: TailscaleAllowlist
-        public init(probe: TailscaleProbe, allowlist: TailscaleAllowlist) {
+        public init(probe: TailscaleProbe) {
             self.probe = probe
-            self.allowlist = allowlist
         }
     }
 
@@ -101,7 +101,7 @@ public struct HTTPRunner: Sendable {
             ),
             logger: logger
         )
-        logger.info("HTTP server binding \(bind.host):\(bind.port) transport=\(bind.transportLabel.rawValue) tokens=\(sessions.count)\(tailscale.map { _ in " tailscale=enforced" } ?? "")")
+        logger.info("HTTP server binding \(bind.host):\(bind.port) transport=\(bind.transportLabel.rawValue) tokens=\(sessions.count)\(tailscale.map { _ in " tailscale=whois-only" } ?? "")")
         try await app.runService()
     }
 
@@ -116,29 +116,14 @@ public struct HTTPRunner: Sendable {
     ) async throws -> Response {
         let remoteIP = ctx.remoteAddress?.ipAddress
 
-        // Tailnet listener: enforce peer allowlist BEFORE bearer auth so a
-        // non-allowlisted peer never even gets to attempt token auth. Failed
-        // whois is treated as deny when an allowlist is configured (no IP →
-        // can't prove allowed); when both lists are empty (`isOpen`), we
-        // skip whois entirely and the bearer token is the only gate.
+        // Tailnet listener: best-effort whois so the audit row can attribute
+        // "ts:hermes:mike@github" instead of just an IP. Tailnet ACLs are
+        // tailscaled's job; reaching the listener at all means the peer has
+        // already been permitted by your tailnet policy. Failed whois is not
+        // an error — the listener still serves the request and audit just
+        // records the raw IP.
         var resolvedPeer: TailscaleProbe.PeerInfo? = nil
-        if let ts = tailscale, !ts.allowlist.isOpen {
-            guard let ip = remoteIP else {
-                logger.warning("Tailnet request with no resolvable remote IP — rejecting")
-                return jsonError(status: .forbidden, message: "Cannot determine source IP")
-            }
-            let info = await ts.probe.whois(remoteIP: ip)
-            resolvedPeer = info
-            switch ts.allowlist.decide(peer: info?.hostname, user: info?.user) {
-            case .allow:
-                break
-            case .deny(let reason):
-                logger.warning("Tailnet allowlist deny: ip=\(ip) \(reason)")
-                return jsonError(status: .forbidden, message: "Forbidden: peer not in allowlist")
-            }
-        } else if let ts = tailscale, let ip = remoteIP {
-            // Open tailnet listener — still resolve peer (best-effort) so the
-            // audit row can show who connected even when no allowlist is set.
+        if let ts = tailscale, let ip = remoteIP {
             resolvedPeer = await ts.probe.whois(remoteIP: ip)
         }
 
@@ -334,9 +319,9 @@ public struct HTTPRunner: Sendable {
 }
 
 /// Custom Hummingbird request context that exposes the connecting peer's
-/// `SocketAddress`. Required for tailnet allowlist enforcement (we need the
-/// remote IP to run `tailscale whois`) and for richer audit-log
-/// `remoteDescription` strings on loopback as well.
+/// `SocketAddress`. The remote IP feeds `tailscale whois` so audit rows
+/// resolve to peer hostnames, and gives loopback audit rows a precise
+/// `remoteDescription`.
 public struct PeerAwareRequestContext: Hummingbird.RequestContext, RemoteAddressRequestContext {
     public var coreContext: CoreRequestContextStorage
     public let remoteAddress: SocketAddress?

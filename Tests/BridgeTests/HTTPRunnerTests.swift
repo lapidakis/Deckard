@@ -70,9 +70,10 @@ import Hummingbird
 }
 
 @Test func perCallAuthTailnetWithoutWhoisFallsBackToBearer() {
-    // whois failure under an open allowlist still routes to the
-    // listener; AuthContext should reflect that we couldn't identify
-    // the peer (falls back to bearer identity, transport stays tailnet).
+    // Best-effort whois can fail (tailscaled offline, race between accept
+    // and whois lookup, etc.). The listener still serves the request
+    // because tailscaled has already gated it; AuthContext just falls
+    // back to bearer identity with the IP in remoteDescription.
     let bind = HTTPRunner.Bind(host: "100.90.1.1", port: 8787, transportLabel: .tailnet)
     let auth = HTTPRunner.makePerCallAuth(bind: bind, label: "rocky", remoteIP: "100.90.2.2", peer: nil)
     #expect(auth.transport == .tailnet)

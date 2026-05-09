@@ -68,14 +68,14 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 - TCC grants key on the signed identity, not the binary hash. Every fresh `make build` preserves the user's previously-granted Automation, Calendar, Reminders permissions.
 - Without codesigning, every rebuild would lose grants. The build is structured so `make build` always re-signs; a bare `swift build` would produce an adhoc binary, lose grants, and silently fail at the next call. The Makefile chains both steps.
 
-### 8. Loopback by default; Tailnet enforcement when opt-in
+### 8. Loopback by default; Tailnet listener delegates peer ACLs to tailscaled
 
 - HTTP transport binds `127.0.0.1` only unless `[tailscale] enabled = true` is set explicitly in config.
 - Tailscale opt-in adds a second listener on the tailnet IPv4 reported by the `tailscale` CLI. Same bearer auth applies. Same ACL profiles.
-- **Per-request peer enforcement.** When `allowed_peers` / `allowed_users` is non-empty, every tailnet request runs `tailscale whois --json <source-ip>` and checks the result against both lists. **Either-axis match satisfies** (allowing by hostname OR by user). The check runs BEFORE bearer auth — non-allowlisted peers receive 403 Forbidden without ever spending rate-limit budget against bearer secrets. Failed whois under a non-empty allowlist is treated as deny.
-- **Open allowlist warning.** Both lists empty = "any tailnet peer with a valid bearer can connect." This is logged as a warning at startup (`Tailscale listener … is OPEN`); whois still runs (best-effort) so audit rows can attribute the call to a peer hostname even without enforcement.
+- **Peer ACLs are tailscaled's job, not the bridge's.** If a request reaches the listener at all, your tailnet policy (set in the Tailscale admin console) has already permitted it. Re-implementing peer allowlists in `config.toml` would just duplicate that policy — and drift from it. The bridge does not maintain its own per-peer allowlist.
+- **Bearer auth still applies.** A peer that tailscaled lets through still needs a valid bearer token. This is the layer the bridge owns; the network-layer access control is the tailnet's.
+- **Whois for audit attribution only.** Every tailnet request runs `tailscale whois --json <source-ip>` to populate the audit row's caller field as `ts:<peer>:<user>` instead of just an IP. Whois failure is non-fatal — the request still serves; audit just records the raw IP.
 - **Audit identity.** Tailnet calls record `transport=tailnet` and (when whois succeeded) `caller=ts:<peer>:<user>` instead of the static `bearer:<label>`. The per-call AuthContext flows through `BridgeCallContext.override` (TaskLocal) so the audit row reflects the actual session, not the SessionHolder's bound auth.
-- Tailscale's network-layer ACLs and the bridge's bearer + profile + allowlist gates layer cleanly. Defense in depth: a misconfigured Tailscale ACL still trips the bridge's allowlist, and a leaked bearer still trips the network-layer policy.
 
 ## Things this model does *not* protect against
 

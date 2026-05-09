@@ -11,6 +11,8 @@ name: Release
 #   APPLE_ID                      Apple ID (email) used for notarytool submission
 #   APPLE_TEAM_ID                 Developer team id (e.g. NZL3HS8AH4)
 #   APPLE_ID_PASSWORD             app-specific password from appleid.apple.com (NOT the AppleID login)
+#   DECKARD_ED_PUBLIC_KEY         base-64 EdDSA public key (Sparkle's `generate_keys` output, "pub")
+#   DECKARD_ED_PRIVATE_KEY        base-64 EdDSA private key (matching "priv") — kept secret
 #   DECKARD_BUNDLE_ID                 com.lapidakis.deckard       (optional override)
 #   DECKARD_UI_BUNDLE_ID              com.lapidakis.deckard.ui    (optional override)
 #
@@ -43,6 +45,7 @@ jobs:
     env:
       DECKARD_BUNDLE_ID: ${{ secrets.DECKARD_BUNDLE_ID || 'com.lapidakis.deckard' }}
       DECKARD_UI_BUNDLE_ID: ${{ secrets.DECKARD_UI_BUNDLE_ID || 'com.lapidakis.deckard.ui' }}
+      DECKARD_ED_PUBLIC_KEY: ${{ secrets.DECKARD_ED_PUBLIC_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -177,6 +180,180 @@ jobs:
           echo "DMG_PATH=$DMG" >> "$GITHUB_ENV"
           echo "DMG_SHA=$DMG.sha256" >> "$GITHUB_ENV"
 
+      # Sparkle update payload: zip the notarized + stapled .app so the
+      # auto-updater can download a minimal artifact. The DMG is for
+      # first-install (drag-to-Applications); the .zip is for updates.
+      # `ditto -c -k --keepParent` is the canonical command for Sparkle
+      # — it preserves extended attributes including the stapled
+      # notarization ticket.
+      - name: Package Sparkle update zip
+        run: |
+          set -euo pipefail
+          APP=".build/release/Deckard.app"
+          ZIP="$RUNNER_TEMP/Deckard-${{ steps.tag.outputs.name }}.zip"
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          ls -la "$ZIP"
+          echo "SPARKLE_ZIP=$ZIP" >> "$GITHUB_ENV"
+          echo "SPARKLE_ZIP_SIZE=$(stat -f%z "$ZIP")" >> "$GITHUB_ENV"
+
+      # Sign the update with Sparkle's EdDSA tool. Skipped (with a loud
+      # log) when DECKARD_ED_PRIVATE_KEY is absent — initial release
+      # bootstrap will lack this until Sparkle is fully wired up.
+      - name: Sign Sparkle update
+        env:
+          DECKARD_ED_PRIVATE_KEY: ${{ secrets.DECKARD_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          SIGN_TOOL="$(find .build/artifacts/sparkle/Sparkle/bin -name sign_update -type f | head -1)"
+          if [ -z "$SIGN_TOOL" ] || [ -z "${DECKARD_ED_PRIVATE_KEY:-}" ]; then
+            echo "warning: sign_update or DECKARD_ED_PRIVATE_KEY missing — skipping appcast emission"
+            echo "SPARKLE_SIG_ATTRS=" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          KEY_FILE="$RUNNER_TEMP/sparkle-ed-private.key"
+          printf '%s' "$DECKARD_ED_PRIVATE_KEY" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          # sign_update prints the signature attributes ready to drop into
+          # an <enclosure> element, e.g.:
+          #   sparkle:edSignature="..." length="12345"
+          SIG_ATTRS="$("$SIGN_TOOL" --ed-key-file "$KEY_FILE" "$SPARKLE_ZIP")"
+          rm -f "$KEY_FILE"
+          echo "SPARKLE_SIG_ATTRS=$SIG_ATTRS" >> "$GITHUB_ENV"
+          echo "Sparkle signature: $SIG_ATTRS"
+
+      # Append the new release to the appcast feed on the gh-pages
+      # branch. Skipped when no signature was produced (the bootstrap
+      # window before EdDSA keys are configured).
+      - name: Update appcast on gh-pages
+        if: env.SPARKLE_SIG_ATTRS != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.name }}"
+          VERSION="${TAG#v}"
+          ZIP_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/Deckard-${TAG}.zip"
+          PUB_DATE="$(date -u '+%a, %d %b %Y %H:%M:%S +0000')"
+
+          # Checkout (or initialise) the gh-pages branch in a worktree so
+          # we don't disturb the main checkout.
+          PAGES_DIR="$RUNNER_TEMP/gh-pages"
+          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git fetch origin gh-pages:gh-pages
+            git worktree add "$PAGES_DIR" gh-pages
+          else
+            git worktree add --orphan -b gh-pages "$PAGES_DIR"
+          fi
+
+          APPCAST="$PAGES_DIR/appcast.xml"
+          if [ ! -f "$APPCAST" ]; then
+            cat > "$APPCAST" <<'XML'
+          <?xml version="1.0" standalone="yes"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+              <channel>
+                  <title>Deckard</title>
+                  <link>https://github.com/lapidakis/Deckard</link>
+                  <description>Auto-update feed for the Deckard menubar app.</description>
+                  <language>en</language>
+              </channel>
+          </rss>
+          XML
+          fi
+
+          # Append a new <item> just before </channel>. Idempotent for the
+          # current tag: a re-run of the workflow rewrites the entry.
+          NEW_ITEM=$(cat <<XML
+                  <item>
+                      <title>${VERSION}</title>
+                      <pubDate>${PUB_DATE}</pubDate>
+                      <sparkle:version>${VERSION}</sparkle:version>
+                      <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+                      <enclosure
+                          url="${ZIP_URL}"
+                          type="application/octet-stream"
+                          ${SPARKLE_SIG_ATTRS} />
+                  </item>
+          XML
+          )
+
+          # Strip any prior item for this version so re-runs are clean.
+          python3 - "$APPCAST" "$VERSION" <<'PY'
+          import re, sys
+          path, version = sys.argv[1], sys.argv[2]
+          with open(path) as f:
+              src = f.read()
+          pattern = re.compile(
+              r'\s*<item>.*?<sparkle:version>' + re.escape(version) + r'</sparkle:version>.*?</item>',
+              re.DOTALL,
+          )
+          src = pattern.sub('', src)
+          with open(path, 'w') as f:
+              f.write(src)
+          PY
+
+          # Insert the new item right before </channel>.
+          python3 - "$APPCAST" <<PY
+          import sys
+          path = sys.argv[1]
+          new_item = """${NEW_ITEM}"""
+          with open(path) as f:
+              src = f.read()
+          marker = '    </channel>'
+          src = src.replace(marker, new_item + '\n' + marker, 1)
+          with open(path, 'w') as f:
+              f.write(src)
+          PY
+
+          cd "$PAGES_DIR"
+          git config user.email "actions@github.com"
+          git config user.name "deckard release bot"
+          git add appcast.xml
+          if ! git diff --cached --quiet; then
+            git commit -m "appcast: ${TAG}"
+            git push origin gh-pages
+          else
+            echo "appcast.xml unchanged for ${TAG}; nothing to push"
+          fi
+
+      # Headless artifact: just the daemon binary. For server-style
+      # deployments where the menubar UI isn't wanted. Same notarized
+      # binary as in the DMG. tar (not zip) preserves the codesignature
+      # across extraction on every macOS version we care about.
+      - name: Package headless tarball
+        run: |
+          set -euo pipefail
+          STAGING="$RUNNER_TEMP/headless-staging"
+          mkdir -p "$STAGING"
+          cp ".build/release/deckard" "$STAGING/deckard"
+          chmod +x "$STAGING/deckard"
+          cat > "$STAGING/README.txt" <<'EOF'
+          Deckard headless
+
+          1. Move the binary somewhere on PATH:
+               sudo mv deckard /usr/local/bin/
+
+          2. Bootstrap config + token + LaunchAgent:
+               deckard config init
+               deckard auth add default --profile trusted
+               deckard install
+
+          3. Click through TCC prompts the first time each surface
+             (Mail / Calendar / Reminders / Apple Events) is hit by an
+             agent. Logs at:
+               ~/Library/Logs/Deckard/stderr.log
+               ~/Library/Logs/Deckard/audit.jsonl
+
+          See https://github.com/lapidakis/Deckard for full docs.
+          EOF
+
+          TAR="$RUNNER_TEMP/deckard-${{ steps.tag.outputs.name }}-arm64.tar.gz"
+          tar -czf "$TAR" -C "$STAGING" deckard README.txt
+          shasum -a 256 "$TAR" > "$TAR.sha256"
+          ls -la "$TAR" "$TAR.sha256"
+          echo "TAR_PATH=$TAR" >> "$GITHUB_ENV"
+          echo "TAR_SHA=$TAR.sha256" >> "$GITHUB_ENV"
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -192,10 +369,19 @@ jobs:
           else
             NOTES_FLAG="--generate-notes"
           fi
+          # SPARKLE_ZIP is also uploaded so the appcast.xml's enclosure
+          # URL points at a stable GitHub Release asset.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$DMG_PATH" "$DMG_SHA" --clobber
+            gh release upload "$TAG" \
+              "$DMG_PATH" "$DMG_SHA" \
+              "$TAR_PATH" "$TAR_SHA" \
+              "$SPARKLE_ZIP" \
+              --clobber
           else
-            gh release create "$TAG" "$DMG_PATH" "$DMG_SHA" \
+            gh release create "$TAG" \
+              "$DMG_PATH" "$DMG_SHA" \
+              "$TAR_PATH" "$TAR_SHA" \
+              "$SPARKLE_ZIP" \
               --title "$TAG" \
               --prerelease \
               $NOTES_FLAG

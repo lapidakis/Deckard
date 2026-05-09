@@ -11,7 +11,16 @@ public struct AuditEvent: Codable, Sendable {
     public let transport: String    // "stdio" | "loopback" | "tailnet"
     public let tool: String
     public let argKeys: [String]
-    public let decision: String     // "allow" | "deny" | "approve" | "approved" | "rejected"
+    /// One of:
+    ///   "allow"               — tool ran successfully
+    ///   "deny"                — ACL rejected before the tool ran
+    ///   "error"               — tool ran but threw; `error` field has the message
+    ///   "approve_pending"     — ACL said requireApproval; gate dispatched
+    ///   "approved"            — user clicked Allow on the approval dialog
+    ///   "approved_by_policy"  — interactive_approval=never auto-approved
+    ///   "denied"              — user clicked Deny on the approval dialog
+    ///   "timeout"             — approval dialog timed out (60s default)
+    public let decision: String
     public let latencyMs: Int?
     public let resultBytes: Int?
     public let error: String?

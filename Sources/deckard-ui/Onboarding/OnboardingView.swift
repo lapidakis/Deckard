@@ -88,7 +88,7 @@ struct OnboardingView: View {
         case .daemon:      DaemonStep(status: status, onboarding: onboarding)
         case .token:       TokenStep(onboarding: onboarding)
         case .permissions: PermissionsStep(onboarding: onboarding)
-        case .connect:     ConnectStep(onboarding: onboarding)
+        case .connect:     ConnectStep(onboarding: onboarding, status: status)
         case .done:        DoneStep(onboarding: onboarding)
         }
     }

@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import BridgeAuth
+import BridgeConfig
 
 // MARK: - Welcome
 
@@ -9,7 +10,7 @@ struct WelcomeStep: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Image(systemName: "icloud.fill")
+            Image(systemName: "book.closed.fill")
                 .font(.system(size: 48, weight: .light))
                 .foregroundStyle(.tint)
             Text("Welcome to Deckard")
@@ -82,7 +83,7 @@ struct DaemonStep: View {
                         ok: status.isRunning,
                         label: "Daemon running",
                         detail: status.isRunning
-                            ? "PID \(status.pid.map { "\($0)" } ?? "?") • port \(status.portBound ? "8787 bound" : "not bound")"
+                            ? "PID \(status.pid.map { "\($0)" } ?? "?") • port \(status.portBound ? "\(status.loopbackPort) bound" : "not bound")"
                             : "Click Start to bootstrap the LaunchAgent"
                     )
                     if !status.isRunning {
@@ -304,25 +305,62 @@ struct PermissionsStep: View {
 
 struct ConnectStep: View {
     @ObservedObject var onboarding: OnboardingState
+    @ObservedObject var status: BridgeStatusModel
+    @State private var availableTokens: [(label: String, secret: String)] = []
+    @State private var selectedTokenLabel: String? = nil
 
-    private let url = "http://127.0.0.1:8787/mcp"
+    private var url: String { "http://127.0.0.1:\(status.loopbackPort)/mcp" }
+
+    /// The secret to splice into snippets — newly created token wins, then
+    /// the picker selection, then "no tokens yet" placeholder text.
+    private var activeSecret: String? {
+        if let s = onboarding.generatedTokenSecret { return s }
+        if let label = selectedTokenLabel,
+           let pair = availableTokens.first(where: { $0.label == label }) {
+            return pair.secret
+        }
+        return availableTokens.first?.secret
+    }
+
+    private var activeLabel: String? {
+        if let l = onboarding.generatedTokenLabel { return l }
+        return selectedTokenLabel ?? availableTokens.first?.label
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Connect Your Client").font(.title2.bold())
-            Text("Use these in your MCP client (Claude Code, Claude Desktop, etc).")
+            Text("Snippets below are pre-filled for the selected token. Copy whichever your MCP client needs.")
                 .foregroundStyle(.secondary)
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     fieldRow(label: "Server URL", value: url)
-                    if let secret = onboarding.generatedTokenSecret {
+
+                    if onboarding.generatedTokenSecret == nil && availableTokens.count > 1 {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Token").font(.caption.bold()).foregroundStyle(.secondary)
+                            Picker("", selection: Binding(
+                                get: { selectedTokenLabel ?? availableTokens.first?.label ?? "" },
+                                set: { selectedTokenLabel = $0 }
+                            )) {
+                                ForEach(availableTokens, id: \.label) { pair in
+                                    Text(pair.label).tag(pair.label)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                        }
+                    }
+
+                    if let secret = activeSecret {
                         fieldRow(label: "Bearer Token", value: secret, mono: true)
                     } else {
                         fieldRow(
                             label: "Bearer Token",
-                            value: "Use a token from the Tokens tab — `deckard auth show <label>` prints the secret.",
-                            mono: false
+                            value: "No tokens yet — go back to the Token step or run `deckard auth add <label>`.",
+                            mono: false,
+                            copyable: false
                         )
                     }
 
@@ -330,6 +368,12 @@ struct ConnectStep: View {
 
                     Text("Claude Code (terminal)").font(.callout.bold())
                     snippetRow(claudeCodeSnippet)
+
+                    Text("Claude Desktop (claude_desktop_config.json)").font(.callout.bold())
+                    snippetRow(claudeDesktopSnippet)
+
+                    Text("Smoke test").font(.callout.bold())
+                    snippetRow(curlSnippet)
                 }
                 .padding(8)
             }
@@ -340,14 +384,48 @@ struct ConnectStep: View {
                 continueLabel: "Finish"
             )
         }
+        .task {
+            availableTokens = await OnboardingState.availableTokens()
+        }
+    }
+
+    private var tokenPlaceholder: String {
+        activeSecret ?? "<paste-bearer-token-here>"
     }
 
     private var claudeCodeSnippet: String {
-        let token = onboarding.generatedTokenSecret ?? "<paste-bearer-token-here>"
-        return "claude mcp add --transport http deckard \(url) --header \"Authorization: Bearer \(token)\""
+        "claude mcp add --transport http deckard \(url) --header \"Authorization: Bearer \(tokenPlaceholder)\""
     }
 
-    private func fieldRow(label: String, value: String, mono: Bool = true) -> some View {
+    private var claudeDesktopSnippet: String {
+        // mcp-remote bridges HTTP transport to stdio for clients that don't
+        // speak streamable HTTP yet (Claude Desktop as of 2026-Q1).
+        """
+        {
+          "mcpServers": {
+            "deckard": {
+              "command": "npx",
+              "args": ["-y", "mcp-remote", "\(url)", "--header", "Authorization: Bearer \(tokenPlaceholder)"]
+            }
+          }
+        }
+        """
+    }
+
+    private var curlSnippet: String {
+        // health.ping is the cheapest tool. JSON-RPC envelope is verbose but
+        // matches what a real MCP client sends, so a 200 here means the
+        // listener + bearer auth + ACL are all wired correctly.
+        """
+        curl -sS \(url) \\
+          -H "Authorization: Bearer \(tokenPlaceholder)" \\
+          -H "Accept: application/json, text/event-stream" \\
+          -H "Content-Type: application/json" \\
+          -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"health.ping","arguments":{}}}'
+        """
+    }
+
+    private func fieldRow(label: String, value: String, mono: Bool = true, copyable: Bool = true) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.caption.bold()).foregroundStyle(.secondary)
             HStack {
@@ -358,11 +436,13 @@ struct ConnectStep: View {
                     .clipShape(RoundedRectangle(cornerRadius: 4))
                     .textSelection(.enabled)
                     .lineLimit(2)
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(value, forType: .string)
+                if copyable {
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(value, forType: .string)
+                    }
+                    .buttonStyle(.borderless)
                 }
-                .buttonStyle(.borderless)
             }
         }
     }

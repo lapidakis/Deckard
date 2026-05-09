@@ -10,7 +10,7 @@ make build
 .build/debug/deckard install            # registers LaunchAgent + starts daemon
 ```
 
-The first daemon start auto-creates a `default` token in `tokens.toml` and prints the secret to stderr. Capture it for client config:
+The first daemon start auto-creates a `default` token in `tokens.toml` (the secret is generated but not printed to logs — see below to retrieve). Capture it for client config:
 
 ```sh
 .build/debug/deckard auth show default
@@ -32,6 +32,8 @@ Closing the window mid-flow counts as Skip — won't auto-reopen on next launch.
 
 ## Update
 
+### From source
+
 ```sh
 git pull
 make build           # rebuild + re-codesign with the same Developer ID
@@ -40,14 +42,106 @@ make restart         # bootout + bootstrap the LaunchAgent
 
 `tokens.toml` and `config.toml` survive across rebuilds. TCC grants survive too because the codesign step uses a stable signing identity.
 
+### Headless install (`deckard self-update`)
+
+The CLI binary can update itself from a published GitHub Release:
+
+```sh
+deckard self-update                  # check + notify (no changes applied)
+deckard self-update --check          # exit 0 up-to-date, 2 newer, 3 failed — for cron / CI
+deckard self-update --apply          # download, verify, swap, kickstart LaunchAgent
+deckard self-update --auto-apply     # same as --apply, no y/N prompt
+deckard self-update --channel beta   # opt into pre-releases on a stable install
+```
+
+Verification chain (any failure aborts the swap):
+
+1. SHA-256 of the tarball matches the release's `.sha256` sidecar.
+2. `codesign --verify --strict` against the extracted binary.
+3. `TeamIdentifier` matches the compiled-in expected team (`NZL3HS8AH4`).
+4. `spctl --assess --type execute` confirms the notarization ticket.
+
+The new binary is written to a temp file next to the existing one and atomically renamed into place; the running daemon is then `launchctl kickstart -k`-ed against the new path. If any verification step fails the existing binary is untouched.
+
+Refuses to swap when the running binary is inside `.build/` — that's almost always a developer testing against a debug build, and silently overwriting the SwiftPM artifact would surprise them.
+
+### Menubar app (Sparkle)
+
+The menubar app ships with [Sparkle](https://sparkle-project.org) auto-update wired into "Check for Updates…" in the menubar popup. It points at `https://lapidakis.github.io/Deckard/appcast.xml` (overridable at build-time via `DECKARD_APPCAST_URL`).
+
+Default posture is **manual checks only** — `SUEnableAutomaticChecks=false` in `Info.plist`. The user has to click the menu item; Sparkle does not poll on a timer until that posture is flipped.
+
+When the user opts to install, Sparkle:
+
+1. Fetches the appcast feed.
+2. Verifies each `<item>`'s EdDSA signature against the `SUPublicEDKey` baked into the app's Info.plist.
+3. Downloads the `<enclosure>` zip from the GitHub Release.
+4. Verifies the zip's signature again before launching its installer helper.
+5. Replaces the running app, restarts.
+
+Sparkle's signature is independent of Apple's notarization — the appcast EdDSA key is held only by the release pipeline, so a compromise of GitHub Releases alone cannot ship a malicious update.
+
+## Auto-update — one-time setup
+
+Generating the EdDSA key pair and publishing the appcast feed are operator-only steps; they only need to happen once per project lifetime.
+
+### 1. Generate the key pair
+
+After the first `swift package resolve` Sparkle's CLI tools land at `.build/artifacts/sparkle/Sparkle/bin/`. From the repo root:
+
+```sh
+.build/artifacts/sparkle/Sparkle/bin/generate_keys
+```
+
+This writes the EdDSA private key into the Mac's login keychain and prints the public key (base-64) to stdout. Save the public key — it gets baked into the app bundle.
+
+To extract the private key for CI:
+
+```sh
+.build/artifacts/sparkle/Sparkle/bin/generate_keys -x sparkle_priv.key
+```
+
+Treat `sparkle_priv.key` like a code-signing certificate — it lets whoever holds it ship updates that the menubar app will trust.
+
+### 2. Configure secrets
+
+Add to GitHub Actions secrets (`Settings → Secrets and variables → Actions`):
+
+| Secret | Value |
+|---|---|
+| `DECKARD_ED_PUBLIC_KEY` | the base-64 public key (printed by `generate_keys`) |
+| `DECKARD_ED_PRIVATE_KEY` | contents of `sparkle_priv.key` (delete the local copy after pasting) |
+
+Locally for development builds, export `DECKARD_ED_PUBLIC_KEY` before running `make ui` if you want the dev build to actually attempt update verification. Most of the time you don't — the build script logs a one-line note when the key is empty and `Sparkle` simply refuses to apply updates.
+
+### 3. Bootstrap the gh-pages branch
+
+The release workflow auto-creates a `gh-pages` branch on first run if one doesn't exist. To pre-create it manually (e.g. to set up GitHub Pages in the repo settings before the first release):
+
+```sh
+git checkout --orphan gh-pages
+git rm -rf .
+echo "Deckard appcast feed" > README.md
+git add README.md
+git commit -m "Bootstrap gh-pages"
+git push origin gh-pages
+git checkout main
+```
+
+Then in GitHub repo settings: `Pages → Source → Deploy from branch → gh-pages → / (root)`. The feed becomes available at `https://lapidakis.github.io/Deckard/appcast.xml` once the workflow has run.
+
+### 4. Cut a release
+
+Push a `v*` tag. CI builds + signs the .app, signs the update with `sign_update`, appends an `<item>` to `gh-pages/appcast.xml` with the EdDSA signature embedded, and uploads the matching `.zip` payload to the GitHub Release. Subsequent users hitting "Check for Updates…" see the new version.
+
 ## Daemon control
 
 | Action | Command |
 |---|---|
 | Start | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.lapidakis.deckard.plist` |
 | Stop | `launchctl bootout gui/$(id -u)/com.lapidakis.deckard` |
-| Restart | `make restart` |
-| Status | `launchctl print gui/$(id -u)/com.lapidakis.deckard \| grep -E "active count\|state"` |
+| Restart | `deckard restart` (or `make restart` from a source checkout) |
+| Status | `deckard status` (or `launchctl print gui/$(id -u)/com.lapidakis.deckard`) |
 | Or use the menubar UI | "Open Settings… → Status → Start/Stop/Restart" |
 
 Process-level checks:
@@ -86,7 +180,11 @@ Field decisions:
 - `allow` — tool ran successfully
 - `deny` — ACL rejected before the tool ran
 - `error` — tool ran but threw; `error` field has the message
-- `approved` / `denied` / `timeout` — approval-gate outcome (recorded separately from the actual tool call)
+- `approve_pending` — ACL flagged the call as needing approval; the gate is running (a follow-up row records the outcome)
+- `approved` — user clicked Allow on the approval dialog
+- `approved_by_policy` — token's profile sets `interactive_approval = "never"`, so the dialog was skipped
+- `denied` — user clicked Deny on the approval dialog
+- `timeout` — approval dialog hit its 60s deadline without a click
 
 Argument *values* are not recorded by design. `arg_keys` tells you what was called without leaking the payload.
 
@@ -153,7 +251,8 @@ Skip:
 | `HTTP 401` from a client that should work | Stale token / wrong header | `deckard auth show <label>` to re-fetch; verify `Authorization: Bearer <secret>` header |
 | `HTTP 400 Session already initialized` | SDK's stale-session bug from a prior client connection | Self-heal handles this; if you see it, transport recreate failed — check stderr for `Failed to recreate transport`, `make restart` is the fallback |
 | Tailscale listener never starts | `tailscale` CLI not in PATH or not logged in | `which tailscale && tailscale status`; install or `tailscale up`. Use `deckard tailscale status` to see what the daemon sees. |
-| Tailnet request returns 403 with no audit row | Peer not in `[tailscale] allowed_peers` / `allowed_users` | `deckard tailscale whois <ip>` shows the resolved peer + allowlist decision. Add the peer or user to the allowlist; `make restart`. |
+| Tailnet request can't connect at all | Tailscale ACL in the admin console blocks the source peer from reaching this Mac on the listener port | Adjust the tailnet ACL (Tailscale admin console → Access controls). Deckard does not maintain its own peer allowlist — if the request never reaches the daemon, tailscaled rejected it. |
+| Tailnet request returns 401 | Bearer token missing or wrong | Pass `Authorization: Bearer <secret>` from `deckard auth show <label>`. Whois still runs for audit, but bearer auth applies independently. |
 | Approval dialog never appears, audits as `timeout` after 60s | Apple Events → System Events not granted, or first call after rebuild needs the prompt | Trigger the call once and click Allow on the System Events Automation prompt. Inspect via Settings → Permissions in the menubar UI. Persists across rebuilds because the bridge is codesigned. |
 | Reminders calls hang for hours then time out | EventKit framework call wedges in non-UI LaunchAgent context | Already mitigated: `RemindersAdapter` races the call against a 10s timeout via `CheckedContinuation` + DispatchQueue. If you see this happening after deploy, run `tccutil reset Reminders com.lapidakis.deckard` to force a fresh consent. |
 | `voice_memo.read_audio` errors with placeholder hint | iCloud Optimize Storage offloaded the file | Open the recording in Voice Memos.app once to download; it stays cached |

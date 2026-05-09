@@ -16,21 +16,22 @@ Read this file before making changes. README.md is end-user-facing; this file is
 | 4.5 | Reminders (full CRUD via EventKit `.reminder`) | Done |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
-35 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **116 unit tests.**
+35 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **111 unit tests.**
 
 Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). Self-healing MCP session transport for stale-session SDK bug. Menubar UI scaffold (v0.10 series) with native macOS look. First-launch onboarding flow (v0.11+) walks through daemon → token → permissions → connect.
 
 Per-token `interactive_approval` mode (`always` / `never`) lets trusted remote tokens skip the host osascript dialog — `.approve` outcomes record `approved_by_policy` instead of stalling on a popup an off-host operator can't see.
 
-**Tailscale (v0.11.0) is real now.** Listener boots when `[tailscale] enabled = true`, runs `tailscale whois` on every request, enforces `allowed_peers` / `allowed_users` allowlist before bearer auth. Per-call AuthContext via `BridgeCallContext.override` TaskLocal so audit rows show `transport=tailnet caller=ts:hermes:mike@github` rather than the static SessionHolder identity.
+**Tailscale (v0.11.0) is real now.** Listener boots when `[tailscale] enabled = true`. Peer ACLs are delegated to tailscaled — the bridge does not maintain its own allowlist; if a request reaches the listener, your tailnet policy has already permitted it. `tailscale whois` runs per request for audit attribution only, so rows show `transport=tailnet caller=ts:hermes:mike@github` rather than the static SessionHolder identity. Per-call AuthContext flows via `BridgeCallContext.override` TaskLocal.
 
 **Mail write tools accept `id` OR `ids: [string]`** — single tool, both shapes, returns `BatchResult { matched, missing, failed, elapsed_ms }`. Singletons go through the batch path internally (length-1 batch); response shape is uniform. Schema avoids top-level `oneOf` (Anthropic API rejects it).
 
 ## Module map
 
 ```
-deckard              — CLI entry (ArgumentParser subcommands)
-deckard-ui     — SwiftUI menubar app (.app bundle via scripts/build-ui-app.sh)
+deckard              — CLI entry (ArgumentParser subcommands incl. `self-update`)
+deckard-ui     — SwiftUI menubar app (.app bundle via scripts/build-ui-app.sh,
+                    Sparkle auto-update via SPM dep)
 BridgeCore           — MCP server, transports (stdio + HTTP), middleware pipeline,
                        ApprovalGate, ToolHandler/ToolProvider protocols,
                        SessionHolder, TokenSessions
@@ -85,7 +86,7 @@ When you add a tool that returns data from external sources (mail, messages, fet
 ```sh
 make build              # daemon, codesigned (preserves TCC across rebuilds)
 make ui                 # menubar app bundle
-make test               # ~50 unit tests
+make test               # 111 unit tests
 make restart            # bootout + bootstrap the LaunchAgent
 make logs               # tail stderr.log
 make audit              # tail audit.jsonl
@@ -165,11 +166,14 @@ The UI has its own bundle id (`com.lapidakis.deckard.ui`) and entitlements set; 
 - **Per-token Server design.** Each bearer token gets its own `MCP.Server` instance with auth context and PolicyPipeline pre-bound. The MCP swift-sdk doesn't expose per-call session context to handler closures, so `tools/call` resolves to the right server via the bearer-secret-to-SessionHolder map in HTTPRunner. Side effect: tools/list per-token filtering works because each Server can filter its own spec list at registration time.
 - **Stale MCP session self-heal.** `StatefulHTTPServerTransport` keeps sessions in memory and rejects fresh `initialize` with HTTP 400 "Session already initialized". HTTPRunner detects this response and recreates the SessionHolder transparently. Don't try to "fix" by removing this; the SDK still has the underlying issue.
 - **Per-call AuthContext via TaskLocal.** `BridgeCallContext.override` is read by `MCPHostBuilder.dispatch` before building the audit row. HTTPRunner sets it (transport label + identity + remote peer info) inside `$override.withValue { transport.handleRequest(...) }` so the SDK's structured-Task children inherit it. If the SDK ever switches to `Task.detached` for dispatch, this propagation breaks silently — `bridgeCallContextTaskLocalDefaultsToNil` test guards the boundary.
-- **Tailscale enforcement order.** Whois + allowlist runs BEFORE bearer auth. A non-allowlisted tailnet peer never gets to attempt token auth — protects bearer secrets from rate-limit spending. When the allowlist is empty (`isOpen`), whois still runs (best-effort) so the audit row shows who connected.
+- **Tailscale peer ACLs are tailscaled's job.** The bridge does NOT maintain a peer allowlist in `config.toml`. If a request reaches the listener at all, tailscaled has already gated it via your tailnet policy (set in the admin console). Re-implementing that would just duplicate (and drift from) the source of truth. Bearer auth still applies independently. `tailscale whois` runs per request for audit attribution only — failure is non-fatal.
 - **Mail batch tools' AppleScript shape.** `move <list> to <mbox>` and `set read status of <list> to <bool>` BOTH fail in Mail.app on macOS 26 with -10006. The batch path resolves message refs, then iterates per-message in the action loop. The osascript invocation + Mail.app activation is a single ~600ms cost; loop iterations are sub-ms. Don't switch back to list-target forms without re-testing on the target macOS.
 - **Approval dialog visibility.** A bare `display dialog` from the LaunchAgent's osascript subprocess lands on whichever Space the daemon first attached to — typically not the user's current one — and times out at `giving up after`. Wrap with `tell application "System Events" / activate` to force the dialog onto the active Space + frontmost. First call after a fresh deploy triggers a one-time "deckard wants to control System Events" Automation TCC prompt; subsequent calls are durable.
 - **Top-level JSON Schema keywords are rejected by Anthropic API.** `oneOf`, `allOf`, `anyOf` at the root of a tool's `inputSchema` returns HTTP 400 from the Claude API even though the MCP spec allows them. Express mutual-exclusion via field descriptions + runtime validation; `SchemaTests.noToolUsesTopLevelOneOfAllOfAnyOf` is the regression guard.
-- **HTTPRunner handler order**: tailscale enforcement happens BEFORE the bearer check. A non-allowlisted peer gets 403 Forbidden, not 401 — exposing 401 would invite token-guessing. Don't reorder without thinking through the privilege chain.
+- **HTTPRunner handler order**: best-effort tailnet whois (audit attribution only) runs before the bearer check, so the per-call `AuthContext` already carries the resolved peer identity by the time we audit a 401. Whois failure does not block the request; bearer auth is the authoritative gate.
+- **Sparkle bundle layout requires manual rpath.** `swift build` outside Xcode doesn't add `@executable_path/../Frameworks` to the binary's rpath, so the embedded `Sparkle.framework` won't resolve at launch. `scripts/build-ui-app.sh` runs `install_name_tool -add_rpath` BEFORE codesigning — modifying load commands invalidates the signature, so order matters.
+- **Sparkle nested codesigning order.** `--deep` is deprecated; nested artifacts must be signed bottom-up: XPC services → Updater.app → Autoupdate → Sparkle.framework → outer .app. The build script does this in order; reshuffling will produce a bundle that codesign verifies but won't launch on Gatekeeper-strict Macs.
+- **Self-update verification chain.** `deckard self-update` requires SHA match + codesign verify + TeamIdentifier=NZL3HS8AH4 + spctl assess. Loosening any of these is a security regression. The check happens against the extracted binary in temp; the swap only proceeds after all four pass.
 
 ## What I should not do without asking
 

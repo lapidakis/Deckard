@@ -14,3 +14,6 @@ xcuserdata/
 local-config.toml
 *.token
 tokens.toml
+
+# Claude Code per-project state
+.claude/

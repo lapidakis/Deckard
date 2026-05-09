@@ -2,51 +2,12 @@ import Testing
 import Foundation
 @testable import BridgeAuth
 
-@Test func tailscaleAllowlistOpenAllowsAnything() {
-    let a = TailscaleAllowlist(allowedPeers: [], allowedUsers: [])
-    #expect(a.isOpen == true)
-    #expect(a.decide(peer: nil, user: nil) == .allow)
-    #expect(a.decide(peer: "anyhost", user: "anyone@github") == .allow)
-}
-
-@Test func tailscaleAllowlistMatchesPeerCaseInsensitive() {
-    let a = TailscaleAllowlist(allowedPeers: ["Hermes", "elliots-macbook"], allowedUsers: [])
-    #expect(a.decide(peer: "hermes", user: nil) == .allow)
-    #expect(a.decide(peer: "HERMES", user: nil) == .allow)
-    #expect(a.decide(peer: "elliots-macbook", user: nil) == .allow)
-    if case .deny = a.decide(peer: "intruder", user: nil) {} else {
-        Issue.record("unexpected allow for unmatched peer")
-    }
-}
-
-@Test func tailscaleAllowlistMatchesUserCaseInsensitive() {
-    let a = TailscaleAllowlist(allowedPeers: [], allowedUsers: ["Mike@github"])
-    #expect(a.decide(peer: nil, user: "mike@github") == .allow)
-    #expect(a.decide(peer: "any", user: "MIKE@GITHUB") == .allow)
-    if case .deny = a.decide(peer: "any", user: "stranger@github") {} else {
-        Issue.record("unexpected allow for unmatched user")
-    }
-}
-
-@Test func tailscaleAllowlistEitherAxisSatisfies() {
-    let a = TailscaleAllowlist(allowedPeers: ["hermes"], allowedUsers: ["mike@github"])
-    // Peer matches but user doesn't → allow
-    #expect(a.decide(peer: "hermes", user: "stranger@github") == .allow)
-    // User matches but peer doesn't → allow
-    #expect(a.decide(peer: "intruder", user: "mike@github") == .allow)
-    // Neither matches → deny
-    if case .deny = a.decide(peer: "intruder", user: "stranger@github") {} else {
-        Issue.record("expected deny when neither axis matches")
-    }
-}
-
-@Test func tailscaleAllowlistMissingFieldsTreatedAsNoMatch() {
-    let a = TailscaleAllowlist(allowedPeers: ["hermes"], allowedUsers: ["mike@github"])
-    // whois failed (both nil) but allowlist is non-empty → deny
-    if case .deny = a.decide(peer: nil, user: nil) {} else {
-        Issue.record("expected deny when whois returns no info under non-empty allowlist")
-    }
-}
+// Tailscale peer-allowlist tests used to live here. The allowlist was
+// removed in favour of delegating peer ACLs to tailscaled — if a peer
+// can reach the listener, your tailnet policy has already permitted it.
+// What's left is the audit-attribution wiring: tailnet identity rendering
+// and the per-call AuthContext TaskLocal that propagates through the
+// SDK's structured-Task children.
 
 @Test func authContextTailscaleIdentityRendersCallerString() {
     let ctx = AuthContext(

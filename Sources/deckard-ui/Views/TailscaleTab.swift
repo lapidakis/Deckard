@@ -3,15 +3,26 @@ import AppKit
 import BridgeConfig
 import BridgeAuth
 
-/// Read-only display of the bridge's Tailscale state. Mirrors the
-/// `deckard tailscale status` CLI: configuration values from
-/// `config.toml`, probe state from the `tailscale` CLI (binary path,
-/// tailnet IPv4, self-peer whois), and a derived listener-readiness line.
+/// Editable settings for the Tailscale listener.
+///
+/// Two fields (Enabled, Port) and a Save button that writes
+/// `~/Library/Application Support/Deckard/config.toml` and offers a
+/// daemon restart so the listener picks up the change. Probe section
+/// underneath surfaces tailscaled state (CLI presence, tailnet IPv4,
+/// self-whois) so the user can confirm the listener will actually bind.
+///
+/// Peer ACLs are intentionally not configurable here — Deckard delegates
+/// that to tailscaled. If a peer can reach the listener, your tailnet
+/// policy has already permitted it; bearer auth still applies on top.
 struct TailscaleTab: View {
     @ObservedObject var status: BridgeStatusModel
 
-    // Config snapshot.
-    @State private var config: Config = Config()
+    // Loaded snapshot — used to detect "dirty" state vs. edits below.
+    @State private var loaded: Config = Config()
+
+    // Editable fields. Mirror loaded values on initial load and after Save.
+    @State private var enabled: Bool = false
+    @State private var port: Int = 8787
 
     // Probe results.
     @State private var cliPath: String? = nil
@@ -21,14 +32,20 @@ struct TailscaleTab: View {
     @State private var selfPeer: TailscaleProbe.PeerInfo? = nil
 
     @State private var loadError: String? = nil
+    @State private var saveError: String? = nil
     @State private var loading: Bool = false
+    @State private var saving: Bool = false
+    @State private var savedNeedsRestart: Bool = false
+
+    private var isDirty: Bool {
+        enabled != loaded.tailscale.enabled || port != loaded.tailscale.port
+    }
 
     var body: some View {
         Form {
-            configSection
+            settingsSection
             probeSection
             listenerSection
-            allowlistSection
             referenceSection
         }
         .formStyle(.grouped)
@@ -38,10 +55,27 @@ struct TailscaleTab: View {
 
     // MARK: - sections
 
-    private var configSection: some View {
-        Section("Configuration") {
-            LabeledContent("Enabled", value: config.tailscale.enabled ? "yes" : "no")
-            LabeledContent("Port", value: "\(config.tailscale.port)")
+    private var settingsSection: some View {
+        Section("Settings") {
+            Toggle("Enable tailnet listener", isOn: $enabled)
+                .help("When on, the daemon binds an HTTP listener on this Mac's tailnet IPv4 in addition to 127.0.0.1.")
+
+            HStack {
+                Text("Port")
+                Spacer()
+                TextField("Port", value: $port, format: .number.grouping(.never))
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 90)
+                Stepper("", value: $port, in: 1...65535).labelsHidden()
+            }
+
+            HStack(alignment: .top, spacing: 8) {
+                iconBadge(systemName: "lock.shield", color: .secondary)
+                Text("Peer ACLs are delegated to tailscaled — set them in your Tailscale admin console. Deckard still requires a bearer token over the tailnet listener.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             HStack {
                 Text("Source")
                     .foregroundStyle(.secondary)
@@ -52,14 +86,41 @@ struct TailscaleTab: View {
                     .lineLimit(1)
                     .truncationMode(.head)
             }
+
+            if let err = saveError {
+                HStack(alignment: .top, spacing: 8) {
+                    iconBadge(systemName: "xmark.octagon.fill", color: .red)
+                    Text(err).font(.caption).foregroundStyle(.red)
+                }
+            }
+
+            if savedNeedsRestart {
+                HStack(alignment: .top, spacing: 8) {
+                    iconBadge(systemName: "info.circle.fill", color: .accentColor)
+                    Text("Saved. Restart the daemon for the listener change to take effect.")
+                        .font(.caption)
+                    Spacer()
+                    Button("Restart daemon") {
+                        Task {
+                            await status.restart()
+                            savedNeedsRestart = false
+                            await loadAll()
+                        }
+                    }
+                    .controlSize(.small)
+                }
+            }
+
             HStack {
-                Spacer()
-                if loading {
+                if loading || saving {
                     ProgressView().controlSize(.small)
                 }
-                Button("Refresh") {
-                    Task { await loadAll() }
-                }
+                Spacer()
+                Button("Revert") { revert() }
+                    .disabled(!isDirty || saving)
+                Button("Save") { Task { await save() } }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!isDirty || saving)
             }
         }
     }
@@ -108,6 +169,14 @@ struct TailscaleTab: View {
                 LabeledContent("Hostname", value: peer.hostname ?? "—")
                 LabeledContent("User", value: peer.user ?? "—")
             }
+
+            HStack {
+                Spacer()
+                Button("Refresh") {
+                    Task { await loadAll() }
+                }
+                .controlSize(.small)
+            }
         }
     }
 
@@ -119,12 +188,12 @@ struct TailscaleTab: View {
                 Spacer()
                 listenerStatusView
             }
-            if config.tailscale.enabled, let ip = tailnetIP {
+            if loaded.tailscale.enabled, let ip = tailnetIP {
                 HStack {
                     Text("Bound at")
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(ip):\(config.tailscale.port)")
+                    Text("\(ip):\(loaded.tailscale.port)")
                         .font(.callout.monospaced())
                         .textSelection(.enabled)
                 }
@@ -134,7 +203,7 @@ struct TailscaleTab: View {
 
     @ViewBuilder
     private var listenerStatusView: some View {
-        if !config.tailscale.enabled {
+        if !loaded.tailscale.enabled {
             HStack(spacing: 6) {
                 iconBadge(systemName: "minus.circle", color: .secondary)
                 Text("Disabled in config")
@@ -167,31 +236,6 @@ struct TailscaleTab: View {
         }
     }
 
-    private var allowlistSection: some View {
-        Section("Allowlist") {
-            allowlistRow(
-                label: "Allowed peers",
-                values: config.tailscale.allowedPeers,
-                emptyHint: "Open — any tailnet peer with a valid bearer token"
-            )
-            allowlistRow(
-                label: "Allowed users",
-                values: config.tailscale.allowedUsers,
-                emptyHint: "Open"
-            )
-            if config.tailscale.enabled,
-               config.tailscale.allowedPeers.isEmpty,
-               config.tailscale.allowedUsers.isEmpty {
-                HStack(alignment: .top, spacing: 8) {
-                    iconBadge(systemName: "exclamationmark.triangle.fill", color: .orange)
-                    Text("Both lists are empty. The bridge will accept any tailnet peer that presents a valid bearer token. Set `allowed_peers` and/or `allowed_users` in config.toml to restrict.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
     private var referenceSection: some View {
         Section("Reference") {
             VStack(alignment: .leading, spacing: 4) {
@@ -203,37 +247,24 @@ struct TailscaleTab: View {
                 Text("deckard tailscale whois <ip>")
                     .font(.caption.monospaced())
                     .textSelection(.enabled)
-                Text("Edit `\(BridgePaths.configFile.path)` and bounce the daemon (Status tab → Restart) for changes to take effect.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
     }
 
-    // MARK: - row helpers
-
-    @ViewBuilder
-    private func allowlistRow(label: String, values: [String], emptyHint: String) -> some View {
-        HStack(alignment: .top) {
-            Text(label).foregroundStyle(.secondary)
-            Spacer()
-            if values.isEmpty {
-                Text(emptyHint).font(.callout).foregroundStyle(.secondary)
-            } else {
-                Text(values.joined(separator: ", "))
-                    .font(.callout.monospaced())
-                    .multilineTextAlignment(.trailing)
-                    .textSelection(.enabled)
-            }
-        }
-    }
+    // MARK: - helpers
 
     private func iconBadge(systemName: String, color: Color) -> some View {
         Image(systemName: systemName)
             .foregroundStyle(color)
     }
 
-    // MARK: - load
+    private func revert() {
+        enabled = loaded.tailscale.enabled
+        port = loaded.tailscale.port
+        saveError = nil
+    }
+
+    // MARK: - load + save
 
     private func loadAll() async {
         loading = true
@@ -242,7 +273,10 @@ struct TailscaleTab: View {
 
         // Config — synchronous file read; small, no spinner needed.
         do {
-            self.config = try ConfigStore().load()
+            let cfg = try ConfigStore().load()
+            self.loaded = cfg
+            self.enabled = cfg.tailscale.enabled
+            self.port = cfg.tailscale.port
         } catch {
             loadError = "config: \(error)"
         }
@@ -283,6 +317,31 @@ struct TailscaleTab: View {
             self.tailnetIP = nil
             self.tailnetIPError = "\(error)"
             self.selfPeer = nil
+        }
+    }
+
+    private func save() async {
+        saving = true
+        defer { saving = false }
+        saveError = nil
+
+        guard (1...65535).contains(port) else {
+            saveError = "Port must be between 1 and 65535"
+            return
+        }
+
+        do {
+            let store = ConfigStore()
+            // Re-read from disk so we don't clobber unrelated edits the
+            // user (or another tool) made between our load and save.
+            var cfg = try store.load()
+            cfg.tailscale.enabled = enabled
+            cfg.tailscale.port = port
+            try store.write(cfg)
+            self.loaded = cfg
+            self.savedNeedsRestart = true
+        } catch {
+            saveError = "\(error)"
         }
     }
 }

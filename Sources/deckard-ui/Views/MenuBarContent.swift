@@ -5,6 +5,7 @@ import SwiftUI
 struct MenuBarContent: View {
     @ObservedObject var status: BridgeStatusModel
     @ObservedObject var onboarding: OnboardingState
+    @ObservedObject var updater: AppUpdater
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openWindow) private var openWindow
 
@@ -25,7 +26,7 @@ struct MenuBarContent: View {
             if let pid = status.pid {
                 LabelRow(name: "PID", value: "\(pid)")
             }
-            LabelRow(name: "Port 8787", value: status.portBound ? "bound" : "—")
+            LabelRow(name: "Port \(status.loopbackPort)", value: status.portBound ? "bound" : "—")
             LabelRow(name: "Audit", value: status.auditEntryCount > 0
                 ? "\(status.auditEntryCount) entries"
                 : "no entries")
@@ -72,6 +73,13 @@ struct MenuBarContent: View {
                 openWindow(id: "onboarding")
                 NSApp.activate(ignoringOtherApps: true)
             }
+            .buttonStyle(.borderless)
+            .font(.caption)
+
+            Button("Check for Updates…") {
+                updater.checkForUpdates()
+            }
+            .disabled(!updater.canCheckForUpdates)
             .buttonStyle(.borderless)
             .font(.caption)
 

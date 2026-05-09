@@ -192,30 +192,22 @@ public struct ServerConfig: Codable, Sendable, Equatable {
 }
 
 public struct TailscaleConfig: Codable, Sendable, Equatable {
-    /// Off by default. When true, the server also binds to the tailnet IP and
-    /// every request is verified against `tailscaled` LocalAPI WhoIs.
+    /// Off by default. When true, the server also binds to the tailnet IP.
+    /// The bridge does NOT re-implement tailnet ACLs — if a peer can reach
+    /// the listener at all, your tailscaled ACL has already permitted it.
+    /// Bearer-token auth still applies. `tailscale whois` runs per request
+    /// for audit attribution only.
     public var enabled: Bool
     public var port: Int
-    public var allowedPeers: [String]
-    public var allowedUsers: [String]
 
-    public init(
-        enabled: Bool = false,
-        port: Int = 8787,
-        allowedPeers: [String] = [],
-        allowedUsers: [String] = []
-    ) {
+    public init(enabled: Bool = false, port: Int = 8787) {
         self.enabled = enabled
         self.port = port
-        self.allowedPeers = allowedPeers
-        self.allowedUsers = allowedUsers
     }
 
     enum CodingKeys: String, CodingKey {
         case enabled
         case port
-        case allowedPeers = "allowed_peers"
-        case allowedUsers = "allowed_users"
     }
 
     public init(from decoder: Decoder) throws {
@@ -223,8 +215,6 @@ public struct TailscaleConfig: Codable, Sendable, Equatable {
         let defaults = TailscaleConfig()
         self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? defaults.enabled
         self.port = try c.decodeIfPresent(Int.self, forKey: .port) ?? defaults.port
-        self.allowedPeers = try c.decodeIfPresent([String].self, forKey: .allowedPeers) ?? defaults.allowedPeers
-        self.allowedUsers = try c.decodeIfPresent([String].self, forKey: .allowedUsers) ?? defaults.allowedUsers
     }
 }
 

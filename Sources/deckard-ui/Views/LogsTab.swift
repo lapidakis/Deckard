@@ -65,12 +65,16 @@ struct LogsTab: View {
 
     private func decisionColor(_ s: String) -> Color {
         switch s {
-        case "allow":     return .green
-        case "deny":      return .red
-        case "error":     return .orange
-        case "approved":  return .green
-        case "denied":    return .red
-        default:          return .secondary
+        case "allow", "approved", "approved_by_policy":
+            return .green
+        case "deny", "denied":
+            return .red
+        case "error", "timeout":
+            return .orange
+        case "approve_pending":
+            return .yellow
+        default:
+            return .secondary
         }
     }
 

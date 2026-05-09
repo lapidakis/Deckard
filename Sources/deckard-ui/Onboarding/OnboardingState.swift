@@ -131,6 +131,21 @@ final class OnboardingState: ObservableObject {
         FileManager.default.fileExists(atPath: launchAgentPlistPath)
     }
 
+    /// Returns (label, secret) pairs for every token in the registry, sorted
+    /// by label. Used by the Connect step to splice an existing token into
+    /// snippets when the user hasn't just created one. Reads via the actor
+    /// to avoid duplicating TOML parsing.
+    @MainActor
+    static func availableTokens() async -> [(label: String, secret: String)] {
+        let registry = TokenRegistry()
+        do {
+            try await registry.ensureLoaded()
+        } catch {
+            return []
+        }
+        return await registry.allEntries().map { ($0.0, $0.1.secret) }
+    }
+
     /// Required TCC services the agent will use. Each is reported with its
     /// granted/denied/unknown state. Read-only — the UI links to System
     /// Settings for changes.

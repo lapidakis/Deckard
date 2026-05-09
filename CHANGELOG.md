@@ -1,5 +1,51 @@
 # Changelog
 
+## v1.0.0-beta.2 — UX polish + Tailscale listener fix
+
+Follow-up to the public beta. CLI and menubar UX cleaned up against a top-to-bottom review; the tailnet listener no longer depends on the bundled Tailscale CLI working from a launchd context.
+
+### CLI
+
+- **`deckard --version` / `deckard version`** — prints the binary version. `BridgeCore.version` was compiled in but had no CLI surface in beta.1.
+- **`deckard restart`** — first-class subcommand that bootouts and bootstraps the LaunchAgent. Replaces four different "restart the daemon" instructions previously scattered across `auth add` / `auth rotate` / `auth revoke` hint text and the docs.
+- **`deckard auth set-profile <label> <profile|->`** — change a token's ACL profile in place without rotating the secret. `-` clears the profile to fall back on the global `[acl]` block. Was promised in the v1.0.0-beta.1 README roadmap but didn't exist.
+- **`deckard auth show`** prints a stderr warning before the secret when stdout is a TTY ("anyone holding it can act as '<label>'"). Suppressed with `--quiet`. Pipe destinations skip the warning so scripts aren't disturbed.
+- **`deckard auth add <existing>`** now points the user at `deckard auth rotate <existing>` instead of just rejecting with "already exists."
+- **`deckard auth list`** column widths derived from actual data — labels and profile names no longer truncate mid-character (`mail-cal-readonly` was being clipped to `mail-cal-readonl`). The `<global>` literal renders as `(global)` in display layers.
+- **`deckard status`** rewritten:
+  - Drops the legacy v0.7 single-token-file row that misreported auth state on every multi-token install.
+  - Shows the binary version, the registry token count, daemon PID + state, and LaunchAgent install status.
+  - Probes the loopback port with `lsof` so a daemon that crashed mid-startup is visible (was reporting "tailnet on" + nothing about whether it actually bound).
+  - Renders a `⚠ OPEN` line when `auth.require_token = false`. The visual treatment makes a misconfigured daemon harder to miss.
+  - Hints at deletion of the legacy `~/Library/Application Support/Deckard/token` file when present alongside `tokens.toml`.
+- **`deckard self-update`** distinguishes 404 cases. `/releases/latest` returning 404 now reads as "no published 'stable' release yet — try `--channel beta`" instead of a generic "GitHub API returned non-200." 403 from the API renders as a rate-limit hint.
+
+### Menubar UI
+
+- **Loopback port read from config.** `MenuBarContent`, `StatusTab`, `BridgeStatusModel`, and the onboarding daemon step now read `cfg.server.loopbackPort` instead of hardcoding `8787`. Editing `[server] loopback_port` no longer leaves the UI lying about the bound port.
+- **Onboarding Connect step.**
+  - Splices an existing token into snippets when the user hasn't just created one. Picks the first registry entry by default; offers a token picker when more than one exists.
+  - Adds a Claude Desktop snippet (`claude_desktop_config.json` via `mcp-remote`) alongside the Claude Code `claude mcp add` line.
+  - Adds a `curl` smoke-test snippet so users can sanity-check the listener + bearer auth before fighting their MCP client.
+  - The "no tokens yet" branch hides the Copy button rather than offering to copy the placeholder sentence.
+- **Audit Log tab decision colors** cover all eight emitted strings — `approve_pending` (yellow), `approved_by_policy` (green), `timeout` (orange) were uncolored before. The color map and the `AuditEvent.swift` source-of-truth comment now agree on the same set: `allow | deny | error | approve_pending | approved | approved_by_policy | denied | timeout`.
+
+### Tailscale listener
+
+The standalone-Tailscale.app bundled CLI requires the user's GUI session to function. Invoked from a LaunchAgent context, it returns "Tailscale CLIError 3" on stdout with exit code 0 — output that previously made it through `tailnetIPv4()` and got passed straight to the Hummingbird listener as a hostname. The daemon would log "binding 100.x.y.z:8787" and then fail to actually serve.
+
+Replaced with a `getifaddrs(3)` walk for an IPv4 address in Tailscale's CGNAT range (`100.64.0.0/10`). Reads the kernel interface table directly — no XPC, no GUI session dependency, no shelling out. CLI fallback is preserved for users on a custom CGNAT range, with output validation to reject non-IP strings.
+
+Peer ACLs are now delegated to tailscaled — `[tailscale] allowed_peers` / `allowed_users` removed from the config schema. If a request reaches the listener, your tailnet policy (set in the Tailscale admin console) has already permitted it. `tailscale whois` still runs per request for audit attribution. Bearer auth applies independently.
+
+### Documentation
+
+- `docs/operations.md` decision-string list reconciled with what the code actually emits. The "secret printed to stderr" line removed (`TokenRegistry` deliberately doesn't log the secret; the daemon log only records the label).
+- README, CLAUDE.md, CHANGELOG, and `docs/README.md` test count reconciled to 111 (actual `swift test` output) instead of the stale 116.
+- Daemon-control table in operations.md now points at `deckard restart` and `deckard status` rather than spelling out `launchctl bootout && bootstrap` invocations by hand.
+
+---
+
 ## v1.0.0-beta.1 — public beta as Deckard
 
 The project was renamed from `iCloud-Bridge` to `Deckard` ahead of the first externally-installable release. The old name was a misnomer (the bridge talks to the host's Mail / Calendar / Reminders / Drive — those apps host iCloud, Gmail, Exchange, IMAP, CalDAV, whatever the user has configured) and was trademark-fragile besides. Detailed migration walkthrough in [`docs/migration-from-icloud-bridge.md`](docs/migration-from-icloud-bridge.md).

@@ -11,6 +11,7 @@ final class BridgeStatusModel: ObservableObject {
     @Published var pid: Int32? = nil
     @Published var versionFromBinary: String? = nil
     @Published var portBound: Bool = false
+    @Published var loopbackPort: Int = 8787
     @Published var auditEntryCount: Int = 0
     @Published var auditNewestTs: String? = nil
     @Published var lastError: String? = nil
@@ -41,6 +42,11 @@ final class BridgeStatusModel: ObservableObject {
         refreshing = true
         defer { refreshing = false }
 
+        // Re-read the loopback port from config on every refresh so a
+        // user editing config.toml doesn't see stale "port 8787" text.
+        let port = (try? ConfigStore().load().server.loopbackPort) ?? 8787
+        self.loopbackPort = port
+
         // Subprocess work runs off the main actor — `Process.waitUntilExit()`
         // blocks its calling thread, and the polling Task is MainActor-isolated.
         // Without this hop, ps + lsof every 5s would freeze MenuBarExtra clicks.
@@ -63,7 +69,7 @@ final class BridgeStatusModel: ObservableObject {
                 }
             }
 
-            let lsof = Self.run("/usr/sbin/lsof", ["-nP", "-iTCP:8787", "-sTCP:LISTEN"])
+            let lsof = Self.run("/usr/sbin/lsof", ["-nP", "-iTCP:\(port)", "-sTCP:LISTEN"])
             return (foundPID, lsof.stdout.contains("deckard"))
         }.value
 

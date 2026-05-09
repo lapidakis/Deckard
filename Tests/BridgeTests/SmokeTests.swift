@@ -38,7 +38,7 @@ import Foundation
 @Test func configRoundTripsThroughTOML() throws {
     let original = Config(
         server: ServerConfig(bindLoopback: true, loopbackPort: 9999),
-        tailscale: TailscaleConfig(enabled: true, port: 9999, allowedPeers: ["hermes"], allowedUsers: ["mike@github"]),
+        tailscale: TailscaleConfig(enabled: true, port: 9999),
         auth: AuthConfig(requireToken: true),
         acl: ACLConfig(default: .deny, tools: ["mail.search": .allow, "mail.send": .approve])
     )
