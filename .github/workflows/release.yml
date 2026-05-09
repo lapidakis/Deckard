@@ -117,11 +117,30 @@ jobs:
           set -euo pipefail
           BIN=".build/release/deckard"
           ditto -c -k --keepParent "$BIN" "$RUNNER_TEMP/daemon.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/daemon.zip" \
+          # Capture submit output so we can fetch the developer log if the
+          # wait result comes back Invalid. Without this the run just says
+          # "exit 65" with no clue why notarization failed.
+          set +e
+          notarize_out=$(xcrun notarytool submit "$RUNNER_TEMP/daemon.zip" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_ID_PASSWORD" \
-            --wait
+            --wait 2>&1)
+          rc=$?
+          set -e
+          echo "$notarize_out"
+          if [[ $rc -ne 0 || "$notarize_out" == *"status: Invalid"* ]]; then
+            sub_id=$(echo "$notarize_out" | awk '/id:/ {print $2; exit}')
+            echo "::error::Daemon notarization failed (submission $sub_id)"
+            if [[ -n "$sub_id" ]]; then
+              echo "--- notarytool log $sub_id ---"
+              xcrun notarytool log "$sub_id" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_ID_PASSWORD" || true
+            fi
+            exit 1
+          fi
           # Standalone binaries can't be stapled — `xcrun stapler staple`
           # only works on bundles. Notarization ticket is fetched at run
           # time on the user's Mac via Gatekeeper's online check.
@@ -135,11 +154,27 @@ jobs:
           set -euo pipefail
           APP=".build/release/Deckard.app"
           ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/app.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/app.zip" \
+          set +e
+          notarize_out=$(xcrun notarytool submit "$RUNNER_TEMP/app.zip" \
             --apple-id "$APPLE_ID" \
             --team-id "$APPLE_TEAM_ID" \
             --password "$APPLE_ID_PASSWORD" \
-            --wait
+            --wait 2>&1)
+          rc=$?
+          set -e
+          echo "$notarize_out"
+          if [[ $rc -ne 0 || "$notarize_out" == *"status: Invalid"* ]]; then
+            sub_id=$(echo "$notarize_out" | awk '/id:/ {print $2; exit}')
+            echo "::error::App bundle notarization failed (submission $sub_id)"
+            if [[ -n "$sub_id" ]]; then
+              echo "--- notarytool log $sub_id ---"
+              xcrun notarytool log "$sub_id" \
+                --apple-id "$APPLE_ID" \
+                --team-id "$APPLE_TEAM_ID" \
+                --password "$APPLE_ID_PASSWORD" || true
+            fi
+            exit 1
+          fi
           # Staple the notarization ticket to the .app so Gatekeeper
           # validates it offline (e.g. air-gapped first launch).
           xcrun stapler staple "$APP"

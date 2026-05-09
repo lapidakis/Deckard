@@ -135,11 +135,19 @@ if [[ ! -d "$SPARKLE_VERSION" ]]; then
     SPARKLE_VERSION="$(find "$SPARKLE_FW/Versions" -maxdepth 1 -mindepth 1 -type d ! -name 'Current' | head -1)"
 fi
 
+# Notarization requires every signature in the bundle to carry a secure
+# timestamp from Apple's TSA. Skipping it (--timestamp=none) makes local
+# dev builds faster but produces an "Invalid" notarization. Release CI
+# adds --timestamp; local dev still elides for speed.
+TIMESTAMP_FLAGS=(--timestamp=none)
+if [[ "$CONFIG" == "release" ]]; then
+    TIMESTAMP_FLAGS=(--timestamp)
+fi
+
 sign_one() {
     local target="$1"
     if [[ -e "$target" ]]; then
-        codesign --force --sign "$IDENTITY" --options runtime --timestamp=none "$target" >/dev/null 2>&1 || \
-        codesign --force --sign "$IDENTITY" --options runtime "$target"
+        codesign --force --sign "$IDENTITY" --options runtime "${TIMESTAMP_FLAGS[@]}" "$target"
     fi
 }
 
@@ -160,6 +168,7 @@ codesign --force \
     --sign "$IDENTITY" \
     --identifier "$BUNDLE_ID" \
     --options runtime \
+    "${TIMESTAMP_FLAGS[@]}" \
     "$APP" 2>&1
 
 # Quick verify so a bundle that won't launch doesn't sit on disk pretending it will.
