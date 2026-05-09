@@ -44,10 +44,10 @@ import Hummingbird
 
 @Test func perCallAuthLoopbackUsesBearerIdentity() {
     let bind = HTTPRunner.Bind(host: "127.0.0.1", port: 8787, transportLabel: .loopback)
-    let auth = HTTPRunner.makePerCallAuth(bind: bind, label: "rocky", remoteIP: "127.0.0.1", peer: nil)
+    let auth = HTTPRunner.makePerCallAuth(bind: bind, label: "host", remoteIP: "127.0.0.1", peer: nil)
     #expect(auth.transport == .loopback)
     if case .bearer(let label) = auth.identity {
-        #expect(label == "rocky")
+        #expect(label == "host")
     } else {
         Issue.record("expected .bearer identity for loopback, got \(auth.identity)")
     }
@@ -56,17 +56,17 @@ import Hummingbird
 
 @Test func perCallAuthTailnetWithWhoisUsesTailscaleIdentity() {
     let bind = HTTPRunner.Bind(host: "100.90.1.1", port: 8787, transportLabel: .tailnet)
-    let peer = TailscaleProbe.PeerInfo(ip: "100.90.2.2", hostname: "hermes", user: "mike@github")
-    let auth = HTTPRunner.makePerCallAuth(bind: bind, label: "rocky", remoteIP: "100.90.2.2", peer: peer)
+    let peer = TailscaleProbe.PeerInfo(ip: "100.90.2.2", hostname: "laptop", user: "user@github")
+    let auth = HTTPRunner.makePerCallAuth(bind: bind, label: "host", remoteIP: "100.90.2.2", peer: peer)
     #expect(auth.transport == .tailnet)
     if case .tailscale(let p, let u) = auth.identity {
-        #expect(p == "hermes")
-        #expect(u == "mike@github")
+        #expect(p == "laptop")
+        #expect(u == "user@github")
     } else {
         Issue.record("expected .tailscale identity, got \(auth.identity)")
     }
-    #expect(auth.remoteDescription == "tailnet:hermes:mike@github")
-    #expect(auth.auditCaller == "ts:hermes:mike@github")
+    #expect(auth.remoteDescription == "tailnet:laptop:user@github")
+    #expect(auth.auditCaller == "ts:laptop:user@github")
 }
 
 @Test func perCallAuthTailnetWithoutWhoisFallsBackToBearer() {
@@ -75,10 +75,10 @@ import Hummingbird
     // because tailscaled has already gated it; AuthContext just falls
     // back to bearer identity with the IP in remoteDescription.
     let bind = HTTPRunner.Bind(host: "100.90.1.1", port: 8787, transportLabel: .tailnet)
-    let auth = HTTPRunner.makePerCallAuth(bind: bind, label: "rocky", remoteIP: "100.90.2.2", peer: nil)
+    let auth = HTTPRunner.makePerCallAuth(bind: bind, label: "host", remoteIP: "100.90.2.2", peer: nil)
     #expect(auth.transport == .tailnet)
     if case .bearer(let label) = auth.identity {
-        #expect(label == "rocky")
+        #expect(label == "host")
     } else {
         Issue.record("expected .bearer fallback identity when whois failed")
     }
@@ -87,10 +87,10 @@ import Hummingbird
 
 @Test func perCallAuthTailnetWhoisHostnameOnlyOmitsUserSegment() {
     let bind = HTTPRunner.Bind(host: "100.90.1.1", port: 8787, transportLabel: .tailnet)
-    let peer = TailscaleProbe.PeerInfo(ip: "100.90.2.2", hostname: "hermes", user: nil)
-    let auth = HTTPRunner.makePerCallAuth(bind: bind, label: "rocky", remoteIP: "100.90.2.2", peer: peer)
-    #expect(auth.remoteDescription == "tailnet:hermes")
-    #expect(auth.auditCaller == "ts:hermes")
+    let peer = TailscaleProbe.PeerInfo(ip: "100.90.2.2", hostname: "laptop", user: nil)
+    let auth = HTTPRunner.makePerCallAuth(bind: bind, label: "host", remoteIP: "100.90.2.2", peer: peer)
+    #expect(auth.remoteDescription == "tailnet:laptop")
+    #expect(auth.auditCaller == "ts:laptop")
 }
 
 // MARK: - error envelopes

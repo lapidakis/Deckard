@@ -205,6 +205,6 @@ import Foundation
     let ctx2 = AuthContext(transport: .loopback, identity: .bearer(tokenLabel: "default"), remoteDescription: "127.0.0.1")
     #expect(ctx2.auditCaller == "bearer:default")
 
-    let ctx3 = AuthContext(transport: .tailnet, identity: .tailscale(peer: "hermes", user: "mike@github"), remoteDescription: "100.64.0.5")
-    #expect(ctx3.auditCaller == "ts:hermes:mike@github")
+    let ctx3 = AuthContext(transport: .tailnet, identity: .tailscale(peer: "laptop", user: "user@github"), remoteDescription: "100.64.0.5")
+    #expect(ctx3.auditCaller == "ts:laptop:user@github")
 }

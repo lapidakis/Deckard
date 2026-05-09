@@ -2,7 +2,7 @@ import Foundation
 import MCP
 import BridgeCore
 
-/// Triage write tools — Eleanor-style "read inbox, mark/move messages."
+/// Triage write tools — agent-style "read inbox, mark/move messages."
 ///
 /// Each tool accepts EITHER a single `id` OR an `ids` array (up to
 /// `batchIdsLimit`). The bridge always routes through the batch adapter

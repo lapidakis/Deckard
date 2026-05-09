@@ -48,7 +48,7 @@ private func makeRegistry(tokens: URL, legacy: URL) -> TokenRegistry {
     let r = makeRegistry(tokens: p.tokens, legacy: p.legacy)
     try await r.ensureLoaded()
 
-    let entry = try await r.add(label: "rocky", profile: "trusted", description: "Mac local")
+    let entry = try await r.add(label: "host", profile: "trusted", description: "Mac local")
     #expect(entry.profile == "trusted")
     #expect(entry.description == "Mac local")
     #expect(entry.secret.hasPrefix("icb_"))
@@ -57,7 +57,7 @@ private func makeRegistry(tokens: URL, legacy: URL) -> TokenRegistry {
     let r2 = makeRegistry(tokens: p.tokens, legacy: p.legacy)
     try await r2.ensureLoaded()
     let labels = await r2.allEntries().map { $0.0 }
-    #expect(labels.contains("rocky"))
+    #expect(labels.contains("host"))
     #expect(labels.contains("default"))   // bootstrap entry survives
 }
 
@@ -65,13 +65,13 @@ private func makeRegistry(tokens: URL, legacy: URL) -> TokenRegistry {
     let p = tempPaths(); defer { p.cleanup() }
     let r = makeRegistry(tokens: p.tokens, legacy: p.legacy)
     try await r.ensureLoaded()
-    _ = try await r.add(label: "rocky", profile: nil, description: "")
+    _ = try await r.add(label: "host", profile: nil, description: "")
 
     do {
-        _ = try await r.add(label: "rocky", profile: nil, description: "")
+        _ = try await r.add(label: "host", profile: nil, description: "")
         Issue.record("expected RegistryError.alreadyExists for duplicate label")
     } catch let e as TokenRegistry.RegistryError {
-        if case .alreadyExists(let l) = e { #expect(l == "rocky") }
+        if case .alreadyExists(let l) = e { #expect(l == "host") }
         else { Issue.record("expected .alreadyExists, got \(e)") }
     }
 }
@@ -80,11 +80,11 @@ private func makeRegistry(tokens: URL, legacy: URL) -> TokenRegistry {
     let p = tempPaths(); defer { p.cleanup() }
     let r = makeRegistry(tokens: p.tokens, legacy: p.legacy)
     try await r.ensureLoaded()
-    _ = try await r.add(label: "rocky", profile: nil, description: "")
-    try await r.revoke(label: "rocky")
+    _ = try await r.add(label: "host", profile: nil, description: "")
+    try await r.revoke(label: "host")
 
     let labels = await r.allEntries().map { $0.0 }
-    #expect(!labels.contains("rocky"))
+    #expect(!labels.contains("host"))
 }
 
 @Test func revokeMissingLabelThrowsNotFound() async throws {
@@ -104,12 +104,12 @@ private func makeRegistry(tokens: URL, legacy: URL) -> TokenRegistry {
     let p = tempPaths(); defer { p.cleanup() }
     let r = makeRegistry(tokens: p.tokens, legacy: p.legacy)
     try await r.ensureLoaded()
-    let original = try await r.add(label: "rocky", profile: nil, description: "")
+    let original = try await r.add(label: "host", profile: nil, description: "")
     // Sleep enough for the ISO8601 fractional-second formatter to roll
     // forward — without this the rotated `created` timestamp can equal
     // the original on fast machines and the assertion below false-passes.
     try await Task.sleep(nanoseconds: 50_000_000)
-    let rotated = try await r.rotate(label: "rocky")
+    let rotated = try await r.rotate(label: "host")
 
     #expect(rotated.secret != original.secret, "rotation must change the secret")
     #expect(rotated.profile == original.profile)
@@ -121,15 +121,15 @@ private func makeRegistry(tokens: URL, legacy: URL) -> TokenRegistry {
     let p = tempPaths(); defer { p.cleanup() }
     let r = makeRegistry(tokens: p.tokens, legacy: p.legacy)
     try await r.ensureLoaded()
-    _ = try await r.add(label: "rocky", profile: nil, description: "")
+    _ = try await r.add(label: "host", profile: nil, description: "")
 
-    try await r.setProfile(label: "rocky", profile: "trusted")
-    let after = await r.entry(for: "rocky")
+    try await r.setProfile(label: "host", profile: "trusted")
+    let after = await r.entry(for: "host")
     #expect(after?.profile == "trusted")
 
     // Setting nil strips the profile entirely (back to <global>).
-    try await r.setProfile(label: "rocky", profile: nil)
-    let cleared = await r.entry(for: "rocky")
+    try await r.setProfile(label: "host", profile: nil)
+    let cleared = await r.entry(for: "host")
     #expect(cleared?.profile == nil)
 }
 

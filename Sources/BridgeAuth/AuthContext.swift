@@ -6,9 +6,9 @@ import Foundation
 /// token; the boot-time `AuthContext` carries the token label but not which
 /// listener carried the call or who the remote peer was. The runner sets this
 /// TaskLocal around `transport.handleRequest`, and `MCPHostBuilder.dispatch`
-/// reads it when building the audit row — so a tailnet call from `hermes`
-/// shows up as `transport=tailnet caller=ts:hermes:mike@github` instead of
-/// the static `transport=loopback caller=bearer:rocky` baked in at boot.
+/// reads it when building the audit row — so a tailnet call from `laptop`
+/// shows up as `transport=tailnet caller=ts:laptop:user@github` instead of
+/// the static `transport=loopback caller=bearer:host` baked in at boot.
 ///
 /// Structured `Task { ... }` inherits TaskLocals from the spawning context,
 /// which covers the SDK's transport handling. If a future SDK release switches

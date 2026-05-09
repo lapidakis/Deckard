@@ -298,11 +298,11 @@ private func readAuditLines(_ url: URL) throws -> [[String: Any]] {
     let handler = RecordingHandler(name: "health.ping")
     let approval = StubApprovalGate(decision: .approved)
 
-    let baseAuth = makeAuth(transport: .loopback, label: "rocky")
+    let baseAuth = makeAuth(transport: .loopback, label: "host")
     let perCallAuth = AuthContext(
         transport: .tailnet,
-        identity: .tailscale(peer: "hermes", user: "mike@github"),
-        remoteDescription: "tailnet:hermes"
+        identity: .tailscale(peer: "laptop", user: "user@github"),
+        remoteDescription: "tailnet:laptop"
     )
 
     await BridgeCallContext.$override.withValue(perCallAuth) {
@@ -320,9 +320,9 @@ private func readAuditLines(_ url: URL) throws -> [[String: Any]] {
     try await Task.sleep(nanoseconds: 50_000_000)
     let rows = try readAuditLines(auditURL)
     // The override (transport=tailnet, identity=tailscale) must end up in
-    // the audit row, not the SessionHolder's bound bearer:rocky / loopback.
+    // the audit row, not the SessionHolder's bound bearer:host / loopback.
     #expect(rows.first?["transport"] as? String == "tailnet")
-    #expect(rows.first?["caller"] as? String == "ts:hermes:mike@github")
+    #expect(rows.first?["caller"] as? String == "ts:laptop:user@github")
 }
 
 // MARK: - tool error

@@ -58,7 +58,7 @@ struct Auth: AsyncParsableCommand {
             abstract: "Create a new token with a label, optional profile, optional description."
         )
 
-        @Argument(help: "Label for the new token (e.g. 'rocky', 'eleanor').")
+        @Argument(help: "Label for the new token (e.g. 'host', 'triage', 'scratch').")
         var label: String
 
         @Option(name: .long, help: "ACL profile name (must match an [acl.profiles.<name>] block in config). Omit for global ACL.")

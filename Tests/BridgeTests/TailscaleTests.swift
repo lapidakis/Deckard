@@ -12,32 +12,32 @@ import Foundation
 @Test func authContextTailscaleIdentityRendersCallerString() {
     let ctx = AuthContext(
         transport: .tailnet,
-        identity: .tailscale(peer: "hermes", user: "mike@github"),
-        remoteDescription: "tailnet:hermes:mike@github"
+        identity: .tailscale(peer: "laptop", user: "user@github"),
+        remoteDescription: "tailnet:laptop:user@github"
     )
-    #expect(ctx.auditCaller == "ts:hermes:mike@github")
+    #expect(ctx.auditCaller == "ts:laptop:user@github")
 
     let noUser = AuthContext(
         transport: .tailnet,
-        identity: .tailscale(peer: "hermes", user: nil),
-        remoteDescription: "tailnet:hermes"
+        identity: .tailscale(peer: "laptop", user: nil),
+        remoteDescription: "tailnet:laptop"
     )
-    #expect(noUser.auditCaller == "ts:hermes")
+    #expect(noUser.auditCaller == "ts:laptop")
 }
 
 @Test func bridgeCallContextTaskLocalDefaultsToNil() async {
     #expect(BridgeCallContext.override == nil)
     let override = AuthContext(
         transport: .tailnet,
-        identity: .tailscale(peer: "hermes", user: nil),
-        remoteDescription: "tailnet:hermes"
+        identity: .tailscale(peer: "laptop", user: nil),
+        remoteDescription: "tailnet:laptop"
     )
     await BridgeCallContext.$override.withValue(override) {
         #expect(BridgeCallContext.override?.transport == .tailnet)
         // Inherited by structured Task — covers the SDK transport's
         // dispatch path (it spawns child Tasks via `Task { ... }`).
         await Task {
-            #expect(BridgeCallContext.override?.auditCaller == "ts:hermes")
+            #expect(BridgeCallContext.override?.auditCaller == "ts:laptop")
         }.value
     }
     #expect(BridgeCallContext.override == nil)

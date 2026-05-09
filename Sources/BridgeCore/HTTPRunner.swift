@@ -11,7 +11,7 @@ import BridgeConfig
 ///
 /// HTTPRunner is multi-tenant: each authenticated bearer token resolves to its
 /// own `SessionHolder` (with its own MCP Server, ACL profile, and AuthContext).
-/// This keeps audit identities clean ("bearer:rocky" vs "bearer:eleanor") and
+/// This keeps audit identities clean ("bearer:host" vs "bearer:triage") and
 /// lets per-token profiles enforce different ACLs without per-call dispatch
 /// gymnastics inside the SDK.
 public struct HTTPRunner: Sendable {
@@ -117,7 +117,7 @@ public struct HTTPRunner: Sendable {
         let remoteIP = ctx.remoteAddress?.ipAddress
 
         // Tailnet listener: best-effort whois so the audit row can attribute
-        // "ts:hermes:mike@github" instead of just an IP. Tailnet ACLs are
+        // "ts:laptop:user@github" instead of just an IP. Tailnet ACLs are
         // tailscaled's job; reaching the listener at all means the peer has
         // already been permitted by your tailnet policy. Failed whois is not
         // an error — the listener still serves the request and audit just
@@ -174,8 +174,8 @@ public struct HTTPRunner: Sendable {
 
         // Build the per-call AuthContext: transport reflects the listener that
         // received this request, identity adopts a `.tailscale(...)` flavor
-        // when whois succeeded so audit rows can attribute "ts:hermes:mike"
-        // instead of just "bearer:rocky", and remoteDescription captures the
+        // when whois succeeded so audit rows can attribute "ts:laptop:user"
+        // instead of just "bearer:host", and remoteDescription captures the
         // raw IP for forensic use.
         let perCallAuth = makePerCallAuth(
             bind: bind, label: label, remoteIP: remoteIP, peer: resolvedPeer

@@ -22,7 +22,7 @@ Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Dura
 
 Per-token `interactive_approval` mode (`always` / `never`) lets trusted remote tokens skip the host osascript dialog — `.approve` outcomes record `approved_by_policy` instead of stalling on a popup an off-host operator can't see.
 
-**Tailscale (v0.11.0) is real now.** Listener boots when `[tailscale] enabled = true`. Peer ACLs are delegated to tailscaled — the bridge does not maintain its own allowlist; if a request reaches the listener, your tailnet policy has already permitted it. `tailscale whois` runs per request for audit attribution only, so rows show `transport=tailnet caller=ts:hermes:mike@github` rather than the static SessionHolder identity. Per-call AuthContext flows via `BridgeCallContext.override` TaskLocal.
+**Tailscale (v0.11.0) is real now.** Listener boots when `[tailscale] enabled = true`. Peer ACLs are delegated to tailscaled — the bridge does not maintain its own allowlist; if a request reaches the listener, your tailnet policy has already permitted it. `tailscale whois` runs per request for audit attribution only, so rows show `transport=tailnet caller=ts:laptop:user@github` rather than the static SessionHolder identity. Per-call AuthContext flows via `BridgeCallContext.override` TaskLocal.
 
 **Mail write tools accept `id` OR `ids: [string]`** — single tool, both shapes, returns `BatchResult { matched, missing, failed, elapsed_ms }`. Singletons go through the batch path internally (length-1 batch); response shape is uniform. Schema avoids top-level `oneOf` (Anthropic API rejects it).
 

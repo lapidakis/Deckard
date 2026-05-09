@@ -1,5 +1,21 @@
 # Changelog
 
+## v1.0.0-beta.3 — fingerprint scrub before going public
+
+Pre-publication pass: replaced personal device / agent names that had crept into examples and comments with generic placeholders. Functional behavior identical to v1.0.0-beta.2.
+
+- `rocky` → `host` (the trusted local-host bearer)
+- `eleanor` → `triage` (the triage-tier agent)
+- `hermes` → `laptop` (a generic remote tailnet client)
+- `paperclip` removed from the configuration walkthrough (it was a device name)
+- `mike@github` → `user@github` in audit-row examples
+
+Affected: README, CLAUDE.md, CHANGELOG, `docs/configuration.md`, `docs/security-model.md`, code comments in `Sources/BridgeAuth/AuthContext.swift`, `Sources/BridgeAuth/TailscaleProbe.swift`, `Sources/BridgeCore/HTTPRunner.swift`, `Sources/ServiceMail/MailWriteTools.swift`, `Sources/deckard/Commands/Auth.swift` help text, and matching test fixtures across `Tests/BridgeTests/`.
+
+No security-sensitive content. The scrub is documentation/cosmetic — every reference was a personal naming choice in illustrative material, not a credential or secret.
+
+---
+
 ## v1.0.0-beta.2 — UX polish + Tailscale listener fix
 
 Follow-up to the public beta. CLI and menubar UX cleaned up against a top-to-bottom review; the tailnet listener no longer depends on the bundled Tailscale CLI working from a launchd context.
@@ -62,7 +78,7 @@ First externally-installable release. The bridge is built and tested in CI; rele
 
 ### What's new in the beta
 
-**Tailscale enforcement (v0.11.0).** Listener actually enforces now. Every tailnet request runs `tailscale whois`, matches the result against `[tailscale] allowed_peers` / `allowed_users` (case-insensitive, either-axis satisfies), and returns 403 before bearer auth on a miss. Audit rows for tailnet calls record `transport=tailnet caller=ts:hermes:mike@github` instead of the static SessionHolder identity, via a `BridgeCallContext.override` TaskLocal that flows through the SDK's structured Tasks.
+**Tailscale enforcement (v0.11.0).** Listener actually enforces now. Every tailnet request runs `tailscale whois`, matches the result against `[tailscale] allowed_peers` / `allowed_users` (case-insensitive, either-axis satisfies), and returns 403 before bearer auth on a miss. Audit rows for tailnet calls record `transport=tailnet caller=ts:laptop:user@github` instead of the static SessionHolder identity, via a `BridgeCallContext.override` TaskLocal that flows through the SDK's structured Tasks.
 
 **First-launch onboarding flow.** 6-step window in the menubar app — Welcome, Daemon, Token, Permissions, Connect, Done. Creates the first bearer token via `TokenRegistry.add` (plaintext shown ONCE with copy button), reads TCC.db to show per-surface granted/denied/unknown state with deep-links to System Settings, and surfaces a copy-paste `claude mcp add` snippet. Reopen anytime via Settings → Status → "Show Onboarding…".
 

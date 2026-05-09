@@ -296,12 +296,12 @@ default = "deny"
 Then create tokens for each:
 
 ```sh
-deckard auth add rocky    --profile trusted   --description "Rocky on this Mac"
-deckard auth add eleanor  --profile triage    --description "Eleanor on Hermes (paperclip)"
+deckard auth add host     --profile trusted   --description "Personal client on this Mac"
+deckard auth add triage   --profile triage    --description "Triage agent on a remote Mac over Tailscale"
 deckard auth add scratch  --profile readonly  --description "Untrusted experiments"
 ```
 
-Each agent gets its own bearer; the daemon shows `caller: "bearer:rocky"` / `bearer:eleanor` / `bearer:scratch` in the audit log so you can grep usage by agent.
+Each agent gets its own bearer; the daemon shows `caller: "bearer:host"` / `bearer:triage` / `bearer:scratch` in the audit log so you can grep usage by agent.
 
 ---
 

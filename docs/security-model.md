@@ -89,7 +89,7 @@ Every authenticated request flows through the same pipeline. Each layer assumes 
 ## Recommended posture
 
 - Use **multi-token + profiles** for any non-toy deployment. One trusted personal token, one scoped triage token, one read-only experiment token.
-- For autonomous agents (Eleanor-shape: runs on a schedule without a human at the keyboard), set every write tool to `approve` even though the dialog will time out — that's the right default failure mode for unattended runs.
+- For autonomous agents (running on a schedule without a human at the keyboard), set every write tool to `approve` even though the dialog will time out — that's the right default failure mode for unattended runs.
 - Set `[drive] write_allowed_prefixes = ["agent-drafts/"]` if any token needs `drive.write` access. Keeps the blast radius bounded to a sandbox subtree.
 - Watch the audit log periodically. `audit stats` shows the time range; `audit tail` streams recent calls. If you see a tool you didn't expect, your ACL drifted or a token has too much.
 - For Tailnet exposure, treat each token as a network credential — same posture as an SSH key. Rotate via `deckard auth rotate <label>` when a device is decommissioned.

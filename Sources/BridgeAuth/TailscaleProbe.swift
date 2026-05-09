@@ -10,8 +10,8 @@ import Logging
 public actor TailscaleProbe {
     public struct PeerInfo: Sendable, Equatable {
         public let ip: String
-        public let hostname: String?   // e.g. "hermes"
-        public let user: String?       // e.g. "mike@github"
+        public let hostname: String?   // e.g. "laptop"
+        public let user: String?       // e.g. "user@github"
     }
 
     public enum ProbeError: Error, CustomStringConvertible {
