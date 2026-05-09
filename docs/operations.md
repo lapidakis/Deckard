@@ -220,6 +220,7 @@ The daemon hits TCC the first time it's asked to do anything reaching out:
 | `mail.*` | Apple Events → Mail.app | macOS prompt: "deckard wants to control Mail" |
 | `calendar.*` | Calendar (`kTCCServiceCalendar`) | macOS prompt: "Deckard wants access to your calendars" |
 | `reminders.*` | Reminders (`kTCCServiceReminders`) | macOS prompt: "Deckard wants access to your reminders" |
+| `contacts.*` | Contacts (`kTCCServiceAddressBook`) | macOS prompt: "Deckard wants access to your contacts" |
 | **Approval dialogs (any `.approve` tool)** | **Apple Events → System Events** | **macOS prompt: "deckard wants to control System Events"** — fires on the first `.approve` call. The dialog is wrapped in `tell application "System Events" / activate` so it lands on the user's active Space; without the System Events grant, the dialog times out at the `giving up after` deadline. |
 | `voice_memo.*` | none | Group Container is mode 644; no TCC needed |
 | `drive.*` | none | iCloud Drive is the user's own files |
@@ -236,6 +237,7 @@ To force a fresh prompt (rare; only useful if the grant got stuck):
 tccutil reset AppleEvents com.lapidakis.deckard   # for Mail + System Events
 tccutil reset Calendar com.lapidakis.deckard
 tccutil reset Reminders com.lapidakis.deckard
+tccutil reset AddressBook com.lapidakis.deckard
 ```
 
 The single `AppleEvents` reset clears both Mail and System Events grants since they're under the same TCC service — you'll get a fresh prompt for each on the next call that needs it.

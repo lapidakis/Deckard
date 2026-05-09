@@ -14,9 +14,10 @@ Read this file before making changes. README.md is end-user-facing; this file is
 | 3 | iCloud Drive (read + write + materialize + search + usage + sandbox) | Done — verified live |
 | 4 | Voice Memos (read-only metadata + audio bytes) | Done |
 | 4.5 | Reminders (full CRUD via EventKit `.reminder`) | Done |
+| 4.6 | Contacts (search/get/groups + create/update/delete/set_groups via CNContactStore) | Done |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
-35 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **111 unit tests.**
+43 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **111 unit tests.**
 
 Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). Self-healing MCP session transport for stale-session SDK bug. Menubar UI scaffold (v0.10 series) with native macOS look. First-launch onboarding flow (v0.11+) walks through daemon → token → permissions → connect.
 
@@ -51,17 +52,21 @@ ServiceDrive         — iCloud Drive filesystem; DrivePath traversal guard
 ServiceVoiceMemo     — Voice Memos CloudRecordings.db reader (sqlite3 C API);
                        audio file pull as base64
 ServiceReminders     — EventKit `.reminder` adapter; CRUD tools
+ServiceContacts      — Contacts framework (CNContactStore) adapter; CRUD tools
+                       and group membership management
 ```
 
 Dependency direction (import-only):
 ```
-deckard            → BridgeCore + Service{Mail, Calendar, Drive, VoiceMemo, Reminders}
+deckard            → BridgeCore + Service{Mail, Calendar, Drive, VoiceMemo,
+                                           Reminders, Contacts}
 deckard-ui   → BridgeAuth + BridgeConfig + BridgePolicy
 ServiceMail        → BridgeCore + MCP
 ServiceCalendar    → BridgeCore + MCP + EventKit
 ServiceDrive       → BridgeCore + BridgeConfig + MCP
 ServiceVoiceMemo   → BridgeCore + MCP + SQLite3
 ServiceReminders   → BridgeCore + MCP + EventKit
+ServiceContacts    → BridgeCore + MCP + Contacts
 BridgeCore         → BridgeAuth + BridgeConfig + BridgePolicy + MCP +
                      Hummingbird + HTTPTypes
 BridgePolicy       → BridgeAuth + BridgeConfig
@@ -168,6 +173,7 @@ The UI has its own bundle id (`com.lapidakis.deckard.ui`) and entitlements set; 
   - `ZCUSTOMLABEL` — auto-generated date-shaped fallback name
   - **No transcripts stored** anywhere in the SQLite. Voice Memos.app computes them at view time via Speech framework. Agents that want transcripts must pull audio and run their own STT.
 - **Reminders sendability.** `EKReminder` isn't Sendable; `RemindersAdapter.listReminders` filters/sorts/maps inside the EventKit completion handler before resuming the continuation. `summarize`/`detail`/`dueAsDate` are `nonisolated static`.
+- **Contacts sendability + notes entitlement.** `CNContact`/`CNGroup`/`CNMutableContact` are reference types and not Sendable; `ContactsAdapter` does all mapping inside the actor and returns `Sendable` summaries. Group membership is computed by iterating `CNContactStore.groups(matching:)` because there's no public accessor on `CNContact`. **`CNContactNoteKey` is intentionally absent from the fetch keys** — macOS 13+ requires the Apple-granted `com.apple.developer.contacts.notes` entitlement; including the key without it throws `CNErrorCodeAuthorizationDenied`. The `note` field in `ContactDetail` round-trips as `nil` and `update`/`create` writes are no-ops on `note`.
 - **Per-token Server design.** Each bearer token gets its own `MCP.Server` instance with auth context and PolicyPipeline pre-bound. The MCP swift-sdk doesn't expose per-call session context to handler closures, so `tools/call` resolves to the right server via the bearer-secret-to-SessionHolder map in HTTPRunner. Side effect: tools/list per-token filtering works because each Server can filter its own spec list at registration time.
 - **Stale MCP session self-heal.** `StatefulHTTPServerTransport` keeps sessions in memory and rejects fresh `initialize` with HTTP 400 "Session already initialized". HTTPRunner detects this response and recreates the SessionHolder transparently. Don't try to "fix" by removing this; the SDK still has the underlying issue.
 - **Per-call AuthContext via TaskLocal.** `BridgeCallContext.override` is read by `MCPHostBuilder.dispatch` before building the audit row. HTTPRunner sets it (transport label + identity + remote peer info) inside `$override.withValue { transport.handleRequest(...) }` so the SDK's structured-Task children inherit it. If the SDK ever switches to `Task.detached` for dispatch, this propagation breaks silently — `bridgeCallContextTaskLocalDefaultsToNil` test guards the boundary.

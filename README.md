@@ -147,7 +147,7 @@ Verify in any Claude Code session with `/mcp` — should show `deckard  ✓ conn
 
 ---
 
-## What's in the box (35 tools, v1.0.0-beta.3)
+## What's in the box (43 tools, v1.0.0-beta.3)
 
 **Built-in**
 - `health.ping` — liveness probe; tiny payload, useful diagnostic
@@ -176,6 +176,10 @@ Verify in any Claude Code session with `/mcp` — should show `deckard  ✓ conn
 - `reminders.list_lists`, `reminders.list_reminders`, `reminders.get_reminder`
 - `reminders.create_reminder`, `reminders.update_reminder`, `reminders.complete_reminder`, `reminders.delete_reminder`
 
+**Contacts (Phase 4.6)** — Contacts framework (`CNContactStore`)
+- `contacts.search`, `contacts.get`, `contacts.list_groups`, `contacts.list_in_group`
+- `contacts.create`, `contacts.update`, `contacts.delete`, `contacts.set_groups` (all approval-gated)
+
 Per-tool detail in [`docs/configuration.md`](docs/configuration.md).
 
 ---
@@ -188,9 +192,9 @@ Per-tool detail in [`docs/configuration.md`](docs/configuration.md).
 
 **One audit log, append-only.** Every call, every decision, with retention. If something happened, it's in the log, regardless of which agent made the call.
 
-**Native frameworks where they exist.** EventKit for Calendar/Reminders, FileManager + brctl for Drive, sqlite3 for Voice Memos and Mail's own indexes. AppleScript only when nothing else works (Mail.app, no public framework).
+**Native frameworks where they exist.** EventKit for Calendar/Reminders, Contacts framework for the address book, FileManager + brctl for Drive, sqlite3 for Voice Memos and Mail's own indexes. AppleScript only when nothing else works (Mail.app, no public framework).
 
-**No fancy abstractions.** Five service modules, one shape: `*Adapter` (talks to macOS) → `*Tools` (MCP handlers) → registered into the same dispatch pipeline. New phases plug in without touching `BridgeCore`.
+**No fancy abstractions.** Six service modules, one shape: `*Adapter` (talks to macOS) → `*Tools` (MCP handlers) → registered into the same dispatch pipeline. New phases plug in without touching `BridgeCore`.
 
 **Operate on files, not network APIs (for the UI).** The menubar app reads `tokens.toml`, `config.toml`, and `audit.jsonl` directly. Same machine, same user. No control protocol to maintain.
 
