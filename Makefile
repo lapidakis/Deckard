@@ -40,7 +40,22 @@ uninstall:
 
 restart: build
 	-launchctl bootout gui/$(shell id -u)/com.lapidakis.deckard
-	launchctl bootstrap gui/$(shell id -u) $(HOME)/Library/LaunchAgents/com.lapidakis.deckard.plist
+	@# launchd's bootout is async — the service entry can linger after the
+	@# command returns, and a too-quick bootstrap then fails with EIO
+	@# ("Bootstrap failed: 5: Input/output error"). Poll print until the
+	@# service is gone, then bootstrap. Bounded so a stuck teardown doesn't
+	@# wedge the make target forever.
+	@for i in 1 2 3 4 5 6 7 8 9 10; do \
+		if ! launchctl print gui/$(shell id -u)/com.lapidakis.deckard >/dev/null 2>&1; then \
+			break; \
+		fi; \
+		sleep 0.3; \
+	done
+	@# Retry bootstrap once on EIO — a few macOS releases still emit it
+	@# even when print reports the slot empty. The retry path almost
+	@# always succeeds; if it doesn't, surface the real error.
+	launchctl bootstrap gui/$(shell id -u) $(HOME)/Library/LaunchAgents/com.lapidakis.deckard.plist || \
+		(sleep 1 && launchctl bootstrap gui/$(shell id -u) $(HOME)/Library/LaunchAgents/com.lapidakis.deckard.plist)
 
 logs:
 	tail -f $(HOME)/Library/Logs/Deckard/stderr.log
