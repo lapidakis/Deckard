@@ -93,8 +93,15 @@ public struct HTTPRunner: Sendable {
             Self.notFoundJSON()
         }
 
+        // Idle timeout reaps abandoned TCP channels (peer FIN'd but never sent
+        // a clean close, or a half-open NAT survivor) so they don't accumulate
+        // in CLOSE_WAIT and exhaust the process FD table. HTTPUserEventHandler
+        // only closes on this event when `requestsBeingRead > 0` or
+        // `requestsInProgress == 0`, so a long-running tool call mid-response
+        // is safe; only genuinely idle channels get dropped.
         let app = Application(
             router: router,
+            server: .http1(configuration: .init(idleTimeout: .seconds(60))),
             configuration: .init(
                 address: .hostname(bind.host, port: bind.port),
                 serverName: "deckard"
@@ -191,7 +198,10 @@ public struct HTTPRunner: Sendable {
         // calls with 400 "Session already initialized." When we see that, tear
         // down and recreate the transport+server pair, then retry once.
         if isStaleSessionError(mcpResponse, request: mcpRequest) {
-            logger.info("Stale MCP session detected; recreating transport in place")
+            // Some clients re-`initialize` on every request instead of reusing
+            // the session ID. The self-heal path handles it correctly; log at
+            // .debug so stderr doesn't fill with thousands of these per day.
+            logger.debug("Stale MCP session detected; recreating transport in place")
             do {
                 try await holder.recreate()
                 let fresh = await holder.currentTransport()
