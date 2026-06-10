@@ -207,4 +207,3 @@ Per-tool detail in [`docs/configuration.md`](docs/configuration.md).
 - Token CRUD in the menubar UI (creation lives in the onboarding flow; rotate / revoke / set-profile still CLI-only)
 - XPC channel from daemon to menubar UI for approval dialogs — would let `.approve` outcomes prompt remote tokens reliably without falling back to `interactive_approval = "never"`
 - Voice memo transcription via Apple Speech framework (currently agent-side STT)
-- `SessionHolder.recreate()` should drain in-flight requests before swapping the transport — closes the rare "Transport already started" race in the stale-session self-heal path

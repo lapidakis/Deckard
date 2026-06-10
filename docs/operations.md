@@ -207,7 +207,6 @@ tail -f ~/Library/Logs/Deckard/stderr.log
 
 Look for:
 - `tool_start` / `tool_end` per call (info level) — start fires immediately, end fires on completion. A `tool_start` with no `tool_end` after 60 s means a tool is genuinely hung in its underlying syscall (Mail.app stalled, etc.).
-- `Stale MCP session detected; recreating transport` — normal client reconnect path; not an error.
 - `Token registered: label=X profile=Y` at startup — confirms which tokens loaded.
 - `tool_error` with a reason — propagated AppleScript / TCC / parse error.
 
@@ -262,7 +261,7 @@ Skip:
 | `AppleScript was blocked by macOS privacy` | Automation TCC denied previously | System Settings → Privacy & Security → Automation → enable Mail under Deckard |
 | `Calendar access denied` / `Reminders access denied` | TCC not granted | Trigger a tool call to surface the prompt; or System Settings → Privacy & Security → Calendar / Reminders |
 | `HTTP 401` from a client that should work | Stale token / wrong header | `deckard auth show <label>` to re-fetch; verify `Authorization: Bearer <secret>` header |
-| `HTTP 400 Session already initialized` | SDK's stale-session bug from a prior client connection | Self-heal handles this; if you see it, transport recreate failed — check stderr for `Failed to recreate transport`, `make restart` is the fallback |
+| `HTTP 400 Session already initialized` / `Server is already initialized` | Should be impossible since the stateless-transport migration (no session table; `initialize` is idempotent) | If it appears, the idempotent-initialize override was registered before `server.start()` (start re-registers SDK defaults) — see `MCPHostBuilder.registerIdempotentInitialize` and `StatelessSessionTests` |
 | Tailscale listener never starts | `tailscale` CLI not in PATH or not logged in | `which tailscale && tailscale status`; install or `tailscale up`. Use `deckard tailscale status` to see what the daemon sees. |
 | Tailnet request can't connect at all | Tailscale ACL in the admin console blocks the source peer from reaching this Mac on the listener port | Adjust the tailnet ACL (Tailscale admin console → Access controls). Deckard does not maintain its own peer allowlist — if the request never reaches the daemon, tailscaled rejected it. |
 | Tailnet request returns 401 | Bearer token missing or wrong | Pass `Authorization: Bearer <secret>` from `deckard auth show <label>`. Whois still runs for audit, but bearer auth applies independently. |

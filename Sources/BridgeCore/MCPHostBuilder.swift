@@ -80,6 +80,43 @@ public struct MCPHostBuilder: Sendable {
         return server
     }
 
+    /// Replace the SDK's default `initialize` handler with an idempotent one.
+    ///
+    /// MUST be called after `server.start(transport:)` — `start()` re-registers
+    /// the SDK's default handlers (`registerDefaultHandlers`), which would
+    /// silently overwrite this override if it ran first.
+    ///
+    /// The SDK default rejects a second `initialize` with "Server is already
+    /// initialized". That is wrong for Deckard's long-lived per-token servers
+    /// behind a stateless HTTP transport: every client (re)connect opens with
+    /// `initialize`, and all of them must succeed against the same Server. The
+    /// 2026-05 Hermes storm came from exactly this — a client re-initializing
+    /// per request could only be served by tearing down the whole transport
+    /// (`SessionHolder.recreate`), which a tight loop turned into a self-DoS.
+    /// Idempotent initialize removes the failure mode instead of throttling it.
+    ///
+    /// The override cannot call the SDK's private `setInitialState`, so
+    /// `Server.isInitialized` stays false. That is harmless in non-strict mode
+    /// (Deckard's configuration): nothing gates on it. If a Server is ever
+    /// built with `.strict`, every non-init request would 400 — don't.
+    public func registerIdempotentInitialize(on server: Server) async {
+        let serverInfo = Server.Info(name: serverName, version: serverVersion)
+        let capabilities = await server.capabilities
+        await server.withMethodHandler(Initialize.self) { params in
+            // Mirrors the SDK-internal Version.negotiate (not public): echo a
+            // supported client version, otherwise offer our latest.
+            let negotiated = Version.supported.contains(params.protocolVersion)
+                ? params.protocolVersion
+                : Version.latest
+            return Initialize.Result(
+                protocolVersion: negotiated,
+                capabilities: capabilities,
+                serverInfo: serverInfo,
+                instructions: nil
+            )
+        }
+    }
+
     /// Internal so tests can drive the dispatch directly without booting
     /// a full MCP transport. Production code reaches it via the
     /// `withMethodHandler(CallTool.self)` closure registered in `build()`.
