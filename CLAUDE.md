@@ -17,9 +17,9 @@ Read this file before making changes. README.md is end-user-facing; this file is
 | 4.6 | Contacts (search/get/groups + create/update/delete/set_groups via CNContactStore) | Done |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
-43 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **122 unit tests.**
+43 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **123 unit tests.**
 
-Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). Self-healing MCP session transport for stale-session SDK bug. Menubar UI scaffold (v0.10 series) with native macOS look. First-launch onboarding flow (v0.11+) walks through daemon → token → permissions → connect.
+Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). HTTP listeners run the SDK's *stateless* Streamable HTTP transport with an idempotent `initialize` — no session table, no stale-session self-heal. Menubar UI scaffold (v0.10 series) with native macOS look. First-launch onboarding flow (v0.11+) walks through daemon → token → permissions → connect.
 
 Per-token `interactive_approval` mode (`always` / `never`) lets trusted remote tokens skip the host osascript dialog — `.approve` outcomes record `approved_by_policy` instead of stalling on a popup an off-host operator can't see.
 
@@ -96,7 +96,7 @@ When you add a tool that returns data from external sources (mail, messages, fet
 ```sh
 make build              # daemon, codesigned (preserves TCC across rebuilds)
 make ui                 # menubar app bundle
-make test               # 122 unit tests
+make test               # 123 unit tests
 make restart            # bootout + bootstrap the LaunchAgent
 make logs               # tail stderr.log
 make audit              # tail audit.jsonl
@@ -175,7 +175,7 @@ The UI has its own bundle id (`com.lapidakis.deckard.ui`) and entitlements set; 
 - **Reminders sendability.** `EKReminder` isn't Sendable; `RemindersAdapter.listReminders` filters/sorts/maps inside the EventKit completion handler before resuming the continuation. `summarize`/`detail`/`dueAsDate` are `nonisolated static`.
 - **Contacts sendability + notes entitlement.** `CNContact`/`CNGroup`/`CNMutableContact` are reference types and not Sendable; `ContactsAdapter` does all mapping inside the actor and returns `Sendable` summaries. Group membership is computed by iterating `CNContactStore.groups(matching:)` because there's no public accessor on `CNContact`. **`CNContactNoteKey` is intentionally absent from the fetch keys** — macOS 13+ requires the Apple-granted `com.apple.developer.contacts.notes` entitlement; including the key without it throws `CNErrorCodeAuthorizationDenied`. The `note` field in `ContactDetail` round-trips as `nil` and `update`/`create` writes are no-ops on `note`.
 - **Per-token Server design.** Each bearer token gets its own `MCP.Server` instance with auth context and PolicyPipeline pre-bound. The MCP swift-sdk doesn't expose per-call session context to handler closures, so `tools/call` resolves to the right server via the bearer-secret-to-SessionHolder map in HTTPRunner. Side effect: tools/list per-token filtering works because each Server can filter its own spec list at registration time.
-- **Stale MCP session self-heal.** `StatefulHTTPServerTransport` keeps sessions in memory and rejects fresh `initialize` with HTTP 400 "Session already initialized". HTTPRunner detects this response and recreates the SessionHolder transparently. Don't try to "fix" by removing this; the SDK still has the underlying issue.
+- **Stateless HTTP transport + idempotent initialize.** HTTP listeners use the SDK's `StatelessHTTPServerTransport` (no `Mcp-Session-Id`, GET/DELETE → 405) so any client may (re-)`initialize` at any time — the storm class where a re-initializing client forced transport recreation (Hermes, 2026-05) is structurally gone. Two invariants: (1) `MCPHostBuilder.registerIdempotentInitialize` MUST run *after* `server.start()` — start() re-registers the SDK defaults and would silently overwrite the override; (2) Servers must stay non-strict (`Configuration.default`) — the override can't set the SDK's private `isInitialized`, and strict mode 400s every non-init request when it's false. `StatelessSessionTests` pins both.
 - **Per-call AuthContext via TaskLocal.** `BridgeCallContext.override` is read by `MCPHostBuilder.dispatch` before building the audit row. HTTPRunner sets it (transport label + identity + remote peer info) inside `$override.withValue { transport.handleRequest(...) }` so the SDK's structured-Task children inherit it. If the SDK ever switches to `Task.detached` for dispatch, this propagation breaks silently — `bridgeCallContextTaskLocalDefaultsToNil` test guards the boundary.
 - **Tailscale peer ACLs are tailscaled's job.** The bridge does NOT maintain a peer allowlist in `config.toml`. If a request reaches the listener at all, tailscaled has already gated it via your tailnet policy (set in the admin console). Re-implementing that would just duplicate (and drift from) the source of truth. Bearer auth still applies independently. `tailscale whois` runs per request for audit attribution only — failure is non-fatal.
 - **Mail batch tools' AppleScript shape.** `move <list> to <mbox>` and `set read status of <list> to <bool>` BOTH fail in Mail.app on macOS 26 with -10006. The batch path resolves message refs, then iterates per-message in the action loop. The osascript invocation + Mail.app activation is a single ~600ms cost; loop iterations are sub-ms. Don't switch back to list-target forms without re-testing on the target macOS.

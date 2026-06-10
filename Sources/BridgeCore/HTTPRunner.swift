@@ -188,40 +188,14 @@ public struct HTTPRunner: Sendable {
             bind: bind, label: label, remoteIP: remoteIP, peer: resolvedPeer
         )
 
+        // The stateless transport has no session table, and `initialize` is
+        // idempotent (MCPHostBuilder.registerIdempotentInitialize), so there is
+        // no "Session already initialized" failure mode left to self-heal —
+        // any client may (re-)initialize at any time and every request stands
+        // alone. GET/DELETE get the transport's own 405.
         let transport = await holder.currentTransport()
-        var mcpResponse = await BridgeCallContext.$override.withValue(perCallAuth) {
+        let mcpResponse = await BridgeCallContext.$override.withValue(perCallAuth) {
             await transport.handleRequest(mcpRequest)
-        }
-
-        // Self-heal: the SDK's StatefulHTTPServerTransport keeps a session in
-        // memory across MCP-client reconnects and rejects fresh initialize
-        // calls with 400 "Session already initialized." When we see that, tear
-        // down and recreate the transport+server pair, then retry once.
-        if isStaleSessionError(mcpResponse, request: mcpRequest) {
-            // Some clients re-`initialize` on every request instead of reusing
-            // the session ID. Recreating the transport heals that — but it's
-            // budgeted (see RecreateThrottle): a client stuck re-initializing on
-            // a tight loop, or several workers sharing one token, would otherwise
-            // tear down the live session on every call, starving real tool calls
-            // and churning the daemon ~1/sec (the Hermes tailnet storm, 2026-05).
-            switch await holder.selfHeal() {
-            case .recreated:
-                // Log at .debug so stderr doesn't fill with thousands of these
-                // per day for clients that legitimately re-initialize.
-                logger.debug("Stale MCP session detected; recreated transport in place")
-                let fresh = await holder.currentTransport()
-                mcpResponse = await BridgeCallContext.$override.withValue(perCallAuth) {
-                    await fresh.handleRequest(mcpRequest)
-                }
-            case .throttled:
-                // Budget spent: stop honoring blind re-inits. Return the SDK's
-                // own 400 unchanged rather than weaponizing recreate. Warn (not
-                // debug) so a looping client is visible to the operator without
-                // having to raise the log level.
-                logger.warning("Self-heal budget exhausted for token=\(label); client likely re-initializing without reusing Mcp-Session-Id — returning stale-session response without recreate")
-            case .failed(let err):
-                logger.error("Failed to recreate transport: \(err)")
-            }
         }
 
         return convert(mcpResponse, logger: logger)
@@ -260,14 +234,6 @@ public struct HTTPRunner: Sendable {
             identity: identity,
             remoteDescription: remoteDescription
         )
-    }
-
-    private static func isStaleSessionError(_ response: MCP.HTTPResponse, request: MCP.HTTPRequest) -> Bool {
-        guard response.statusCode == 400 else { return false }
-        guard request.method.uppercased() == "POST" else { return false }
-        guard let body = response.bodyData,
-              let s = String(data: body, encoding: .utf8) else { return false }
-        return s.contains("Session already initialized")
     }
 
     static func extractBearer(from headers: HTTPFields) -> String? {
