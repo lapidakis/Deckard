@@ -18,17 +18,20 @@ public actor SessionHolder {
     private let auth: AuthContext
     private let policy: PolicyPipeline
     private let logger: Logger
+    private var throttle: RecreateThrottle
 
     public init(
         builder: MCPHostBuilder,
         auth: AuthContext,
         policy: PolicyPipeline,
-        logger: Logger
+        logger: Logger,
+        recreateThrottle: RecreateThrottle = RecreateThrottle()
     ) async throws {
         self.builder = builder
         self.auth = auth
         self.policy = policy
         self.logger = logger
+        self.throttle = recreateThrottle
         self.transport = StatefulHTTPServerTransport(logger: logger)
         self.server = await builder.build(auth: auth, policy: policy)
         try await self.server.start(transport: self.transport)
@@ -36,7 +39,23 @@ public actor SessionHolder {
 
     public func currentTransport() -> StatefulHTTPServerTransport { transport }
 
-    public func recreate() async throws {
+    /// Self-heal a stale MCP session by rebuilding the transport+server pair —
+    /// but only while within the recreate budget. A client re-`initialize`ing on
+    /// a tight loop (not reusing its `Mcp-Session-Id`) would otherwise make us
+    /// tear down the live session on every request; `RecreateThrottle` documents
+    /// the failure mode. Returns the decision so the caller can retry
+    /// (`.recreated`), back off (`.throttled`), or fall back (`.failed`).
+    public func selfHeal(now: ContinuousClock.Instant = ContinuousClock().now) async -> RecreateDecision {
+        guard throttle.permit(now: now) else { return .throttled }
+        do {
+            try await recreate()
+            return .recreated
+        } catch {
+            return .failed(String(describing: error))
+        }
+    }
+
+    private func recreate() async throws {
         await server.stop()
         await transport.disconnect()
         self.transport = StatefulHTTPServerTransport(logger: logger)
