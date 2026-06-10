@@ -199,17 +199,28 @@ public struct HTTPRunner: Sendable {
         // down and recreate the transport+server pair, then retry once.
         if isStaleSessionError(mcpResponse, request: mcpRequest) {
             // Some clients re-`initialize` on every request instead of reusing
-            // the session ID. The self-heal path handles it correctly; log at
-            // .debug so stderr doesn't fill with thousands of these per day.
-            logger.debug("Stale MCP session detected; recreating transport in place")
-            do {
-                try await holder.recreate()
+            // the session ID. Recreating the transport heals that — but it's
+            // budgeted (see RecreateThrottle): a client stuck re-initializing on
+            // a tight loop, or several workers sharing one token, would otherwise
+            // tear down the live session on every call, starving real tool calls
+            // and churning the daemon ~1/sec (the Hermes tailnet storm, 2026-05).
+            switch await holder.selfHeal() {
+            case .recreated:
+                // Log at .debug so stderr doesn't fill with thousands of these
+                // per day for clients that legitimately re-initialize.
+                logger.debug("Stale MCP session detected; recreated transport in place")
                 let fresh = await holder.currentTransport()
                 mcpResponse = await BridgeCallContext.$override.withValue(perCallAuth) {
                     await fresh.handleRequest(mcpRequest)
                 }
-            } catch {
-                logger.error("Failed to recreate transport: \(error)")
+            case .throttled:
+                // Budget spent: stop honoring blind re-inits. Return the SDK's
+                // own 400 unchanged rather than weaponizing recreate. Warn (not
+                // debug) so a looping client is visible to the operator without
+                // having to raise the log level.
+                logger.warning("Self-heal budget exhausted for token=\(label); client likely re-initializing without reusing Mcp-Session-Id — returning stale-session response without recreate")
+            case .failed(let err):
+                logger.error("Failed to recreate transport: \(err)")
             }
         }
 

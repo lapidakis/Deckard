@@ -17,7 +17,7 @@ Read this file before making changes. README.md is end-user-facing; this file is
 | 4.6 | Contacts (search/get/groups + create/update/delete/set_groups via CNContactStore) | Done |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
-43 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **111 unit tests.**
+43 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **122 unit tests.**
 
 Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). Self-healing MCP session transport for stale-session SDK bug. Menubar UI scaffold (v0.10 series) with native macOS look. First-launch onboarding flow (v0.11+) walks through daemon → token → permissions → connect.
 
@@ -96,7 +96,7 @@ When you add a tool that returns data from external sources (mail, messages, fet
 ```sh
 make build              # daemon, codesigned (preserves TCC across rebuilds)
 make ui                 # menubar app bundle
-make test               # 111 unit tests
+make test               # 122 unit tests
 make restart            # bootout + bootstrap the LaunchAgent
 make logs               # tail stderr.log
 make audit              # tail audit.jsonl
