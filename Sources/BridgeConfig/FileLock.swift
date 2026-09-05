@@ -4,7 +4,8 @@ import Darwin
 /// Advisory lock shared by daemon, UI and CLI processes. Keep the lock file
 /// separate from data files that are atomically replaced, and never unlink it.
 public enum FileLock {
-    public static func withExclusiveAccess<T>(to url: URL, _ body: () throws -> T) throws -> T {
+    public static func withExclusiveAccess<T>(to url: URL, isolation: isolated (any Actor)? = #isolation,
+                                              _ body: () throws -> T) throws -> T {
         let fd = open(url.path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         defer { close(fd) }
