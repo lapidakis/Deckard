@@ -6,12 +6,15 @@ import BridgeCore
 
 struct CreateEventTool: ToolHandler, ApprovalSummarizing {
     let name = "calendar.create_event"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "calendar.create_event",
         description: """
         Create a new event. Required: title, start, end (ISO 8601). Optional:
         all_day, location, notes, calendar_id (defaults to user's default
-        writable calendar). WRITE — recommended ACL setting is `approve` so
+        writable calendar), time_zone (IANA zone; defaults to the Mac zone).
+        Timed events require timestamps with offsets. All-day events accept
+        yyyy-MM-dd in time_zone; end is exclusive. WRITE — recommended ACL setting is `approve` so
         every create pops a confirmation dialog.
         """,
         inputSchema: .object([
@@ -20,6 +23,7 @@ struct CreateEventTool: ToolHandler, ApprovalSummarizing {
                 "title":       .object(["type": .string("string")]),
                 "start":       .object(["type": .string("string")]),
                 "end":         .object(["type": .string("string")]),
+                "time_zone": .object(["type": .string("string")]),
                 "all_day":     .object(["type": .string("boolean")]),
                 "location":    .object(["type": .string("string")]),
                 "notes":       .object(["type": .string("string")]),
@@ -44,7 +48,7 @@ struct CreateEventTool: ToolHandler, ApprovalSummarizing {
             isAllDay: arguments?["all_day"]?.boolValue ?? false,
             location: arguments?["location"]?.stringValue,
             notes: arguments?["notes"]?.stringValue,
-            calendarId: arguments?["calendar_id"]?.stringValue
+            calendarId: arguments?["calendar_id"]?.stringValue, timeZoneID: arguments?["time_zone"]?.stringValue
         )
         let event = try await adapter.createEvent(input)
         return calendarJSON(event)
@@ -57,6 +61,7 @@ struct CreateEventTool: ToolHandler, ApprovalSummarizing {
         let end = arguments?["end"]?.stringValue ?? "?"
         lines.append("Title: \(title)")
         lines.append("When: \(start) → \(end)")
+        lines.append("Time zone: \(arguments?["time_zone"]?.stringValue ?? TimeZone.current.identifier)")
         if arguments?["all_day"]?.boolValue == true { lines.append("All-day: yes") }
         if let loc = arguments?["location"]?.stringValue, !loc.isEmpty {
             lines.append("Location: \(loc)")
@@ -75,25 +80,30 @@ struct CreateEventTool: ToolHandler, ApprovalSummarizing {
 
 // MARK: - calendar.update_event
 
-struct UpdateEventTool: ToolHandler, ApprovalSummarizing {
+struct UpdateEventTool: ToolHandler, ApprovalSummarizing, AsyncApprovalSummarizing {
     let name = "calendar.update_event"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "calendar.update_event",
         description: """
         Update fields on an existing event by event_id. Only fields you supply
         are changed. WRITE — recommended ACL setting is `approve`. To clear an
-        optional field (location, notes), pass an empty string.
+        optional field (location, notes), pass an empty string. For recurring
+        events, occurrence_start is required: copy the desired occurrence's
+        start from list_events. Only that occurrence is changed.
         """,
         inputSchema: .object([
             "type": .string("object"),
             "properties": .object([
                 "event_id":  .object(["type": .string("string")]),
+                "occurrence_start": .object(["type": .string("string")]),
                 "title":     .object(["type": .string("string")]),
                 "start":     .object(["type": .string("string")]),
                 "end":       .object(["type": .string("string")]),
+                "time_zone": .object(["type": .string("string")]),
                 "all_day":   .object(["type": .string("boolean")]),
-                "location":  .object(["type": .string("string")]),
-                "notes":     .object(["type": .string("string")]),
+                "location":  .object(["type": .array([.string("string"), .string("null")])]),
+                "notes":     .object(["type": .array([.string("string"), .string("null")])]),
             ]),
             "required": .array([.string("event_id")]),
             "additionalProperties": .bool(false),
@@ -135,16 +145,28 @@ struct UpdateEventTool: ToolHandler, ApprovalSummarizing {
         }
 
         let update = CalendarAdapter.EventUpdate(
-            eventId: id,
+            eventId: id, occurrenceStartISO: arguments?["occurrence_start"]?.stringValue,
             title: arguments?["title"]?.stringValue,
             startISO: arguments?["start"]?.stringValue,
             endISO: arguments?["end"]?.stringValue,
             isAllDay: arguments?["all_day"]?.boolValue,
             location: location,
-            notes: notes
+            notes: notes, timeZoneID: arguments?["time_zone"]?.stringValue
         )
         let event = try await adapter.updateEvent(update)
         return calendarJSON(event)
+    }
+
+    func resolvedApprovalSummary(for arguments: [String: Value]?) async throws -> [String] {
+        guard let id = arguments?["event_id"]?.stringValue, !id.isEmpty else {
+            throw CalendarAdapter.CalendarError.invalidArgument("event_id is required")
+        }
+        let occurrence = arguments?["occurrence_start"]?.stringValue
+        let event = try await adapter.getEvent(id: id, tzID: TimeZone.current.identifier,
+                                               occurrenceStartISO: occurrence)
+        try CalendarAdapter.requireOccurrenceSelector(isRecurring: event.isRecurring, occurrenceStartISO: occurrence)
+        return ["Current title: \(event.title)", "Current time: \(event.start) → \(event.end)",
+                "Calendar: \(event.calendarTitle) (\(event.calendarId))"] + approvalSummary(for: arguments)
     }
 
     func approvalSummary(for arguments: [String: Value]?) -> [String] {
@@ -157,11 +179,10 @@ struct UpdateEventTool: ToolHandler, ApprovalSummarizing {
         // value is a chained `arguments?[...]?.stringValue ?? ""`. Splitting
         // dodges the inference cost without changing the result.
         var changes: [(String, String)] = []
-        for key in ["title", "start", "end", "location", "notes"] {
-            let value = arguments?[key]?.stringValue ?? ""
-            if !value.isEmpty {
-                changes.append((key, value))
-            }
+        for key in ["title", "start", "end", "location", "notes", "time_zone"] {
+            guard let supplied = arguments?[key] else { continue }
+            let value = supplied.stringValue ?? ""
+            changes.append((key, value.isEmpty ? "(clear)" : value))
         }
         for (k, v) in changes {
             lines.append("\(k) → \(String(v.prefix(200)))")
@@ -175,19 +196,22 @@ struct UpdateEventTool: ToolHandler, ApprovalSummarizing {
 
 // MARK: - calendar.delete_event
 
-struct DeleteEventTool: ToolHandler, ApprovalSummarizing {
+struct DeleteEventTool: ToolHandler, ApprovalSummarizing, AsyncApprovalSummarizing {
     let name = "calendar.delete_event"
     let spec = Tool(
         name: "calendar.delete_event",
         description: """
         Delete an event by event_id. DESTRUCTIVE — irreversible. Recommended
         ACL setting is `approve`. The approval dialog shows the current
-        title + when + calendar so you can confirm before deletion.
+        title + when + calendar so you can confirm before deletion. Recurring
+        events require occurrence_start copied from list_events; only that
+        occurrence is deleted.
         """,
         inputSchema: .object([
             "type": .string("object"),
             "properties": .object([
                 "event_id": .object(["type": .string("string")]),
+                "occurrence_start": .object(["type": .string("string")]),
             ]),
             "required": .array([.string("event_id")]),
             "additionalProperties": .bool(false),
@@ -199,11 +223,23 @@ struct DeleteEventTool: ToolHandler, ApprovalSummarizing {
         guard let id = arguments?["event_id"]?.stringValue, !id.isEmpty else {
             return calendarErrorResult("event_id is required")
         }
-        try await adapter.deleteEvent(id: id)
+        try await adapter.deleteEvent(id: id, occurrenceStartISO: arguments?["occurrence_start"]?.stringValue)
         return CallTool.Result(
             content: [.text(text: #"{"deleted":true}"#, annotations: nil, _meta: nil)],
             isError: false
         )
+    }
+
+    func resolvedApprovalSummary(for arguments: [String: Value]?) async throws -> [String] {
+        guard let id = arguments?["event_id"]?.stringValue, !id.isEmpty else {
+            throw CalendarAdapter.CalendarError.invalidArgument("event_id is required")
+        }
+        let occurrence = arguments?["occurrence_start"]?.stringValue
+        let event = try await adapter.getEvent(id: id, tzID: TimeZone.current.identifier,
+                                               occurrenceStartISO: occurrence)
+        try CalendarAdapter.requireOccurrenceSelector(isRecurring: event.isRecurring, occurrenceStartISO: occurrence)
+        return ["Current title: \(event.title)", "Current time: \(event.start) → \(event.end)",
+                "Calendar: \(event.calendarTitle) (\(event.calendarId))"] + approvalSummary(for: arguments)
     }
 
     func approvalSummary(for arguments: [String: Value]?) -> [String] {

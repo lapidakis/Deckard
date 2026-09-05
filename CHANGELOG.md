@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — calendar and security review
+
+- Harden token revocation, private atomic persistence, cross-process audit/token writes, error redaction, and per-request identity propagation through the MCP SDK.
+- Fence session recovery against executing tools and approvals; enforce HTTP bearer auth and exact Host/Origin checks.
+- Validate tool inputs and calendar ranges/time zones; resolve approval targets and require explicit recurring occurrence selectors.
+- Bound subprocess execution and reject Drive/Voice Memo symlink escapes.
+- Update Sparkle to 2.9.6, SwiftNIO to 2.101.0, and NIO HTTP/2 to 1.45.0 after advisory scans.
+- Add regression coverage, a reproducible OSV scan, and an OpenClaw calendar-only profile.
+- Compatibility: Tailscale now needs an authoritative CLI address; calendar writes require strict dates and recurrence selectors; Drive rejects symlink aliases. See [review](docs/reviews/2026-09-05-security-review.md).
+
 ## v1.0.0-beta.3 — fingerprint scrub before going public
 
 Pre-publication pass: replaced personal device / agent names that had crept into examples and comments with generic placeholders. Functional behavior identical to v1.0.0-beta.2.

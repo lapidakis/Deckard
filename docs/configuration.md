@@ -5,7 +5,7 @@ Two files live at `~/Library/Application Support/Deckard/`:
 - `config.toml` — user-editable runtime config (server, ACL, redaction, etc.)
 - `tokens.toml` — bearer secrets + token labels + profile assignments (mode 0600)
 
-The daemon reads both at startup. Edit, then restart the LaunchAgent (`deckard install --force`) or use the menubar UI's Restart button.
+The daemon loads configuration and token bindings at startup, and rechecks token bindings from disk on requests. Edit, then restart the LaunchAgent (`deckard install --force`) or use the menubar UI's Restart button.
 
 ## `config.toml` reference
 
@@ -75,7 +75,7 @@ deckard tailscale whois 100.x.y.z   # resolve a tailnet IP to peer + user
 
 | Key | Default | Notes |
 |---|---|---|
-| `require_token` | `true` | Bearer required even on loopback. Local users still need the secret. |
+| `require_token` | `true` | Must be true for HTTP; false fails startup. Stdio relies on the OS process boundary. |
 
 ### `[acl]` and `[acl.profiles.<name>]`
 
@@ -182,7 +182,7 @@ deckard auth rotate <label>           # generate new secret, invalidate old
 deckard auth revoke <label>
 ```
 
-After any change, restart the daemon so the in-memory token registry rebinds.
+New tokens and changed profiles require a restart to bind. Revocation, rotation, and token-profile changes invalidate the old binding on the next request, including an existing MCP session. Malformed or missing token files fail closed. Already executing mutations may finish. Config-only ACL edits require a restart.
 
 ---
 
@@ -323,7 +323,11 @@ Each agent gets its own bearer; the daemon shows `caller: "bearer:host"` / `bear
 | Change | When it applies |
 |---|---|
 | Edit `config.toml` (any section) | Next daemon start. Restart via `deckard install --force`, the menubar UI's Restart button, or `make restart`. |
-| `auth add/revoke/rotate` | Next daemon start. Same applies. |
-| Edit `tokens.toml` by hand | Next daemon start. Prefer the CLI. |
+| `auth add/revoke/rotate/set-profile` | Old bindings are checked against disk on requests; new bindings require restart. |
+| Edit `tokens.toml` by hand | Old bindings invalidate on requests; new bindings require restart. Prefer the CLI for locked, atomic writes. |
 | LaunchAgent plist edits | `launchctl bootout` then `bootstrap` to reload. |
 | Binary upgrade (`make build`) | New binary signs in place; `make restart` to load it. |
+
+## Calendar agents and filesystem compatibility
+
+See [OpenClaw calendar setup](openclaw-calendar.md) for a default-deny profile, occurrence selectors, strict dates, and all-day time zones. Drive operations now reject symlinks below the configured root, including in-root aliases and dangling links. Use canonical paths. Tailscale requires a working CLI and binds only the address it reports; failure aborts startup.

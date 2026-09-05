@@ -36,7 +36,26 @@ public struct Redactor: ResultMiddleware {
         request: PolicyRequest
     ) -> CallTool.Result {
         guard enabled, !rules.isEmpty else { return result }
-        return mapTextContent(result) { redact($0) }
+        return mapTextContent(result) { text in
+            // Service tools encode objects as JSON text. Redact decoded string
+            // values so escaped newlines/quotes cannot bypass a rule or let a
+            // greedy rule consume JSON delimiters.
+            if let data = text.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data),
+               let encoded = try? JSONSerialization.data(
+                   withJSONObject: redactJSON(object), options: [.sortedKeys, .withoutEscapingSlashes]),
+               let json = String(data: encoded, encoding: .utf8) {
+                return json
+            }
+            return redact(text)
+        }
+    }
+
+    private func redactJSON(_ value: Any) -> Any {
+        if let text = value as? String { return redact(text) }
+        if let array = value as? [Any] { return array.map { redactJSON($0) } }
+        if let object = value as? [String: Any] { return object.mapValues { redactJSON($0) } }
+        return value
     }
 
     func redact(_ s: String) -> String {
@@ -72,7 +91,8 @@ public struct Redactor: ResultMiddleware {
         ("slack_token",      #"(?<!\w)xox[baprs]-[A-Za-z0-9-]{10,}(?!\w)"#),
         ("bearer_header",    #"(?i)\b(authorization|bearer|x-api-key|api[_-]?key)\s*[:= ]\s*[A-Za-z0-9_\.\-]{20,}"#),
         ("ssn",              #"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)"#),
-        ("private_key",      #"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"#),
+        ("private_key",      #"(?s)-----BEGIN ((?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY)-----.*?(?:-----END \1-----|$)"#),
+        ("deckard_token",    #"(?<!\w)icb_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"#),
         ("jwt",              #"\beyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b"#),
         ("google_api_key",   #"\bAIza[0-9A-Za-z_-]{35}\b"#),
         ("gcp_service_acct", #""type"\s*:\s*"service_account""#),

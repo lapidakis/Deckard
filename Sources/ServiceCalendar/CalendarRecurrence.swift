@@ -20,20 +20,20 @@ enum CalendarRecurrence {
 
         let byDay = rule.daysOfTheWeek?.compactMap { dow -> String? in
             // EKRecurrenceDayOfWeek.dayOfTheWeek: 1 = Sunday ... 7 = Saturday.
-            // RFC 5545 codes: SU MO TU WE TH FR SA. weekNumber (e.g. "1MO" =
-            // first Monday) is dropped here for the simple case; agents that
-            // need "first Monday of month" can inspect the raw event in
-            // EventKit (we don't currently surface it).
+            // RFC 5545 codes: SU MO TU WE TH FR SA. Preserve weekNumber (e.g. "1MO" =
+            // first Monday), otherwise monthly rules acquire the wrong meaning.
+            let code: String
             switch dow.dayOfTheWeek {
-            case .sunday:    return "SU"
-            case .monday:    return "MO"
-            case .tuesday:   return "TU"
-            case .wednesday: return "WE"
-            case .thursday:  return "TH"
-            case .friday:    return "FR"
-            case .saturday:  return "SA"
+            case .sunday:    code = "SU"
+            case .monday:    code = "MO"
+            case .tuesday:   code = "TU"
+            case .wednesday: code = "WE"
+            case .thursday:  code = "TH"
+            case .friday:    code = "FR"
+            case .saturday:  code = "SA"
             @unknown default: return nil
             }
+            return dow.weekNumber == 0 ? code : "\(dow.weekNumber)\(code)"
         }
 
         let byMonthDay = rule.daysOfTheMonth?.map { $0.intValue }

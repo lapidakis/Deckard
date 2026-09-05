@@ -2,6 +2,7 @@ import Foundation
 import Logging
 import MCP
 import BridgeAuth
+import BridgeConfig
 
 public struct ApprovalRequest: Sendable {
     public let tool: String
@@ -38,6 +39,11 @@ public protocol ApprovalGate: Sendable {
 /// the argument keys.
 public protocol ApprovalSummarizing {
     func approvalSummary(for arguments: [String: Value]?) -> [String]
+}
+
+/// Approval summaries that need a read of the current object before prompting.
+public protocol AsyncApprovalSummarizing: Sendable {
+    func resolvedApprovalSummary(for arguments: [String: Value]?) async throws -> [String]
 }
 
 public extension ToolHandler {
@@ -109,9 +115,9 @@ public struct OsaScriptApprovalGate: ApprovalGate {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if decision == .denied, !["Deny"].contains(trimmed) {
                 if trimmed.hasPrefix("ERROR:") {
-                    logger.error("osascript approval errored for tool=\(req.tool): \(trimmed)")
+                    logger.error("osascript approval errored for tool=\(req.tool)")
                 } else if !trimmed.isEmpty {
-                    logger.warning("Approval gate: unexpected output '\(trimmed)' for tool=\(req.tool) — treating as deny")
+                    logger.warning("Approval gate: unexpected output for tool=\(req.tool) — treating as deny")
                 }
             }
             return decision
@@ -161,27 +167,14 @@ public struct OsaScriptApprovalGate: ApprovalGate {
     }
 
     private func runOsa(script: String) async -> OsaResult {
-        await Task.detached(priority: .userInitiated) {
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            proc.arguments = ["-e", script]
-            let outPipe = Pipe()
-            let errPipe = Pipe()
-            proc.standardOutput = outPipe
-            proc.standardError = errPipe
-            do {
-                try proc.run()
-                proc.waitUntilExit()
-                let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-                let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-                if proc.terminationStatus != 0 {
-                    return OsaResult.failed(String(data: errData, encoding: .utf8) ?? "")
-                }
-                return OsaResult.stdout(String(data: outData, encoding: .utf8) ?? "")
-            } catch {
-                return OsaResult.failed("\(error)")
-            }
-        }.value
+        do {
+            let result = try await Subprocess.run("/usr/bin/osascript", arguments: ["-"],
+                input: Data(script.utf8), timeoutSeconds: Double(timeoutSeconds) + 5, maxOutputBytes: 64 * 1024)
+            guard result.exitCode == 0 else { return .failed("approval process failed") }
+            return .stdout(result.stdout)
+        } catch {
+            return .failed("approval process unavailable or timed out")
+        }
     }
 
     private func applescriptEscape(_ s: String) -> String {

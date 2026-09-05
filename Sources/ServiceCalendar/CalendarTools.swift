@@ -73,8 +73,8 @@ struct ListEventsTool: ToolHandler {
         inputSchema: .object([
             "type": .string("object"),
             "properties": .object([
-                "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp / yyyy-MM-dd. Inclusive lower bound on event start.")]),
-                "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp / yyyy-MM-dd. Exclusive upper bound on event start.")]),
+                "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp / yyyy-MM-dd. Inclusive start of the overlap window; events already in progress are included.")]),
+                "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp / yyyy-MM-dd. Exclusive end of the overlap window. Maximum range: 366 days.")]),
                 "calendar_id": .object(["type": .string("string"), "description": .string("From calendar.list_calendars; empty = all calendars.")]),
                 "tz":          .object(["type": .string("string"), "description": .string("IANA tz id (e.g. 'America/Denver'). Output start/end in this zone. Default UTC.")]),
                 "limit":       .object(["type": .string("integer"), "description": .string("Max results (1-500). Defaults to 50.")]),
@@ -156,11 +156,12 @@ struct GetEventTool: ToolHandler {
     let returnsUntrustedContent = true
     let spec = Tool(
         name: "calendar.get_event",
-        description: "Fetch one event with full detail (notes, attendees, organizer, url, recurrence, time zone). EventKit identifiers are globally unique — no calendar_id required. Pass `tz` to format start/end in a specific zone.",
+        description: "Fetch one event with full detail (notes, attendees, organizer, url, recurrence, time zone). Supply occurrence_start (the start value from list_events) to select a recurring occurrence; without it, EventKit returns the first occurrence. Pass `tz` to format start/end in a specific zone.",
         inputSchema: .object([
             "type": .string("object"),
             "properties": .object([
                 "event_id": .object(["type": .string("string")]),
+                "occurrence_start": .object(["type": .string("string")]),
                 "tz":       .object(["type": .string("string")]),
             ]),
             "required": .array([.string("event_id")]),
@@ -174,7 +175,7 @@ struct GetEventTool: ToolHandler {
             return calendarErrorResult("event_id is required")
         }
         let tz = arguments?["tz"]?.stringValue
-        let event = try await adapter.getEvent(id: id, tzID: tz)
+        let event = try await adapter.getEvent(id: id, tzID: tz, occurrenceStartISO: arguments?["occurrence_start"]?.stringValue)
         return calendarJSON(event)
     }
 }

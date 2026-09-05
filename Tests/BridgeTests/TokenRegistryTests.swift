@@ -163,3 +163,67 @@ private func makeRegistry(tokens: URL, legacy: URL) -> TokenRegistry {
     #expect(entry?.secret == "icb_LEGACY_secret_value", "migration must preserve the legacy secret verbatim")
     #expect(FileManager.default.fileExists(atPath: p.tokens.path))
 }
+
+@Test func registryInvalidatesSessionsAfterRevocationRotationOrProfileChange() async throws {
+    let p = tempPaths(); defer { p.cleanup() }
+    let original = makeRegistry(tokens: p.tokens, legacy: p.legacy)
+    try await original.ensureLoaded()
+    let entry = try await original.add(label: "agent", profile: "calendar", description: "fixture")
+    #expect(await original.isCurrent(label: "agent", entry: entry))
+    let writer = makeRegistry(tokens: p.tokens, legacy: p.legacy)
+    try await writer.ensureLoaded()
+    let rotated = try await writer.rotate(label: "agent")
+    #expect(!(await original.isCurrent(label: "agent", entry: entry)))
+    #expect(await original.isCurrent(label: "agent", entry: rotated))
+    try await writer.setProfile(label: "agent", profile: "readonly")
+    #expect(!(await original.isCurrent(label: "agent", entry: rotated)))
+    let changed = try #require(await writer.entry(for: "agent"))
+    #expect(await original.isCurrent(label: "agent", entry: changed))
+    try await writer.revoke(label: "agent")
+    #expect(!(await original.isCurrent(label: "agent", entry: changed)))
+}
+
+@Test func registryValidationFailsClosedOnMissingOrMalformedFile() async throws {
+    let p = tempPaths(); defer { p.cleanup() }
+    let r = makeRegistry(tokens: p.tokens, legacy: p.legacy)
+    try await r.ensureLoaded()
+    let entry = try #require(await r.entry(for: "default"))
+    try "[invalid".write(to: p.tokens, atomically: true, encoding: .utf8)
+    #expect(!(await r.isCurrent(label: "default", entry: entry)))
+    try FileManager.default.removeItem(at: p.tokens)
+    #expect(!(await r.isCurrent(label: "default", entry: entry)))
+    #expect(!FileManager.default.fileExists(atPath: p.tokens.path), "verification must not recreate a missing registry")
+}
+
+@Test func registryRejectsDuplicateAndEmptySecrets() async throws {
+    for secret in ["", "duplicate"] {
+        let p = tempPaths(); defer { p.cleanup() }
+        let text = """
+        [tokens.one]
+        secret = "\(secret)"
+        created = "fixture"
+        description = ""
+        [tokens.two]
+        secret = "\(secret)"
+        created = "fixture"
+        description = ""
+        """
+        try text.write(to: p.tokens, atomically: true, encoding: .utf8)
+        let registry = makeRegistry(tokens: p.tokens, legacy: p.legacy)
+        do { try await registry.ensureLoaded(); Issue.record("accepted invalid secrets") }
+        catch is TokenRegistry.RegistryError {}
+    }
+}
+
+@Test func separateRegistryWritersDoNotOverwriteEachOther() async throws {
+    let p = tempPaths(); defer { p.cleanup() }
+    let first = makeRegistry(tokens: p.tokens, legacy: p.legacy)
+    let second = makeRegistry(tokens: p.tokens, legacy: p.legacy)
+    try await first.ensureLoaded()
+    try await second.ensureLoaded()
+    _ = try await first.add(label: "first", profile: nil, description: "fixture")
+    _ = try await second.add(label: "second", profile: nil, description: "fixture")
+    let third = makeRegistry(tokens: p.tokens, legacy: p.legacy)
+    try await third.ensureLoaded()
+    #expect(await third.allEntries().map(\.0).sorted() == ["default", "first", "second"])
+}

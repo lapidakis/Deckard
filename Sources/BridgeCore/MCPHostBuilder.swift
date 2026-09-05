@@ -37,7 +37,7 @@ public struct MCPHostBuilder: Sendable {
     /// Build a Server (not yet started) with all tools registered through the
     /// caller-supplied policy pipeline. The `auth` describes the caller for
     /// audit purposes; `policy` carries that caller's ACL profile.
-    public func build(auth: AuthContext, policy: PolicyPipeline) async -> Server {
+    public func build(auth: AuthContext, policy: PolicyPipeline, lifecycle: SessionLifecycleGate = .init(), contexts: RequestContextStore? = nil) async -> Server {
         let server = Server(
             name: serverName,
             version: serverVersion,
@@ -66,15 +66,33 @@ public struct MCPHostBuilder: Sendable {
         let middleware = self.middleware
         let approval = self.approval
         await server.withMethodHandler(CallTool.self) { params in
-            await Self.dispatch(
-                params: params,
-                handlers: byName,
-                auth: auth,
-                policy: policy,
-                middleware: middleware,
-                approval: approval,
-                logger: logger
-            )
+            guard lifecycle.beginCall() else {
+                let request = PolicyRequest(auth: BridgeCallContext.override ?? auth, tool: params.name,
+                                            argKeys: params.arguments.map { Array($0.keys) } ?? [])
+                await policy.recordResult(request, latencyMs: 0, resultBytes: nil, error: "session recovering; tool not executed")
+                return CallTool.Result(content: [.text(text: "Session recovering; tool not executed. Reconnect and retry.", annotations: nil, _meta: nil)], isError: true)
+            }
+            defer { lifecycle.endCall() }
+            let perCallAuth: AuthContext
+            if let contexts {
+                guard let resolved = contexts.consume(params._meta?[RequestContextStore.metadataKey]?.stringValue) else {
+                    let request = PolicyRequest(auth: auth, tool: params.name, argKeys: [])
+                    await policy.recordResult(request, latencyMs: 0, resultBytes: nil, error: "missing request context; tool not executed")
+                    return CallTool.Result(content: [.text(text: "Request context unavailable; tool not executed.", annotations: nil, _meta: nil)], isError: true)
+                }
+                perCallAuth = resolved
+            } else { perCallAuth = BridgeCallContext.override ?? auth }
+            return await BridgeCallContext.$override.withValue(perCallAuth) {
+                await Self.dispatch(
+                    params: params,
+                    handlers: byName,
+                    auth: auth,
+                    policy: policy,
+                    middleware: middleware,
+                    approval: approval,
+                    logger: logger
+                )
+            }
         }
 
         return server
@@ -112,6 +130,16 @@ public struct MCPHostBuilder: Sendable {
         }
 
         let outcome = await policy.preflight(request)
+        // Check ACL first to avoid disclosing schemas for denied tools.
+        let shouldValidate: Bool
+        switch outcome {
+        case .deny: shouldValidate = false
+        case .allow, .requireApproval: shouldValidate = true
+        }
+        if shouldValidate && !ToolArguments.isValid(.object(params.arguments ?? [:]), schema: handler.spec.inputSchema) {
+            await policy.recordResult(request, latencyMs: 0, resultBytes: nil, error: "invalid tool arguments")
+            return CallTool.Result(content: [.text(text: "Invalid arguments; use the types and fields in tools/list. Tool not executed.", annotations: nil, _meta: nil)], isError: true)
+        }
         switch outcome {
         case .deny(let reason):
             return CallTool.Result(content: [.text(text: reason, annotations: nil, _meta: nil)], isError: true)
@@ -126,7 +154,17 @@ public struct MCPHostBuilder: Sendable {
             case .never:
                 await policy.recordApprovalDecision(request, decision: "approved_by_policy")
             case .always:
-                let summary = handler.approvalSummary(for: params.arguments)
+                let summary: [String]
+                do {
+                    if let resolved = handler as? any AsyncApprovalSummarizing {
+                        summary = try await resolved.resolvedApprovalSummary(for: params.arguments)
+                    } else {
+                        summary = handler.approvalSummary(for: params.arguments)
+                    }
+                } catch {
+                    await policy.recordResult(request, latencyMs: 0, resultBytes: nil, error: "approval summary unavailable; tool not executed")
+                    return CallTool.Result(content: [.text(text: "Cannot resolve the approval target; tool not executed. Refresh the event and retry.", annotations: nil, _meta: nil)], isError: true)
+                }
                 let decision = await approval.request(ApprovalRequest(
                     tool: params.name, caller: effectiveAuth, reason: reason, summary: summary
                 ))
@@ -145,6 +183,11 @@ public struct MCPHostBuilder: Sendable {
             break
         }
 
+        // The token may have been revoked while the user considered approval.
+        guard await policy.isCallerCurrent() else {
+            await policy.recordApprovalDecision(request, decision: "denied")
+            return CallTool.Result(content: [.text(text: "Tool not available.", annotations: nil, _meta: nil)], isError: true)
+        }
         let start = ContinuousClock().now
         // Breadcrumb at start so a hung call shows up in stderr.log before the
         // audit row lands (audit only writes on completion).
@@ -167,7 +210,8 @@ public struct MCPHostBuilder: Sendable {
                 }
                 return acc
             }
-            await policy.recordResult(request, latencyMs: totalMs, resultBytes: bytes, error: nil)
+            await policy.recordResult(request, latencyMs: totalMs, resultBytes: bytes,
+                                      error: processed.isError == true ? "tool returned an error" : nil)
             logger.info("tool_end tool=\(params.name) tool_ms=\(toolMs) mw_ms=\(mwMs) bytes=\(bytes)")
             // Surface bridge-side timing to the agent via _meta so it can
             // distinguish "bridge was slow" from "network was slow" without
@@ -182,9 +226,16 @@ public struct MCPHostBuilder: Sendable {
             return CallTool.Result(content: processed.content, isError: processed.isError, _meta: meta)
         } catch {
             let ms = elapsedMs(since: start)
-            await policy.recordResult(request, latencyMs: ms, resultBytes: nil, error: "\(error)")
-            logger.error("tool_error tool=\(params.name) elapsed_ms=\(ms) error=\(error)")
-            return CallTool.Result(content: [.text(text: "Tool error: \(error)", annotations: nil, _meta: nil)], isError: true)
+            // Framework errors can echo event notes, file paths, or credentials.
+            // Apply the same output policy as successful results; keep payloads
+            // out of audit/stderr even when redaction is disabled by the user.
+            await policy.recordResult(request, latencyMs: ms, resultBytes: nil, error: "tool execution failed")
+            logger.error("tool_error tool=\(params.name) elapsed_ms=\(ms)")
+            var result = CallTool.Result(content: [.text(text: "Tool error: \(error)", annotations: nil, _meta: nil)], isError: true)
+            for mw in middleware {
+                result = mw.transform(result: result, tool: handler, request: request)
+            }
+            return result
         }
     }
 

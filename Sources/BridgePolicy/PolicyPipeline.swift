@@ -17,17 +17,20 @@ public struct PolicyPipeline: Sendable {
     /// profile; defaults to `.always` for the global (no-profile) pipeline so
     /// behavior of legacy configs is unchanged.
     public let interactiveApprovalMode: InteractiveApprovalMode
+    public let isCallerCurrent: @Sendable () async -> Bool
 
     public init(config: Config, audit: AuditSink, logger: Logger = Logger(label: "bridge.policy")) {
         self.acl = ACLEvaluator(acl: config.acl)
         self.audit = audit
         self.logger = logger
         self.interactiveApprovalMode = .always
+        self.isCallerCurrent = { true }
     }
 
     /// Build a pipeline scoped to a per-token profile. Falls back to the
     /// global ACLConfig when no profile name was set on the token.
-    public init(acl: ACLConfig, profile: ProfileConfig?, audit: AuditSink, logger: Logger = Logger(label: "bridge.policy")) {
+    public init(acl: ACLConfig, profile: ProfileConfig?, audit: AuditSink, isCallerCurrent: @escaping @Sendable () async -> Bool = { true }, logger: Logger = Logger(label: "bridge.policy")) {
+        self.isCallerCurrent = isCallerCurrent
         if let profile {
             self.acl = ACLEvaluator(profile: profile)
             self.interactiveApprovalMode = profile.interactiveApproval
@@ -54,6 +57,10 @@ public struct PolicyPipeline: Sendable {
     /// audit row immediately. On `.allow` the caller must call `recordResult`
     /// once the tool returns.
     public func preflight(_ request: PolicyRequest) async -> PolicyOutcome {
+        guard await isCallerCurrent() else {
+            await emit(request, decision: "deny", latencyMs: nil, resultBytes: nil, error: "token no longer current")
+            return .deny(reason: "Tool not available.")
+        }
         let outcome = acl.evaluate(tool: request.tool)
         switch outcome {
         case .allow:

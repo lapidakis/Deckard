@@ -123,24 +123,13 @@ public struct HTTPRunner: Sendable {
     ) async throws -> Response {
         let remoteIP = ctx.remoteAddress?.ipAddress
 
-        // Tailnet listener: best-effort whois so the audit row can attribute
-        // "ts:laptop:user@github" instead of just an IP. Tailnet ACLs are
-        // tailscaled's job; reaching the listener at all means the peer has
-        // already been permitted by your tailnet policy. Failed whois is not
-        // an error — the listener still serves the request and audit just
-        // records the raw IP.
-        var resolvedPeer: TailscaleProbe.PeerInfo? = nil
-        if let ts = tailscale, let ip = remoteIP {
-            resolvedPeer = await ts.probe.whois(remoteIP: ip)
-        }
-
         var resolvedHolder: SessionHolder?
         var resolvedLabel: String?
         if requireToken {
             guard let token = extractBearer(from: req.headers) else {
                 return unauthorized(reason: "missing_token", message: "Missing bearer token")
             }
-            guard let entry = sessions.entry(for: token) else {
+            guard let entry = sessions.entry(for: token), await entry.isCurrent() else {
                 return unauthorized(reason: "invalid_token", message: "Invalid bearer token")
             }
             resolvedHolder = entry.holder
@@ -159,25 +148,29 @@ public struct HTTPRunner: Sendable {
             return unauthorized(reason: "invalid_token", message: "Invalid bearer token")
         }
 
+        // Tailnet listener: best-effort whois so the audit row can attribute
+        // "ts:laptop:user@github" instead of just an IP. Tailnet ACLs are
+        // tailscaled's job; reaching the listener at all means the peer has
+        // already been permitted by your tailnet policy. Failed whois is not
+        // an error — the listener still serves the request and audit just
+        // records the raw IP.
+        var resolvedPeer: TailscaleProbe.PeerInfo? = nil
+        if let ts = tailscale, let ip = remoteIP {
+            resolvedPeer = await ts.probe.whois(remoteIP: ip)
+        }
+
         let bodyData: Data
         do {
             let buffer = try await req.body.collect(upTo: 4 * 1024 * 1024) // 4 MiB cap
             bodyData = Data(buffer: buffer)
         } catch {
-            return jsonError(status: .contentTooLarge, message: "Body read failed: \(error)")
+            return jsonError(status: .contentTooLarge, message: "Request body unavailable or exceeds 4 MiB")
         }
 
         var headers: [String: String] = [:]
         for field in req.headers {
             headers[field.name.canonicalName] = field.value
         }
-
-        let mcpRequest = MCP.HTTPRequest(
-            method: req.method.rawValue,
-            headers: headers,
-            body: bodyData.isEmpty ? nil : bodyData,
-            path: req.uri.path
-        )
 
         // Build the per-call AuthContext: transport reflects the listener that
         // received this request, identity adopts a `.tailscale(...)` flavor
@@ -186,6 +179,16 @@ public struct HTTPRunner: Sendable {
         // raw IP for forensic use.
         let perCallAuth = makePerCallAuth(
             bind: bind, label: label, remoteIP: remoteIP, peer: resolvedPeer
+        )
+
+        let preparedBody: Data
+        do { preparedBody = try holder.contexts.prepare(bodyData, auth: perCallAuth) }
+        catch { return jsonError(status: .serviceUnavailable, message: "Too many pending requests; retry later") }
+        let mcpRequest = MCP.HTTPRequest(
+            method: req.method.rawValue,
+            headers: headers,
+            body: preparedBody.isEmpty ? nil : preparedBody,
+            path: req.uri.path
         )
 
         let transport = await holder.currentTransport()
@@ -218,7 +221,7 @@ public struct HTTPRunner: Sendable {
                 // own 400 unchanged rather than weaponizing recreate. Warn (not
                 // debug) so a looping client is visible to the operator without
                 // having to raise the log level.
-                logger.warning("Self-heal budget exhausted for token=\(label); client likely re-initializing without reusing Mcp-Session-Id — returning stale-session response without recreate")
+                logger.warning("Self-heal deferred (busy or budget exhausted) for token=\(label); client likely re-initializing without reusing Mcp-Session-Id — returning stale-session response without recreate")
             case .failed(let err):
                 logger.error("Failed to recreate transport: \(err)")
             }
@@ -262,9 +265,12 @@ public struct HTTPRunner: Sendable {
         )
     }
 
-    private static func isStaleSessionError(_ response: MCP.HTTPResponse, request: MCP.HTTPRequest) -> Bool {
+    static func isStaleSessionError(_ response: MCP.HTTPResponse, request: MCP.HTTPRequest) -> Bool {
         guard response.statusCode == 400 else { return false }
-        guard request.method.uppercased() == "POST" else { return false }
+        guard request.method.uppercased() == "POST",
+              let data = request.body,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["method"] as? String == "initialize" else { return false }
         guard let body = response.bodyData,
               let s = String(data: body, encoding: .utf8) else { return false }
         return s.contains("Session already initialized")
@@ -272,9 +278,11 @@ public struct HTTPRunner: Sendable {
 
     static func extractBearer(from headers: HTTPFields) -> String? {
         guard let raw = headers[.authorization] else { return nil }
-        let prefix = "Bearer "
-        guard raw.hasPrefix(prefix) else { return nil }
-        return String(raw.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        let parts = raw.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+        guard parts.count == 2, parts[0].lowercased() == "bearer" else { return nil }
+        let token = parts[1].trimmingCharacters(in: .whitespaces)
+        guard !token.isEmpty, token.unicodeScalars.allSatisfy({ (33...126).contains($0.value) }) else { return nil }
+        return token
     }
 
     private static func convert(_ response: MCP.HTTPResponse, logger: Logger) -> Response {
@@ -309,8 +317,13 @@ public struct HTTPRunner: Sendable {
         }
     }
 
+    static func encodedError(_ message: String) -> String {
+        let data = try! JSONEncoder().encode(["error": message]) // String dictionaries always encode.
+        return String(decoding: data, as: UTF8.self)
+    }
+
     static func jsonError(status: HTTPResponse.Status, message: String) -> Response {
-        let json = "{\"error\":\"\(message)\"}"
+        let json = encodedError(message)
         var fields = HTTPFields()
         fields.append(HTTPField(name: .contentType, value: "application/json"))
         return Response(status: status, headers: fields, body: .init(byteBuffer: ByteBuffer(string: json)))
@@ -320,7 +333,7 @@ public struct HTTPRunner: Sendable {
     /// the bearer token in their config instead of attempting OAuth discovery
     /// (RFC 6750).
     static func unauthorized(reason: String, message: String) -> Response {
-        let json = #"{"error":"\#(message)"}"#
+        let json = encodedError(message)
         var fields = HTTPFields()
         fields.append(HTTPField(name: .contentType, value: "application/json"))
         fields.append(HTTPField(
