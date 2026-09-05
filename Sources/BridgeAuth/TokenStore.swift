@@ -36,10 +36,10 @@ public actor TokenStore {
 
     /// Forces a new token to disk and returns it.
     public func regenerate() throws -> String {
-        try BridgePaths.ensureDirs()
+        if url == BridgePaths.tokenFile { try BridgePaths.ensureDirs() }
+        else { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true) }
         let token = "icb_" + Self.randomBase64Url(byteCount: 32)
-        try token.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        try PrivateFile.write(Data(token.utf8), to: url)
         cached = token
         logger.info("Wrote new bearer token to \(url.path)")
         return token

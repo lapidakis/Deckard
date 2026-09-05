@@ -1,6 +1,7 @@
 import Foundation
 import EventKit
 import Logging
+import BridgeCore
 
 /// Wraps `EKEventStore` in an actor.
 ///
@@ -50,29 +51,38 @@ public actor CalendarAdapter {
     /// variant doesn't trip the check, and as a bonus we get the same
     /// continuation pattern the Reminders adapter already uses for its
     /// 10-second framework-call timeout.
+    private var accessTask: Task<Bool, Error>?
+
     private func ensureAccess() async throws {
-        if accessGranted { return }
-        let store = self.store
-        let granted: Bool
-        do {
-            granted = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Bool, Error>) in
-                store.requestFullAccessToEvents { granted, error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                    } else {
-                        cont.resume(returning: granted)
-                    }
-                }
-            }
-        } catch let err as CalendarError {
-            throw err
-        } catch {
-            throw CalendarError.accessDenied("\(error)")
+        if accessGranted && EKEventStore.authorizationStatus(for: .event) == .fullAccess { return }
+        let task: Task<Bool, Error>
+        if let existing = accessTask {
+            task = existing
+        } else {
+            task = Task { try await self.requestAccess() }
+            accessTask = task
         }
-        if !granted {
+        defer { accessTask = nil }
+        guard try await task.value else {
             throw CalendarError.accessDenied("user denied or system blocked Full Calendar Access")
         }
         accessGranted = true
+    }
+
+    private func requestAccess() async throws -> Bool {
+        let latch = ResumeLatch()
+        return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Bool, Error>) in
+            store.requestFullAccessToEvents { granted, error in
+                guard latch.tryResume() else { return }
+                if let error { cont.resume(throwing: error) }
+                else { cont.resume(returning: granted) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 60) {
+                guard latch.tryResume() else { return }
+                cont.resume(throwing: CalendarError.accessDenied(
+                    "Calendar access request timed out; grant Full Calendar Access in System Settings and retry"))
+            }
+        }
     }
 
     // MARK: - Read
@@ -100,15 +110,16 @@ public actor CalendarAdapter {
         limit: Int,
         tzID: String?
     ) async throws -> [EventSummary] {
-        try await ensureAccess()
         let start = try CalendarDates.parse(sinceISO)
         let end = try CalendarDates.parse(beforeISO)
+        try CalendarDates.validateRange(start: start, end: end, maximumDays: 366)
+        try await ensureAccess()
         let outputTz = try CalendarDates.resolveTimeZone(tzID)
         let scope = try resolveCalendars(filterId: calendarId)
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: scope)
         let raw = store.events(matching: predicate)
         let sorted = raw.sorted { $0.startDate < $1.startDate }
-        let bounded = Array(sorted.prefix(max(1, limit)))
+        let bounded = Array(sorted.prefix(max(1, min(500, limit))))
         return bounded.map { summarize($0, in: outputTz) }
     }
 
@@ -120,28 +131,27 @@ public actor CalendarAdapter {
         limit: Int,
         tzID: String?
     ) async throws -> [EventSummary] {
-        try await ensureAccess()
         let start = try CalendarDates.parse(sinceISO)
         let end = try CalendarDates.parse(beforeISO)
+        try CalendarDates.validateRange(start: start, end: end, maximumDays: 366)
+        try await ensureAccess()
         let outputTz = try CalendarDates.resolveTimeZone(tzID)
         let scope = try resolveCalendars(filterId: calendarId)
         let predicate = store.predicateForEvents(withStart: start, end: end, calendars: scope)
         let q = query.lowercased()
         let matched = store.events(matching: predicate).filter { e in
-            e.title.lowercased().contains(q)
+            (e.title ?? "").lowercased().contains(q)
                 || (e.location?.lowercased().contains(q) ?? false)
                 || (e.notes?.lowercased().contains(q) ?? false)
         }
         let sorted = matched.sorted { $0.startDate < $1.startDate }
-        return Array(sorted.prefix(max(1, limit))).map { summarize($0, in: outputTz) }
+        return Array(sorted.prefix(max(1, min(500, limit)))).map { summarize($0, in: outputTz) }
     }
 
-    public func getEvent(id: String, tzID: String?) async throws -> CalendarEvent {
+    public func getEvent(id: String, tzID: String?, occurrenceStartISO: String? = nil) async throws -> CalendarEvent {
         try await ensureAccess()
         let outputTz = try CalendarDates.resolveTimeZone(tzID)
-        guard let event = store.event(withIdentifier: id) else {
-            throw CalendarError.eventNotFound(id)
-        }
+        let event = try resolveEvent(id: id, occurrenceStartISO: occurrenceStartISO)
         return detail(event, in: outputTz)
     }
 
@@ -156,7 +166,7 @@ public actor CalendarAdapter {
         try await ensureAccess()
         let outputTz = try CalendarDates.resolveTimeZone(tzID)
         let now = Date()
-        let lookahead = now.addingTimeInterval(TimeInterval(max(1, lookaheadHours) * 3600))
+        let lookahead = now.addingTimeInterval(TimeInterval(max(1, min(72, lookaheadHours))) * 3600)
 
         // Pull the union of current + soon. predicateForEvents wants a window;
         // we use [now - 24h, lookahead] so all-day events that started "today"
@@ -168,7 +178,7 @@ public actor CalendarAdapter {
         let current = all.filter { $0.startDate <= now && $0.endDate > now }
         let next = all
             .filter { $0.startDate > now }
-            .prefix(max(1, nextLimit))
+            .prefix(max(1, min(20, nextLimit)))
 
         return CalendarNowSnapshot(
             now: CalendarDates.format(now, in: outputTz),
@@ -188,11 +198,12 @@ public actor CalendarAdapter {
         public var location: String?
         public var notes: String?
         public var calendarId: String?
+        public var timeZoneID: String?
 
         public init(
             title: String, startISO: String, endISO: String,
             isAllDay: Bool = false, location: String? = nil, notes: String? = nil,
-            calendarId: String? = nil
+            calendarId: String? = nil, timeZoneID: String? = nil
         ) {
             self.title = title
             self.startISO = startISO
@@ -201,21 +212,29 @@ public actor CalendarAdapter {
             self.location = location
             self.notes = notes
             self.calendarId = calendarId
+            self.timeZoneID = timeZoneID
         }
     }
 
     public func createEvent(_ input: EventInput, tzID: String? = nil) async throws -> CalendarEvent {
+        try CalendarDates.validateTitle(input.title)
+        let zone = try input.timeZoneID.map { try CalendarDates.resolveTimeZone($0) } ?? .current
+        let start = try CalendarDates.parseEventDate(input.startISO, allDay: input.isAllDay, timeZone: zone)
+        let end = try CalendarDates.parseEventDate(input.endISO, allDay: input.isAllDay, timeZone: zone)
+        try CalendarDates.validateRange(start: start, end: end)
         try await ensureAccess()
         let outputTz = try CalendarDates.resolveTimeZone(tzID)
         let calendar = try resolveWritableCalendar(id: input.calendarId)
         let event = EKEvent(eventStore: store)
-        try apply(input: input, to: event, calendar: calendar)
+        apply(input: input, start: start, end: end, timeZone: zone, to: event, calendar: calendar)
         try store.save(event, span: .thisEvent)
         return detail(event, in: outputTz)
     }
 
     public struct EventUpdate: Sendable {
         public var eventId: String
+        public var occurrenceStartISO: String?
+        public var timeZoneID: String?
         public var title: String?
         public var startISO: String?
         public var endISO: String?
@@ -223,12 +242,14 @@ public actor CalendarAdapter {
         public var location: String??     // double-optional: nil = unchanged, .some(nil) = clear
         public var notes: String??
         public init(
-            eventId: String,
+            eventId: String, occurrenceStartISO: String? = nil,
             title: String? = nil,
             startISO: String? = nil, endISO: String? = nil, isAllDay: Bool? = nil,
-            location: String?? = nil, notes: String?? = nil
+            location: String?? = nil, notes: String?? = nil, timeZoneID: String? = nil
         ) {
             self.eventId = eventId
+            self.occurrenceStartISO = occurrenceStartISO
+            self.timeZoneID = timeZoneID
             self.title = title
             self.startISO = startISO
             self.endISO = endISO
@@ -241,27 +262,34 @@ public actor CalendarAdapter {
     public func updateEvent(_ update: EventUpdate, tzID: String? = nil) async throws -> CalendarEvent {
         try await ensureAccess()
         let outputTz = try CalendarDates.resolveTimeZone(tzID)
-        guard let event = store.event(withIdentifier: update.eventId) else {
-            throw CalendarError.eventNotFound(update.eventId)
-        }
+        let event = try resolveEvent(id: update.eventId, occurrenceStartISO: update.occurrenceStartISO, forMutation: true)
         guard event.calendar.allowsContentModifications else {
             throw CalendarError.calendarReadOnly(event.calendar.title)
         }
+        // Validate the complete proposed interval before mutating the live object.
+        let allDay = update.isAllDay ?? event.isAllDay
+        let zone = try update.timeZoneID.map { try CalendarDates.resolveTimeZone($0) } ?? event.timeZone ?? .current
+        if allDay != event.isAllDay && (update.startISO == nil || update.endISO == nil) {
+            throw CalendarError.invalidArgument("changing all_day requires both start and end")
+        }
+        let start = try update.startISO.map { try CalendarDates.parseEventDate($0, allDay: allDay, timeZone: zone) } ?? event.startDate!
+        let end = try update.endISO.map { try CalendarDates.parseEventDate($0, allDay: allDay, timeZone: zone) } ?? event.endDate!
+        try CalendarDates.validateRange(start: start, end: end)
+        if let title = update.title { try CalendarDates.validateTitle(title) }
         if let title = update.title { event.title = title }
-        if let s = update.startISO { event.startDate = try CalendarDates.parse(s) }
-        if let e = update.endISO { event.endDate = try CalendarDates.parse(e) }
+        event.startDate = start
+        event.endDate = end
         if let allDay = update.isAllDay { event.isAllDay = allDay }
+        if update.timeZoneID != nil { event.timeZone = zone }
         if let loc = update.location { event.location = loc }
         if let n = update.notes { event.notes = n }
         try store.save(event, span: .thisEvent)
         return detail(event, in: outputTz)
     }
 
-    public func deleteEvent(id: String) async throws {
+    public func deleteEvent(id: String, occurrenceStartISO: String? = nil) async throws {
         try await ensureAccess()
-        guard let event = store.event(withIdentifier: id) else {
-            throw CalendarError.eventNotFound(id)
-        }
+        let event = try resolveEvent(id: id, occurrenceStartISO: occurrenceStartISO, forMutation: true)
         guard event.calendar.allowsContentModifications else {
             throw CalendarError.calendarReadOnly(event.calendar.title)
         }
@@ -270,13 +298,36 @@ public actor CalendarAdapter {
 
     // MARK: - Helpers
 
-    private func apply(input: EventInput, to event: EKEvent, calendar: EKCalendar) throws {
-        guard !input.title.trimmingCharacters(in: .whitespaces).isEmpty else {
-            throw CalendarError.invalidArgument("title is required")
+    private func resolveEvent(id: String, occurrenceStartISO: String?, forMutation: Bool = false) throws -> EKEvent {
+        guard let first = store.event(withIdentifier: id) else { throw CalendarError.eventNotFound(id) }
+        if forMutation {
+            try Self.requireOccurrenceSelector(isRecurring: first.hasRecurrenceRules || first.isDetached,
+                                               occurrenceStartISO: occurrenceStartISO)
         }
+        guard let occurrenceStartISO else { return first }
+        let start = try CalendarDates.parse(occurrenceStartISO)
+        let predicate = store.predicateForEvents(withStart: start.addingTimeInterval(-1),
+                                                end: start.addingTimeInterval(1), calendars: [first.calendar])
+        let matches = store.events(matching: predicate).filter {
+            $0.eventIdentifier == id && abs($0.startDate.timeIntervalSince(start)) < 0.001
+        }
+        guard matches.count == 1, let match = matches.first else {
+            throw CalendarError.invalidArgument("occurrence_start no longer identifies exactly one event; refresh calendar.list_events")
+        }
+        return match
+    }
+
+    static func requireOccurrenceSelector(isRecurring: Bool, occurrenceStartISO: String?) throws {
+        if isRecurring && occurrenceStartISO == nil {
+            throw CalendarError.invalidArgument("recurring event writes require occurrence_start from calendar.list_events; only that occurrence is changed")
+        }
+    }
+
+    private func apply(input: EventInput, start: Date, end: Date, timeZone: TimeZone, to event: EKEvent, calendar: EKCalendar) {
         event.title = input.title
-        event.startDate = try CalendarDates.parse(input.startISO)
-        event.endDate = try CalendarDates.parse(input.endISO)
+        event.startDate = start
+        event.endDate = end
+        event.timeZone = timeZone
         event.isAllDay = input.isAllDay
         event.location = input.location
         event.notes = input.notes
@@ -303,6 +354,9 @@ public actor CalendarAdapter {
         }
         guard let cal = store.defaultCalendarForNewEvents else {
             throw CalendarError.invalidArgument("no default writable calendar configured")
+        }
+        guard cal.allowsContentModifications else {
+            throw CalendarError.calendarReadOnly(cal.title)
         }
         return cal
     }

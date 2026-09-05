@@ -236,3 +236,22 @@ private func extractText(_ result: CallTool.Result) -> String {
     #expect(!text.contains("</Untrusted>"))
     #expect(text.components(separatedBy: "</untrusted>").count == 3)
 }
+
+@Test func redactorRemovesEntirePrivateKeyAndPreservesJSON() throws {
+    let key = "-----BEGIN PRIVATE KEY-----\nSENSITIVEKEYMATERIAL\n-----END PRIVATE KEY-----"
+    let raw = String(decoding: try JSONEncoder().encode(["notes": key, "title": "untouched"]), as: UTF8.self)
+    let redacted = Redactor(config: .init()).transform(result: resultText(raw),
+        tool: StubTool(name: "calendar.get_event", returnsUntrustedContent: true), request: makeRequest(tool: "calendar.get_event"))
+    let json = try JSONDecoder().decode([String: String].self, from: Data(extractText(redacted).utf8))
+    #expect(json["notes"] == "[REDACTED:private_key]")
+    #expect(json["title"] == "untouched")
+}
+
+@Test func redactorPreservesJSONWithInlinePasswords() throws {
+    let raw = String(decoding: try JSONEncoder().encode(["notes": "password: secret-value", "title": "meeting"]), as: UTF8.self)
+    let result = Redactor(config: .init()).transform(result: resultText(raw),
+        tool: StubTool(name: "calendar.get_event", returnsUntrustedContent: true), request: makeRequest(tool: "calendar.get_event"))
+    let json = try JSONDecoder().decode([String: String].self, from: Data(extractText(result).utf8))
+    #expect(json["notes"]?.contains("secret-value") == false)
+    #expect(json["title"] == "meeting")
+}

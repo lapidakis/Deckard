@@ -29,7 +29,7 @@ public struct InjectionTagger: ResultMiddleware {
         tool: any ToolHandler,
         request: PolicyRequest
     ) -> CallTool.Result {
-        guard enabled, tool.returnsUntrustedContent else { return result }
+        guard enabled, tool.returnsUntrustedContent || result.isError == true else { return result }
         return mapTextContent(result) { content in
             let ns = content as NSString
             let suspicious = patterns.contains {

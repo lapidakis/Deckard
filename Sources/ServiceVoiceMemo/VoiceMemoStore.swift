@@ -171,8 +171,8 @@ public actor VoiceMemoStore {
     public func audioURL(forRecordingID id: String) throws -> URL {
         let detail = try getRecording(id: id)
         let url = recordingsDir.appendingPathComponent(detail.filename).standardizedFileURL
-        let recordingsRoot = recordingsDir.standardizedFileURL.path
-        guard url.path.hasPrefix(recordingsRoot + "/") else {
+        let recordingsRoot = recordingsDir.resolvingSymlinksInPath().standardizedFileURL.path
+        guard url.resolvingSymlinksInPath().path.hasPrefix(recordingsRoot + "/") else {
             throw StoreError.query("recording path '\(detail.filename)' resolves outside Recordings dir")
         }
         return url

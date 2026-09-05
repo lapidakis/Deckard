@@ -34,7 +34,7 @@ public struct BridgeServer: Sendable {
     }
 
     public func run() async throws {
-        let audit = AuditSink(logger: logger)
+        let audit = AuditSink(enabled: config.audit.enabled, logger: logger)
         if config.audit.enabled, config.audit.retentionDays > 0 {
             let result = await audit.prune(retentionDays: config.audit.retentionDays)
             if result.removed > 0 {
@@ -59,6 +59,15 @@ public struct BridgeServer: Sendable {
             try await StdioRunner(builder: builder, policy: policy, logger: logger).run()
 
         case .daemon:
+            guard config.auth.requireToken else { throw BridgeStartupError.authenticationRequired }
+            // Resolve once so the listeners and SDK Host allowlist agree.
+            let probe = TailscaleProbe(logger: logger)
+            var tailnetIP: String?
+            if config.tailscale.enabled {
+                tailnetIP = try await probe.tailnetIPv4()
+            }
+            var allowedHosts = ["127.0.0.1:\(config.server.loopbackPort)", "localhost:\(config.server.loopbackPort)"]
+            if let tailnetIP { allowedHosts.append("\(tailnetIP):\(config.tailscale.port)") }
             let registry = TokenRegistry(logger: logger)
             try await registry.ensureLoaded()
 
@@ -86,9 +95,10 @@ public struct BridgeServer: Sendable {
                 } else {
                     profile = nil  // intentional: use global [acl]
                 }
+                let isCurrent: @Sendable () async -> Bool = { await registry.isCurrent(label: label, entry: entry) }
                 let policy = PolicyPipeline(
                     acl: config.acl, profile: profile,
-                    audit: audit, logger: logger
+                    audit: audit, isCallerCurrent: isCurrent, logger: logger
                 )
                 let auth = AuthContext(
                     transport: .loopback,    // overridden per-listener if needed
@@ -96,9 +106,9 @@ public struct BridgeServer: Sendable {
                     remoteDescription: "127.0.0.1"
                 )
                 let holder = try await SessionHolder(
-                    builder: builder, auth: auth, policy: policy, logger: logger
+                    builder: builder, auth: auth, policy: policy, logger: logger, allowedHosts: allowedHosts
                 )
-                bySecret[entry.secret] = TokenSessions.Entry(label: label, holder: holder)
+                bySecret[entry.secret] = TokenSessions.Entry(label: label, holder: holder, isCurrent: isCurrent)
                 logger.info("Token registered: label=\(label) profile=\(entry.profile ?? "<global>")")
             }
             let sessions = TokenSessions(bySecret: bySecret)
@@ -135,30 +145,29 @@ public struct BridgeServer: Sendable {
                     group.addTask { try await runner.run() }
                 }
 
-                if config.tailscale.enabled {
-                    let probe = TailscaleProbe(logger: logger)
-                    do {
-                        let ip = try await probe.tailnetIPv4()
-                        let bind = HTTPRunner.Bind(
-                            host: ip,
-                            port: config.tailscale.port,
-                            transportLabel: .tailnet
-                        )
-                        let enforcement = HTTPRunner.TailscaleEnforcement(probe: probe)
-                        let runner = HTTPRunner(
-                            bind: bind, sessions: sessions,
-                            requireToken: config.auth.requireToken,
-                            tailscale: enforcement, logger: logger
-                        )
-                        group.addTask { try await runner.run() }
-                        logger.info("Tailscale listener: \(ip):\(config.tailscale.port) (peer ACL delegated to tailscaled; bearer auth still required)")
-                    } catch {
-                        logger.error("Tailscale enabled but probe failed — skipping tailnet listener: \(error)")
-                    }
+                if let ip = tailnetIP {
+                    let bind = HTTPRunner.Bind(
+                        host: ip,
+                        port: config.tailscale.port,
+                        transportLabel: .tailnet
+                    )
+                    let enforcement = HTTPRunner.TailscaleEnforcement(probe: probe)
+                    let runner = HTTPRunner(
+                        bind: bind, sessions: sessions,
+                        requireToken: config.auth.requireToken,
+                        tailscale: enforcement, logger: logger
+                    )
+                    group.addTask { try await runner.run() }
+                    logger.info("Tailscale listener: \(ip):\(config.tailscale.port) (peer ACL delegated to tailscaled; bearer auth still required)")
                 }
 
                 try await group.waitForAll()
             }
         }
     }
+}
+
+private enum BridgeStartupError: Error, CustomStringConvertible {
+    case authenticationRequired
+    var description: String { "HTTP listeners require auth.require_token = true; use stdio for a local child process" }
 }

@@ -58,17 +58,18 @@ Dependency direction: imports only flow from Service* down through BridgeCore do
 
 1. **Client sends** `POST /mcp` with `Authorization: Bearer <secret>` and a JSON-RPC message body.
 2. **HTTPRunner** pulls the source IP from the connection's `SocketAddress` (via `PeerAwareRequestContext`).
-3. **Tailnet whois (audit only).** On the tailnet listener, every request runs `tailscale whois --json <ip>` so the audit row can attribute the call to a peer hostname + user. The bridge does NOT maintain its own peer allowlist — peer ACLs are delegated to tailscaled, set in the Tailscale admin console. If the request reaches the listener at all, that policy has already permitted it. Whois failure is non-fatal; bearer auth still applies independently.
-4. **Bearer extraction + lookup** in TokenSessions (`[secret → SessionHolder]` built at daemon startup from TokenRegistry). 401 with `WWW-Authenticate: Bearer` on miss.
-5. **Per-call AuthContext.** HTTPRunner builds a per-request `AuthContext` carrying the actual transport (loopback vs tailnet), peer identity (whois result becomes `.tailscale(peer:user:)`; falls back to `.bearer(label:)` on whois failure), and remote description. This is set on `BridgeCallContext.$override` (a TaskLocal) before invoking the SDK transport, so structured Task children inherit it. `MCPHostBuilder.dispatch` reads the override at audit-write time.
-6. **Per-token SessionHolder** owns its own `MCP.Server` instance and `StatefulHTTPServerTransport`. The boot-time `AuthContext` baked into the Server is just a fallback — the TaskLocal override is what lands in the audit row in HTTP-served calls.
-7. **Self-heal:** if the SDK returns "Session already initialized" (stale state from a previous client), HTTPRunner recreates the SessionHolder in place and retries once.
+3. **Bearer extraction + lookup** in TokenSessions, then a fresh disk check that the token secret and profile still match the binding. Missing, revoked, rotated, or malformed credentials fail closed with 401 and `WWW-Authenticate: Bearer`.
+4. **Tailnet whois (audit only).** Authenticated tailnet requests run a bounded `tailscale whois` for attribution. Tailnet policy owns network access; whois failure falls back to bearer identity.
+5. **Per-call AuthContext.** HTTPRunner stores trusted transport/peer context in a per-token RequestContextStore and replaces the internal request metadata reference with a fresh, single-use UUID. The SDK's AsyncStream receive task does not inherit HTTP TaskLocal state. MCPHostBuilder consumes the reference, fails closed if unavailable, and sets the TaskLocal inside dispatch. The store is bounded and expires unused references.
+6. **Per-token SessionHolder** owns its MCP server, transport, context store, and lifecycle gate. Exact loopback/configured tailnet Host values are allowed; browser Origins are rejected.
+7. **Self-heal:** an initialize request rejected as already initialized can trigger one retry after recreation. The lifecycle gate prevents recovery during tool calls (including approval and auditing) and prevents concurrent recovery. This is not an exactly-once delivery guarantee.
 8. **Server dispatches** the JSON-RPC into the registered method handler. For `CallTool`:
    - **Lookup tool handler** by name; unknown names short-circuit to a tool-error + audit row.
    - **PolicyPipeline.preflight** evaluates the ACL. Returns `allow` / `deny(reason)` / `requireApproval(reason)`.
    - **Approval gate** (when required) consults `policy.interactiveApprovalMode`:
      - `.always` → `OsaScriptApprovalGate.request(_:)` which runs `osascript display dialog` (wrapped in `tell application "System Events" / activate` so the dialog lands on the user's active Space). Audit logs `approved` / `denied` / `timeout`.
      - `.never` → auto-approve, audit logs `approved_by_policy` (distinct token so post-hoc forensics can tell user-clicked from policy-waived approvals).
+   - **Input validation** rejects incorrect schema types/required fields before approval. Calendar update/delete approval resolves the target event. Token liveness is checked again immediately before the handler runs.
    - **Tool handler.call(arguments:)** runs.
    - **Middleware**: Redactor (regex replaces secrets in text content), then InjectionTagger (wraps untrusted content). Order matters — redaction first so injection tags don't accidentally hide a secret.
    - **Audit**: AuditSink appends a JSONL row with caller, transport, tool, arg-keys (no values), decision, latency, byte count, error. Caller + transport come from the TaskLocal-overridden AuthContext, not the SessionHolder's bound auth.
@@ -98,7 +99,7 @@ Same evaluator powers `tools/list` filtering — tools whose decision is `deny` 
 
 `AuditSink` is an actor that serializes both writes and the periodic prune. JSONL format, fsync per write. Retention is configured in `[audit] retention_days` (default 30). On daemon startup the sink reads the file, drops entries older than the cutoff, atomically rewrites; a background task in the daemon's main TaskGroup re-runs the sweep every `prune_interval_hours` (default 6).
 
-The pruner parses just the `ts` field per line — no full JSON decode — so reading a 100MB log to keep 99 MB is sub-second.
+The pruner decodes each JSON line and reads its timestamp, preserving malformed records. A separate advisory file lock serializes daemon and CLI appends/prunes; private temporary files and atomic replacement protect rewrites. Audit failures are logged but do not roll back or block mutations.
 
 ## Schema invariants
 

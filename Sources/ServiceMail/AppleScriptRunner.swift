@@ -1,9 +1,10 @@
 import Foundation
 import Logging
+import BridgeConfig
 
 /// Errors surfaced by `AppleScriptRunner.run`. Translation of osascript exit
-/// signals is best-effort; callers should treat any error as
-/// "the action did not happen" and surface it to the agent.
+/// signals is best-effort; a timeout or cancellation can occur after a write took effect. Callers must
+/// inspect state before retrying non-idempotent writes.
 public enum AppleScriptError: Error, CustomStringConvertible {
     case compileFailed(String)
     case executionFailed(code: Int?, message: String)
@@ -47,80 +48,18 @@ public actor AppleScriptRunner {
     /// task against a timer task; if timer wins, terminate the child and
     /// throw `.timeout`.
     private func withTimeoutKilling(seconds: Double, source: String) async throws -> String {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        proc.arguments = ["-"]   // read script from stdin
-        let inPipe = Pipe()
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardInput = inPipe
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
-
+        let result: Subprocess.Output
         do {
-            try proc.run()
-        } catch {
-            throw AppleScriptError.compileFailed("osascript spawn failed: \(error)")
+            result = try await Subprocess.run("/usr/bin/osascript", arguments: ["-"],
+                input: Data(source.utf8), timeoutSeconds: seconds)
+        } catch Subprocess.Failure.timeout {
+            throw AppleScriptError.timeout(seconds: seconds)
         }
-
-        // Write source to stdin and close it so osascript starts compiling.
-        let scriptData = Data(source.utf8)
-        do {
-            try inPipe.fileHandleForWriting.write(contentsOf: scriptData)
-            try inPipe.fileHandleForWriting.close()
-        } catch {
-            proc.terminate()
-            throw AppleScriptError.compileFailed("write to osascript stdin failed: \(error)")
+        guard result.exitCode == 0 else {
+            if Self.looksTCCDenied(result.stderr) { throw AppleScriptError.tccDenied(result.stderr) }
+            throw AppleScriptError.executionFailed(code: Int(result.exitCode), message: result.stderr)
         }
-
-        // Race exit-watcher vs timer. Whichever fires first wins.
-        // The exit-watcher polls `proc.isRunning` so we can interrupt it via
-        // structured cancellation if the timer wins.
-        return try await withThrowingTaskGroup(of: String?.self) { group in
-            group.addTask {
-                while proc.isRunning {
-                    if Task.isCancelled { return nil }
-                    try await Task.sleep(nanoseconds: 50_000_000) // 50 ms poll
-                }
-                let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-                let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-                let stdout = String(data: outData, encoding: .utf8) ?? ""
-                let stderr = String(data: errData, encoding: .utf8) ?? ""
-                if proc.terminationStatus != 0 {
-                    if Self.looksTCCDenied(stderr) {
-                        throw AppleScriptError.tccDenied(stderr.trimmingCharacters(in: .whitespacesAndNewlines))
-                    }
-                    let code = Int(proc.terminationStatus)
-                    let msg = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                    throw AppleScriptError.executionFailed(code: code, message: msg)
-                }
-                return stdout
-            }
-            group.addTask {
-                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-                if proc.isRunning {
-                    proc.terminate()      // SIGTERM; gives osascript a chance to clean up
-                    // Give it 500ms to die cleanly, then SIGKILL.
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    if proc.isRunning {
-                        kill(proc.processIdentifier, SIGKILL)
-                    }
-                }
-                throw AppleScriptError.timeout(seconds: seconds)
-            }
-            do {
-                let result = try await group.next()!
-                group.cancelAll()
-                if let result { return result }
-                throw AppleScriptError.executionFailed(code: nil, message: "internal: nil result without throw")
-            } catch {
-                group.cancelAll()
-                if proc.isRunning {
-                    proc.terminate()
-                }
-                throw error
-            }
-        }
+        return result.stdout
     }
 
     private static func looksTCCDenied(_ stderr: String) -> Bool {
