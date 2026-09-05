@@ -170,8 +170,8 @@ public actor TokenRegistry {
     }
 
     public func add(label: String, profile: String?, description: String) throws -> Entry {
-        return try mutate {
-            if entries[label] != nil {
+        return try mutate { registry in
+            if registry.entries[label] != nil {
                 throw RegistryError.alreadyExists(label)
             }
             let entry = Entry(
@@ -180,49 +180,49 @@ public actor TokenRegistry {
                 profile: profile,
                 description: description
             )
-            entries[label] = entry
+            registry.entries[label] = entry
             return entry
         }
     }
 
     public func revoke(label: String) throws {
-        return try mutate {
-            guard entries.removeValue(forKey: label) != nil else {
+        return try mutate { registry in
+            guard registry.entries.removeValue(forKey: label) != nil else {
                 throw RegistryError.notFound(label)
             }
         }
     }
 
     public func rotate(label: String) throws -> Entry {
-        return try mutate {
-            guard var entry = entries[label] else {
+        return try mutate { registry in
+            guard var entry = registry.entries[label] else {
                 throw RegistryError.notFound(label)
             }
             entry.secret = Self.generateSecret()
             entry.created = Self.nowISO()
-            entries[label] = entry
+            registry.entries[label] = entry
             return entry
         }
     }
 
     public func setProfile(label: String, profile: String?) throws {
-        return try mutate {
-            guard var entry = entries[label] else {
+        return try mutate { registry in
+            guard var entry = registry.entries[label] else {
                 throw RegistryError.notFound(label)
             }
             entry.profile = profile
-            entries[label] = entry
+            registry.entries[label] = entry
         }
     }
 
     private var lockURL: URL { url.appendingPathExtension("lock") }
 
-    private func mutate<T>(_ body: () throws -> T) throws -> T {
+    private func mutate<T>(_ body: @Sendable (isolated TokenRegistry) throws -> T) throws -> T {
         try FileLock.withExclusiveAccess(to: lockURL) {
             try loadFromDisk()
             let original = entries
             do {
-                let value = try body()
+                let value = try body(self)
                 try persist()
                 return value
             } catch {
