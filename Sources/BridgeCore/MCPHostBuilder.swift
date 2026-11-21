@@ -229,6 +229,22 @@ public struct MCPHostBuilder: Sendable {
             return CallTool.Result(content: processed.content, isError: processed.isError, _meta: meta)
         } catch {
             let ms = elapsedMs(since: start)
+            // A missing macOS privacy grant is the one failure the caller can
+            // act on only by telling the person at the Mac, so it gets a
+            // fixed, safe message (no framework text) and its own audit note.
+            if let permission = MacPermissionError.classify(error, tool: params.name) {
+                await policy.recordResult(request, latencyMs: ms, resultBytes: nil,
+                                          error: "macos permission required: \(permission.service.rawValue) (\(permission.state.rawValue))")
+                logger.warning("tool_blocked tool=\(params.name) macos_permission=\(permission.service.rawValue) state=\(permission.state.rawValue) elapsed_ms=\(ms)")
+                let meta = Metadata(additionalFields: [
+                    "error_kind": .string("macos_permission_required"),
+                    "service": .string(permission.service.rawValue),
+                    "state": .string(permission.state.rawValue),
+                ])
+                return CallTool.Result(
+                    content: [.text(text: permission.description, annotations: nil, _meta: nil)],
+                    isError: true, _meta: meta)
+            }
             // Framework errors can echo event notes, file paths, or credentials.
             // Apply the same output policy as successful results; keep payloads
             // out of audit/stderr even when redaction is disabled by the user.

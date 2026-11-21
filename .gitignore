@@ -17,3 +17,6 @@ tokens.toml
 
 # Claude Code per-project state
 .claude/
+
+# cf CLI account cache
+.cloudflare/

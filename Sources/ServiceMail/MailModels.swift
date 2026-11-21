@@ -97,3 +97,24 @@ public struct Message: Codable, Sendable {
         case dateSent = "date_sent"
     }
 }
+
+extension MessageSummary {
+    /// Copy with `date_sent` / `date_received` carrying an explicit UTC offset.
+    func withOffsets(in tz: TimeZone) -> MessageSummary {
+        MessageSummary(
+            id: id, account: account, mailbox: mailbox, subject: subject, sender: sender,
+            dateSent: dateSent.map { MailAdapter.attachOffset($0, outputTz: tz) },
+            dateReceived: dateReceived.map { MailAdapter.attachOffset($0, outputTz: tz) },
+            isRead: isRead)
+    }
+}
+
+extension Message {
+    func withOffset(in tz: TimeZone) -> Message {
+        Message(
+            id: id, account: account, mailbox: mailbox, subject: subject, sender: sender,
+            recipients: recipients,
+            dateSent: dateSent.map { MailAdapter.attachOffset($0, outputTz: tz) },
+            body: body)
+    }
+}

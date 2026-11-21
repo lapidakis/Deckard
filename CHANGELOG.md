@@ -5,6 +5,10 @@
 - Add `[cloudflare_access]`: accept callers authenticated by Cloudflare Access (Managed OAuth or service tokens) through a Cloudflare Tunnel. Deckard verifies the forwarded assertion (RS256 signature, issuer, audience, expiry) and maps the identity to an ACL profile; unmapped identities are refused.
 - Add `[auth] bearer_tokens` (default `true`) to switch bearer tokens off when Access is the only intended way in.
 - New audit transport `cloudflare` and caller form `cf:<identity>`.
+- Return 404 (not the SDK's 400 "Session not initialized") when a client presents a session ID the daemon no longer knows, e.g. after a restart, so MCP clients re-initialize instead of staying stuck.
+- Mail timestamps (`date_sent`, `date_received`) now carry an explicit UTC offset and are expressed in the `tz` argument's zone when given (the Mac's zone otherwise). They were previously bare local wall-clock times, so a caller in another zone read them off by the difference.
+- Fix `mail.list_mailboxes` reporting 0 unread for an account's INBOX: Mail's `unread count` is wrong for that mailbox, so the inbox's unread messages are now counted directly.
+- Tool calls blocked by a missing macOS privacy grant (Calendar, Reminders, Contacts, Mail automation, iCloud Drive, Voice Memos) now return a fixed "macOS permission required" message saying what to enable and that it must be done at the Mac, with `_meta.error_kind = macos_permission_required`. Already-denied access fails immediately instead of waiting; the Calendar prompt wait drops from 60s to 15s.
 
 ## Unreleased — calendar and security review
 

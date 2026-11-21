@@ -54,7 +54,16 @@ public actor CalendarAdapter {
     private var accessTask: Task<Bool, Error>?
 
     private func ensureAccess() async throws {
-        if accessGranted && EKEventStore.authorizationStatus(for: .event) == .fullAccess { return }
+        let status = EKEventStore.authorizationStatus(for: .event)
+        if accessGranted && status == .fullAccess { return }
+        // Already refused (or write-only): asking again shows no prompt, so
+        // fail immediately instead of making a remote caller wait.
+        switch status {
+        case .denied, .restricted, .writeOnly:
+            throw MacPermissionError(.calendar, .denied)
+        default:
+            break
+        }
         let task: Task<Bool, Error>
         if let existing = accessTask {
             task = existing
@@ -64,10 +73,16 @@ public actor CalendarAdapter {
         }
         defer { accessTask = nil }
         guard try await task.value else {
-            throw CalendarError.accessDenied("user denied or system blocked Full Calendar Access")
+            throw MacPermissionError(.calendar, .denied)
         }
         accessGranted = true
     }
+
+    /// How long a tool call waits for someone to answer the macOS prompt.
+    /// The prompt stays on screen after this elapses, and a later grant takes
+    /// effect on the next call, so a remote caller is told to retry rather
+    /// than held for a minute.
+    private static let accessRequestTimeoutSec = 15
 
     private func requestAccess() async throws -> Bool {
         let latch = ResumeLatch()
@@ -77,10 +92,9 @@ public actor CalendarAdapter {
                 if let error { cont.resume(throwing: error) }
                 else { cont.resume(returning: granted) }
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 60) {
+            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(Self.accessRequestTimeoutSec)) {
                 guard latch.tryResume() else { return }
-                cont.resume(throwing: CalendarError.accessDenied(
-                    "Calendar access request timed out; grant Full Calendar Access in System Settings and retry"))
+                cont.resume(throwing: MacPermissionError(.calendar, .promptPending))
             }
         }
     }

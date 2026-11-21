@@ -80,6 +80,20 @@ enum MailScripts {
             repeat with mbox in mailboxes of a
                 set mboxName to name of mbox as string
                 set unreadN to (unread count of mbox) as integer
+                -- Mail reports `unread count` as 0 for an account's INBOX
+                -- reached through `mailboxes of account`, even when it holds
+                -- unread mail (seen on macOS 27 with iCloud; other mailboxes
+                -- report correctly). Count the inbox's unread messages
+                -- directly. Limited to INBOX because the query is slow on
+                -- large mailboxes such as Junk.
+                ignoring case
+                    set isInbox to (mboxName is "INBOX")
+                end ignoring
+                if isInbox then
+                    try
+                        set unreadN to count of (messages of mbox whose read status is false)
+                    end try
+                end if
                 set out to out & my clean(acctName) & FS & my clean(mboxName) & FS & unreadN & RS
             end repeat
         end repeat

@@ -127,3 +127,31 @@ private actor CountingGate: ApprovalGate {
     // The gate is reusable once drained.
     #expect(await gate.request(req) == .approved)
 }
+
+// MARK: - macOS permission errors
+
+@Test func macPermissionMessagesTellARemoteAgentWhatToDo() {
+    let pending = MacPermissionError(.calendar, .promptPending).description
+    #expect(pending.contains("macOS permission required"))
+    #expect(pending.contains("Calendar"))
+    #expect(pending.contains("prompt should be showing on the Mac"))
+    #expect(pending.contains("cannot be fixed remotely"))
+
+    let denied = MacPermissionError(.mail, .denied).description
+    #expect(denied.contains("Automation > Deckard > Mail"))
+    #expect(!denied.contains("prompt should be showing"))
+}
+
+@Test func macPermissionClassifierRecognizesFilesystemBlocksByTool() {
+    let eperm = NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))
+    let noRead = NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError)
+    #expect(MacPermissionError.classify(eperm, tool: "drive.read") == MacPermissionError(.iCloudDrive, .denied))
+    #expect(MacPermissionError.classify(noRead, tool: "drive.list") == MacPermissionError(.iCloudDrive, .denied))
+    #expect(MacPermissionError.classify(eperm, tool: "voice_memo.read_audio") == MacPermissionError(.voiceMemos, .denied))
+    // Not a permission problem, or not a tool that touches a protected folder.
+    #expect(MacPermissionError.classify(eperm, tool: "mail.search") == nil)
+    #expect(MacPermissionError.classify(NSError(domain: NSCocoaErrorDomain, code: NSFileReadNoSuchFileError), tool: "drive.read") == nil)
+    // Passes through an error that already is one.
+    let known = MacPermissionError(.contacts, .promptPending)
+    #expect(MacPermissionError.classify(known, tool: "contacts.search") == known)
+}

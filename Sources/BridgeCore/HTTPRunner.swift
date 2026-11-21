@@ -244,6 +244,7 @@ public struct HTTPRunner: Sendable {
             }
         }
 
+        mcpResponse = expiredSessionResponse(for: mcpResponse, request: mcpRequest) ?? mcpResponse
         if mcpResponse.statusCode >= 400 {
             holder.contexts.discard(contextID)
         }
@@ -380,6 +381,22 @@ public struct HTTPRunner: Sendable {
                       || c == "." || c == ":"
               }) else { return nil }
         return raw
+    }
+
+    /// After a daemon restart (or a self-heal) the transport has no session,
+    /// and the SDK answers a client still presenting its old session ID with
+    /// 400 "Session not initialized". The MCP spec reserves 404 for an
+    /// unknown session ID, and that is the status clients act on by
+    /// re-initializing; on a 400 they surface the error and stay stuck.
+    /// Returns the 404 to send instead, or nil to leave the response alone.
+    /// A request with no session ID keeps its 400: that is a client bug, not
+    /// an expired session.
+    static func expiredSessionResponse(for response: MCP.HTTPResponse, request: MCP.HTTPRequest) -> MCP.HTTPResponse? {
+        guard response.statusCode == 400,
+              let presented = request.header(HTTPHeaderName.sessionID), !presented.isEmpty,
+              let body = response.bodyData, let text = String(data: body, encoding: .utf8),
+              text.contains("Session not initialized") else { return nil }
+        return .error(statusCode: 404, .invalidRequest("Not Found: Invalid or expired session ID"))
     }
 
     static func isStaleSessionError(_ response: MCP.HTTPResponse, request: MCP.HTTPRequest) -> Bool {

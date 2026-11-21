@@ -56,7 +56,10 @@ public actor MailAdapter {
         filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
         let raw = parseSummaries(out)
-        return Self.sortByMostRecent(raw).prefix(limit).map { $0 }
+        // Sort on Mail's raw local timestamps first (uniform, so lexical
+        // order is chronological), then attach the offset for output.
+        let outputTz = Self.resolveTz(tzID)
+        return Self.sortByMostRecent(raw).prefix(limit).map { $0.withOffsets(in: outputTz) }
     }
 
     /// Searches messages with a text filter (and optional structural filters).
@@ -86,7 +89,10 @@ public actor MailAdapter {
         filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
         let raw = parseSummaries(out)
-        return Self.sortByMostRecent(raw).prefix(limit).map { $0 }
+        // Sort on Mail's raw local timestamps first (uniform, so lexical
+        // order is chronological), then attach the offset for output.
+        let outputTz = Self.resolveTz(tzID)
+        return Self.sortByMostRecent(raw).prefix(limit).map { $0.withOffsets(in: outputTz) }
     }
 
     public struct BatchResult: Codable, Sendable {
@@ -208,7 +214,29 @@ public actor MailAdapter {
         guard let msg = parseMessage(out) else {
             throw AppleScriptError.executionFailed(code: nil, message: "could not parse get_message output")
         }
-        return msg
+        return msg.withOffset(in: .current)
+    }
+
+    /// Mail hands AppleScript dates as wall-clock time in the Mac's zone with
+    /// no offset ("2026-11-21T15:53:36"). Returned as-is, a caller in another
+    /// zone reads them an hour or more off. Re-express with an explicit UTC
+    /// offset in `outputTz`. A value that doesn't parse is passed through.
+    ///
+    /// Limitation: during the repeated hour when clocks fall back the wall
+    /// time is ambiguous, and Foundation picks the first occurrence.
+    static func attachOffset(_ naive: String, outputTz: TimeZone, systemTz: TimeZone = .current) -> String {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.calendar = Calendar(identifier: .gregorian)
+        parser.timeZone = systemTz
+        parser.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        guard let date = parser.date(from: naive) else { return naive }
+        let out = DateFormatter()
+        out.locale = Locale(identifier: "en_US_POSIX")
+        out.calendar = Calendar(identifier: .gregorian)
+        out.timeZone = outputTz
+        out.dateFormat = "yyyy-MM-dd'T'HH:mm:ssxxx"
+        return out.string(from: date)
     }
 
     public func createDraft(to: [String], cc: [String], bcc: [String], subject: String, body: String) async throws {

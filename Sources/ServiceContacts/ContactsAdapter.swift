@@ -50,6 +50,13 @@ public actor ContactsAdapter {
 
     private func ensureAccess() async throws {
         if accessGranted { return }
+        switch CNContactStore.authorizationStatus(for: .contacts) {
+        case .denied, .restricted:
+            // Already refused: asking again shows no prompt, so fail now.
+            throw MacPermissionError(.contacts, .denied)
+        default:
+            break
+        }
         let task: Task<Bool, Error>
         if let existing = accessTask {
             task = existing
@@ -61,9 +68,12 @@ public actor ContactsAdapter {
             let granted = try await task.value
             accessTask = nil
             if !granted {
-                throw AdapterError.accessDenied("user denied or system blocked Contacts access")
+                throw MacPermissionError(.contacts, .denied)
             }
             accessGranted = true
+        } catch let err as MacPermissionError {
+            accessTask = nil
+            throw err
         } catch let err as AdapterError {
             accessTask = nil
             throw err
@@ -101,9 +111,7 @@ public actor ContactsAdapter {
             DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(timeoutNs))) {
                 guard latch.tryResume() else { return }
                 logger.error("Contacts access request timed out after \(timeoutNs / 1_000_000_000)s")
-                cont.resume(throwing: AdapterError.accessDenied(
-                    "Contacts access request timed out — open System Settings → Privacy & Security → Contacts, enable Deckard, then retry"
-                ))
+                cont.resume(throwing: MacPermissionError(.contacts, .promptPending))
             }
         }
     }
