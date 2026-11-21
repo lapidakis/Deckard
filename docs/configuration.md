@@ -77,6 +77,30 @@ deckard tailscale whois 100.x.y.z   # resolve a tailnet IP to peer + user
 |---|---|---|
 | `require_token` | `true` | Must be true for HTTP; false fails startup. Stdio relies on the OS process boundary. |
 
+`bearer_tokens` (default `true`) controls whether tokens from `tokens.toml` are accepted at all. Set it to `false` to make Cloudflare Access the only way in over HTTP. The daemon refuses to start with `bearer_tokens = false` unless `[cloudflare_access]` is enabled. stdio is unaffected.
+
+### `[cloudflare_access]`
+
+Accepts callers that Cloudflare Access has authenticated (Managed OAuth sign-in, or an Access service token) and that arrive through a Cloudflare Tunnel on the loopback listener. Off by default.
+
+```toml
+[cloudflare_access]
+enabled = true
+team_domain = "myteam.cloudflareaccess.com"
+audiences = ["<application AUD tag>"]      # from the Access application
+public_hosts = ["deckard.example.com"]     # Host values the tunnel forwards
+
+[cloudflare_access.identities]
+"me@example.com" = "claude"                # user email -> ACL profile
+"abc123.access"  = "triage"                # service token client id -> ACL profile
+```
+
+- Deckard verifies the `Cf-Access-Jwt-Assertion` header on every request: RS256 signature against the team's published keys, issuer, audience, and expiry. The header alone is never trusted, because any local process can reach the loopback port.
+- An identity that verifies but is not listed under `identities` gets 403. Every identity must name a profile; there is no fallback to the global `[acl]`, and an unknown profile name is deny-all.
+- A request carrying an assertion is judged on it alone. It never falls back to a bearer token.
+- Audit rows show `transport=cloudflare caller=cf:<email or client id>`.
+- Changing this section requires a daemon restart.
+
 ### `[acl]` and `[acl.profiles.<name>]`
 
 The global `[acl]` block is the default; `[acl.profiles.<name>]` blocks define named profiles that tokens can reference.

@@ -14,6 +14,8 @@ public struct AuthContext: Sendable, Equatable {
         case stdio
         case loopback
         case tailnet
+        /// Arrived through a Cloudflare Tunnel with a verified Access assertion.
+        case cloudflare
     }
 
     public enum Identity: Sendable, Equatable {
@@ -21,6 +23,9 @@ public struct AuthContext: Sendable, Equatable {
         case bearer(tokenLabel: String)
         /// Authenticated by Tailscale LocalAPI WhoIs.
         case tailscale(peer: String, user: String?)
+        /// Authenticated by a verified Cloudflare Access assertion: a user's
+        /// email, or a service token's common name.
+        case cloudflareAccess(subject: String)
         /// Local stdio caller — same UID as the bridge process.
         case localProcess(pid: Int32?)
     }
@@ -41,6 +46,7 @@ public struct AuthContext: Sendable, Equatable {
         case .bearer(let label): return "bearer:\(label)"
         case .tailscale(let peer, let user):
             return user.map { "ts:\(peer):\($0)" } ?? "ts:\(peer)"
+        case .cloudflareAccess(let subject): return "cf:\(subject)"
         case .localProcess(let pid):
             return pid.map { "stdio:\($0)" } ?? "stdio"
         }

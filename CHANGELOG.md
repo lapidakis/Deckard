@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — Cloudflare Access
+
+- Add `[cloudflare_access]`: accept callers authenticated by Cloudflare Access (Managed OAuth or service tokens) through a Cloudflare Tunnel. Deckard verifies the forwarded assertion (RS256 signature, issuer, audience, expiry) and maps the identity to an ACL profile; unmapped identities are refused.
+- Add `[auth] bearer_tokens` (default `true`) to switch bearer tokens off when Access is the only intended way in.
+- New audit transport `cloudflare` and caller form `cf:<identity>`.
+
 ## Unreleased — calendar and security review
 
 - Harden token revocation, private atomic persistence, cross-process audit/token writes, error redaction, and per-request identity propagation through the MCP SDK.
