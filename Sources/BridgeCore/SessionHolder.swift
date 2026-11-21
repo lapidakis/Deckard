@@ -4,82 +4,61 @@ import MCP
 import BridgeAuth
 import BridgePolicy
 
-/// Holds the MCP transport+server pair for one bearer-token caller and
-/// recreates them when the SDK's session state becomes stale.
+/// Holds the MCP transport+server pair for one caller identity (a bearer
+/// token, or a Cloudflare Access identity).
 ///
-/// Per-token instances let the bridge:
-///   1. Bind each call's audit identity to the token label (caller="bearer:<label>")
-///   2. Apply per-token ACL profiles
-///   3. Self-heal stale-session errors without affecting other tokens
+/// Per-identity instances let the bridge:
+///   1. Bind each call's audit identity to the caller
+///   2. Apply per-identity ACL profiles
+///   3. Serve any number of concurrent clients on one identity
+///
+/// The transport is the SDK's *stateless* Streamable HTTP variant: no
+/// `Mcp-Session-Id`, POST gets a direct JSON response, GET/DELETE return 405.
+/// Deckard's tools are strict request/response (no server-initiated messages,
+/// no subscriptions), so session state bought nothing and cost plenty. The
+/// stateful transport held one in-memory session per identity: every other
+/// client's `initialize` was rejected with 400, the tear-down-and-rebuild
+/// self-heal that worked around it could be driven into a storm by a client
+/// re-initializing per request (Hermes, 2026-05), and a daemon restart left
+/// clients holding dead session IDs. With the stateless transport plus the
+/// idempotent `initialize` override there is nothing to heal, so the
+/// recreate/throttle/lifecycle-gate machinery is gone.
+///
+/// Because the stateless transport pairs responses with requests by JSON-RPC
+/// id, and independent clients all count from 1, `HTTPRunner` gives every
+/// request a unique id before it reaches the transport (see `RequestIDRewriter`).
 public actor SessionHolder {
-    private var transport: StatefulHTTPServerTransport
-    private var server: Server
-    private let builder: MCPHostBuilder
-    private let auth: AuthContext
-    private let policy: PolicyPipeline
-    private let logger: Logger
-    private var throttle: RecreateThrottle
-    private let lifecycle = SessionLifecycleGate()
+    private let transport: StatelessHTTPServerTransport
+    private let server: Server
     public nonisolated let contexts = RequestContextStore()
-    private let allowedHosts: [String]
 
     public init(
         builder: MCPHostBuilder,
         auth: AuthContext,
         policy: PolicyPipeline,
         logger: Logger,
-        recreateThrottle: RecreateThrottle = RecreateThrottle(),
         allowedHosts: [String] = ["127.0.0.1:8787", "localhost:8787"]
     ) async throws {
-        self.builder = builder
-        self.auth = auth
-        self.policy = policy
-        self.logger = logger
-        self.throttle = recreateThrottle
-        self.allowedHosts = allowedHosts
         self.transport = Self.makeTransport(allowedHosts: allowedHosts, logger: logger)
-        self.server = await builder.build(auth: auth, policy: policy, lifecycle: lifecycle, contexts: contexts)
+        self.server = await builder.build(auth: auth, policy: policy, contexts: contexts)
         try await self.server.start(transport: self.transport)
+        // Ordering is load-bearing: start() re-registers the SDK default
+        // handlers, so the idempotent initialize override must come after it.
+        await builder.registerIdempotentInitialize(on: self.server)
     }
 
-    public func currentTransport() -> StatefulHTTPServerTransport { transport }
+    public func currentTransport() -> StatelessHTTPServerTransport { transport }
 
-    /// Self-heal a stale MCP session by rebuilding the transport+server pair —
-    /// but only while within the recreate budget. A client re-`initialize`ing on
-    /// a tight loop (not reusing its `Mcp-Session-Id`) would otherwise make us
-    /// tear down the live session on every request; `RecreateThrottle` documents
-    /// the failure mode. Returns the decision so the caller can retry
-    /// (`.recreated`), back off (`.throttled`), or fall back (`.failed`).
-    public func selfHeal(now: ContinuousClock.Instant = ContinuousClock().now) async -> RecreateDecision {
-        guard lifecycle.beginRecovery() else { return .throttled }
-        defer { lifecycle.endRecovery() }
-        guard throttle.permit(now: now) else { return .throttled }
-        do {
-            try await recreate()
-            return .recreated
-        } catch {
-            return .failed(String(describing: error))
-        }
-    }
-
-    static func makeTransport(allowedHosts: [String], logger: Logger) -> StatefulHTTPServerTransport {
-        StatefulHTTPServerTransport(validationPipeline: StandardValidationPipeline(validators: [
+    static func makeTransport(allowedHosts: [String], logger: Logger) -> StatelessHTTPServerTransport {
+        StatelessHTTPServerTransport(validationPipeline: StandardValidationPipeline(validators: [
             // Native agent clients do not send Origin. Browser access is not
             // supported; all supplied origins are rejected. Host remains an
-            // exact allowlist, including the configured tailnet IP and port.
+            // exact allowlist, including the configured tailnet IP and port
+            // and any Cloudflare public hostnames.
             OriginValidator(allowedHosts: allowedHosts, allowedOrigins: []),
-            AcceptHeaderValidator(mode: .sseRequired),
+            AcceptHeaderValidator(mode: .jsonOnly),
             ContentTypeValidator(),
             ProtocolVersionValidator(),
-            SessionValidator(),
         ]), logger: logger)
-    }
-
-    private func recreate() async throws {
-        await server.stop()
-        await transport.disconnect()
-        self.transport = Self.makeTransport(allowedHosts: allowedHosts, logger: logger)
-        self.server = await builder.build(auth: auth, policy: policy, lifecycle: lifecycle, contexts: contexts)
-        try await self.server.start(transport: transport)
     }
 }

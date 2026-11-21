@@ -201,10 +201,13 @@ public struct HTTPRunner: Sendable {
         let contextID: String?
         do { (preparedBody, contextID) = try holder.contexts.prepare(bodyData, auth: perCallAuth) }
         catch { return jsonError(status: .serviceUnavailable, message: "Too many pending requests; retry later") }
+        // Independent clients on one identity all number their requests from
+        // 1; give each request a unique id for its trip through the transport.
+        let (uniqueBody, originalID) = RequestIDRewriter.rewrite(preparedBody)
         let mcpRequest = MCP.HTTPRequest(
             method: req.method.rawValue,
             headers: headers,
-            body: preparedBody.isEmpty ? nil : preparedBody,
+            body: uniqueBody.isEmpty ? nil : uniqueBody,
             path: req.uri.path
         )
 
@@ -212,39 +215,7 @@ public struct HTTPRunner: Sendable {
         var mcpResponse = await BridgeCallContext.$override.withValue(perCallAuth) {
             await transport.handleRequest(mcpRequest)
         }
-
-        // Self-heal: the SDK's StatefulHTTPServerTransport keeps a session in
-        // memory across MCP-client reconnects and rejects fresh initialize
-        // calls with 400 "Session already initialized." When we see that, tear
-        // down and recreate the transport+server pair, then retry once.
-        if isStaleSessionError(mcpResponse, request: mcpRequest) {
-            // Some clients re-`initialize` on every request instead of reusing
-            // the session ID. Recreating the transport heals that — but it's
-            // budgeted (see RecreateThrottle): a client stuck re-initializing on
-            // a tight loop, or several workers sharing one token, would otherwise
-            // tear down the live session on every call, starving real tool calls
-            // and churning the daemon ~1/sec (the Hermes tailnet storm, 2026-05).
-            switch await holder.selfHeal() {
-            case .recreated:
-                // Log at .debug so stderr doesn't fill with thousands of these
-                // per day for clients that legitimately re-initialize.
-                logger.debug("Stale MCP session detected; recreated transport in place")
-                let fresh = await holder.currentTransport()
-                mcpResponse = await BridgeCallContext.$override.withValue(perCallAuth) {
-                    await fresh.handleRequest(mcpRequest)
-                }
-            case .throttled:
-                // Budget spent: stop honoring blind re-inits. Return the SDK's
-                // own 400 unchanged rather than weaponizing recreate. Warn (not
-                // debug) so a looping client is visible to the operator without
-                // having to raise the log level.
-                logger.warning("Self-heal deferred (busy or budget exhausted) for token=\(label); client likely re-initializing without reusing Mcp-Session-Id — returning stale-session response without recreate")
-            case .failed(let err):
-                logger.error("Failed to recreate transport: \(err)")
-            }
-        }
-
-        mcpResponse = expiredSessionResponse(for: mcpResponse, request: mcpRequest) ?? mcpResponse
+        mcpResponse = RequestIDRewriter.restore(mcpResponse, originalID: originalID)
         if mcpResponse.statusCode >= 400 {
             holder.contexts.discard(contextID)
         }
@@ -381,33 +352,6 @@ public struct HTTPRunner: Sendable {
                       || c == "." || c == ":"
               }) else { return nil }
         return raw
-    }
-
-    /// After a daemon restart (or a self-heal) the transport has no session,
-    /// and the SDK answers a client still presenting its old session ID with
-    /// 400 "Session not initialized". The MCP spec reserves 404 for an
-    /// unknown session ID, and that is the status clients act on by
-    /// re-initializing; on a 400 they surface the error and stay stuck.
-    /// Returns the 404 to send instead, or nil to leave the response alone.
-    /// A request with no session ID keeps its 400: that is a client bug, not
-    /// an expired session.
-    static func expiredSessionResponse(for response: MCP.HTTPResponse, request: MCP.HTTPRequest) -> MCP.HTTPResponse? {
-        guard response.statusCode == 400,
-              let presented = request.header(HTTPHeaderName.sessionID), !presented.isEmpty,
-              let body = response.bodyData, let text = String(data: body, encoding: .utf8),
-              text.contains("Session not initialized") else { return nil }
-        return .error(statusCode: 404, .invalidRequest("Not Found: Invalid or expired session ID"))
-    }
-
-    static func isStaleSessionError(_ response: MCP.HTTPResponse, request: MCP.HTTPRequest) -> Bool {
-        guard response.statusCode == 400 else { return false }
-        guard request.method.uppercased() == "POST",
-              let data = request.body,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              json["method"] as? String == "initialize" else { return false }
-        guard let body = response.bodyData,
-              let s = String(data: body, encoding: .utf8) else { return false }
-        return s.contains("Session already initialized")
     }
 
     static func extractBearer(from headers: HTTPFields) -> String? {

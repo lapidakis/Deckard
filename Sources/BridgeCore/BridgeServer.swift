@@ -183,6 +183,11 @@ public struct BridgeServer: Sendable {
                     }
                 }
 
+                if config.cloudflareTunnel.enabled {
+                    let supervisor = TunnelSupervisor(config: config.cloudflareTunnel, logger: logger)
+                    group.addTask { await supervisor.run() }
+                }
+
                 if config.server.bindLoopback {
                     let bind = HTTPRunner.Bind(
                         host: "127.0.0.1",

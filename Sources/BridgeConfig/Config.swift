@@ -15,6 +15,7 @@ public struct Config: Codable, Sendable, Equatable {
     public var drive: DriveConfig
     public var audit: AuditConfig
     public var cloudflareAccess: CloudflareAccessConfig
+    public var cloudflareTunnel: CloudflareTunnelConfig
 
     public init(
         server: ServerConfig = .init(),
@@ -25,7 +26,8 @@ public struct Config: Codable, Sendable, Equatable {
         injection: InjectionConfig = .init(),
         drive: DriveConfig = .init(),
         audit: AuditConfig = .init(),
-        cloudflareAccess: CloudflareAccessConfig = .init()
+        cloudflareAccess: CloudflareAccessConfig = .init(),
+        cloudflareTunnel: CloudflareTunnelConfig = .init()
     ) {
         self.server = server
         self.tailscale = tailscale
@@ -36,11 +38,13 @@ public struct Config: Codable, Sendable, Equatable {
         self.drive = drive
         self.audit = audit
         self.cloudflareAccess = cloudflareAccess
+        self.cloudflareTunnel = cloudflareTunnel
     }
 
     enum CodingKeys: String, CodingKey {
         case server, tailscale, auth, acl, redaction, injection, drive, audit
         case cloudflareAccess = "cloudflare_access"
+        case cloudflareTunnel = "cloudflare_tunnel"
     }
 
     public init(from decoder: Decoder) throws {
@@ -54,6 +58,7 @@ public struct Config: Codable, Sendable, Equatable {
         self.drive = try c.decodeIfPresent(DriveConfig.self, forKey: .drive) ?? .init()
         self.audit = try c.decodeIfPresent(AuditConfig.self, forKey: .audit) ?? .init()
         self.cloudflareAccess = try c.decodeIfPresent(CloudflareAccessConfig.self, forKey: .cloudflareAccess) ?? .init()
+        self.cloudflareTunnel = try c.decodeIfPresent(CloudflareTunnelConfig.self, forKey: .cloudflareTunnel) ?? .init()
     }
 }
 
@@ -408,5 +413,42 @@ public struct ProfileConfig: Codable, Sendable, Equatable {
         self.default = try c.decodeIfPresent(ACLDecision.self, forKey: .default) ?? d.default
         self.tools = try c.decodeIfPresent([String: ACLDecision].self, forKey: .tools) ?? d.tools
         self.interactiveApproval = try c.decodeIfPresent(InteractiveApprovalMode.self, forKey: .interactiveApproval) ?? d.interactiveApproval
+    }
+}
+
+/// Have the daemon keep a Cloudflare Tunnel connector (`cloudflared`) running
+/// as its own child process, so the public hostname works whenever Deckard
+/// does and stops when it stops. No separate LaunchAgent to manage.
+///
+/// ```toml
+/// [cloudflare_tunnel]
+/// enabled = true
+/// config_file = "~/.cloudflared/deckard.yml"   # written by `deckard cloudflare setup`
+/// binary = ""                                  # empty = find cloudflared automatically
+/// ```
+public struct CloudflareTunnelConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    /// Path to the tunnel's cloudflared config (ingress rules + credentials).
+    public var configFile: String
+    /// Path to `cloudflared`. Empty searches Homebrew locations and PATH.
+    public var binary: String
+
+    public init(enabled: Bool = false, configFile: String = "~/.cloudflared/deckard.yml", binary: String = "") {
+        self.enabled = enabled
+        self.configFile = configFile
+        self.binary = binary
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, binary
+        case configFile = "config_file"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = CloudflareTunnelConfig()
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        self.configFile = try c.decodeIfPresent(String.self, forKey: .configFile) ?? d.configFile
+        self.binary = try c.decodeIfPresent(String.self, forKey: .binary) ?? d.binary
     }
 }

@@ -12,22 +12,6 @@ import ServiceCalendar
 import ServiceContacts
 import ServiceReminders
 
-@Test func sessionRecoveryCannotInterruptCallsOrOverlap() {
-    let gate = SessionLifecycleGate()
-    #expect(gate.beginCall())
-    #expect(gate.beginCall())
-    #expect(!gate.beginRecovery())
-    gate.endCall()
-    #expect(!gate.beginRecovery())
-    gate.endCall()
-    #expect(gate.beginRecovery())
-    #expect(!gate.beginRecovery())
-    #expect(!gate.beginCall())
-    gate.endRecovery()
-    #expect(gate.beginCall())
-    gate.endCall()
-}
-
 @Test func tailnetTransportAcceptsConfiguredHostAndRejectsOtherOrigins() async {
     let transport = SessionHolder.makeTransport(allowedHosts: ["100.90.1.1:8787"], logger: Logger(label: "test"))
     let context = HTTPValidationContext(httpMethod: "POST")
@@ -164,13 +148,7 @@ private func collectSSE(_ response: MCP.HTTPResponse) async throws -> String {
     let transport = SessionHolder.makeTransport(allowedHosts: ["100.90.1.1:8787"], logger: Logger(label: "test"))
     try await server.start(transport: transport)
     defer { Task { await server.stop() } }
-    var headers = ["Host": "100.90.1.1:8787", "Accept": "application/json, text/event-stream", "Content-Type": "application/json"]
-    let initial = await transport.handleRequest(.init(method: "POST", headers: headers, body: Data(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"review-tests","version":"1"}}}"#.utf8)))
-    _ = try await collectSSE(initial)
-    let session = try #require(initial.headers.first { $0.key.lowercased() == "mcp-session-id" }?.value)
-    headers["Mcp-Session-Id"] = session
-    _ = await transport.handleRequest(.init(method: "POST", headers: headers,
-        body: Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8)))
+    let headers = ["Host": "100.90.1.1:8787", "Accept": "application/json, text/event-stream", "Content-Type": "application/json"]
     let peer = AuthContext(transport: .tailnet, identity: .tailscale(peer: "test-peer", user: "fixture"), remoteDescription: "tailnet")
     let call = Data(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"test.context","arguments":{},"_meta":{"deckard/internal-context":"forged"}}}"#.utf8)
     let prepared = try contexts.prepare(call, auth: peer).body

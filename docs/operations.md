@@ -262,7 +262,8 @@ Skip:
 | `AppleScript was blocked by macOS privacy` | Automation TCC denied previously | System Settings → Privacy & Security → Automation → enable Mail under Deckard |
 | `Calendar access denied` / `Reminders access denied` | TCC not granted | Trigger a tool call to surface the prompt; or System Settings → Privacy & Security → Calendar / Reminders |
 | `HTTP 401` from a client that should work | Stale token / wrong header | `deckard auth show <label>` to re-fetch; verify `Authorization: Bearer <secret>` header |
-| `HTTP 400 Session already initialized` | SDK's stale-session bug from a prior client connection | Self-heal handles this; if you see it, transport recreate failed — check stderr for `Failed to recreate transport`, `make restart` is the fallback |
+| `HTTP 405` on `GET /mcp` or `DELETE /mcp` | Expected: the HTTP transport is stateless, so there is no event stream or session to open or close | None; clients fall back to plain POST |
+| Public hostname unreachable | `cloudflared` not running or misconfigured | `deckard cloudflare status`, then `~/Library/Logs/Deckard/cloudflared.log`; the daemon restarts the connector with backoff |
 | Tailscale listener never starts | `tailscale` CLI not in PATH or not logged in | `which tailscale && tailscale status`; install or `tailscale up`. Use `deckard tailscale status` to see what the daemon sees. |
 | Tailnet request can't connect at all | Tailscale ACL in the admin console blocks the source peer from reaching this Mac on the listener port | Adjust the tailnet ACL (Tailscale admin console → Access controls). Deckard does not maintain its own peer allowlist — if the request never reaches the daemon, tailscaled rejected it. |
 | Tailnet request returns 401 | Bearer token missing or wrong | Pass `Authorization: Bearer <secret>` from `deckard auth show <label>`. Whois still runs for audit, but bearer auth applies independently. |

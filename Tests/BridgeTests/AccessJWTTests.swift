@@ -280,3 +280,83 @@ private func status(_ result: Result<HTTPRunner.Caller, HTTPRunner.Rejection>) -
     #expect(status(await authenticate([("Authorization", "Bearer icb_secret")], access: access, sessions: sessions, bearerTokens: false)) == 401)
     _ = try await authenticate([(assertion, makeToken(key: key))], access: access, sessions: sessions, bearerTokens: false).get()
 }
+
+// MARK: - Cloudflare tunnel setup
+
+@Test func cloudflareHostnameValidationRejectsInjection() {
+    for good in ["deckard.example.com", "a-b.c.io", "x1.y2.z3.example.co.uk"] {
+        #expect(CloudflareSetup.isValidHostname(good), "\(good)")
+    }
+    for bad in ["localhost", "", "Deckard.Example.com", "-a.example.com", "a..example.com",
+                "a.example.com\nservice: http://evil", "a b.example.com", "a.example.com;rm", "a.example.com/x"] {
+        #expect(!CloudflareSetup.isValidHostname(bad), "\(bad)")
+    }
+}
+
+@Test func cloudflareIngressConfigForwardsOnlyMCP() throws {
+    let yaml = CloudflareSetup.ingressConfig(tunnelID: "abc-123", hostname: "deckard.example.com", port: 8787)
+    #expect(yaml.contains("tunnel: abc-123"))
+    #expect(yaml.contains("hostname: deckard.example.com"))
+    #expect(yaml.contains("path: ^/mcp$"))
+    #expect(yaml.contains("service: http://127.0.0.1:8787"))
+    #expect(yaml.hasSuffix("  - service: http_status:404\n\n") || yaml.contains("- service: http_status:404"))
+    #expect(throws: CloudflareSetup.SetupError.self) {
+        try CloudflareSetup.writeIngressConfig(tunnelID: "x", hostname: "bad host", port: 1,
+                                               to: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+    }
+}
+
+@Test func cloudflareTunnelListParsingFindsLiveTunnelByName() {
+    let json = #"[{"id":"old","name":"deckard","deleted_at":"2026-01-01T00:00:00Z"},{"id":"live","name":"deckard","deleted_at":"0001-01-01T00:00:00Z"},{"id":"other","name":"home"}]"#
+    #expect(CloudflareSetup.parseTunnelID(listJSON: json, name: "deckard") == "live")
+    #expect(CloudflareSetup.parseTunnelID(listJSON: json, name: "home") == "other")
+    #expect(CloudflareSetup.parseTunnelID(listJSON: json, name: "missing") == nil)
+    #expect(CloudflareSetup.parseTunnelID(listJSON: "garbage", name: "deckard") == nil)
+}
+
+@Test func tunnelSupervisorBackoffGrowsAndResets() {
+    #expect(TunnelSupervisor.nextBackoff(after: .seconds(2), ranFor: .seconds(1)) == .seconds(4))
+    #expect(TunnelSupervisor.nextBackoff(after: .seconds(40), ranFor: .seconds(1)) == .seconds(60))
+    #expect(TunnelSupervisor.nextBackoff(after: .seconds(60), ranFor: .seconds(600)) == .seconds(2))
+}
+
+@Test func cloudflareTunnelConfigDecodesAndDefaultsOff() throws {
+    #expect(Config().cloudflareTunnel.enabled == false)
+    let config = try TOMLDecoder().decode(Config.self, from: "[cloudflare_tunnel]\nenabled = true\nbinary = '/opt/homebrew/bin/cloudflared'\n")
+    #expect(config.cloudflareTunnel.enabled)
+    #expect(config.cloudflareTunnel.configFile == "~/.cloudflared/deckard.yml")
+    // Round-trips through the encoder used by `deckard cloudflare setup`.
+    let reencoded = try TOMLDecoder().decode(Config.self, from: try TOMLEncoder().encode(config))
+    #expect(reencoded == config)
+}
+
+@Test func tunnelSupervisorOnlyStopsALeftoverRunningTheSameBinary() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let pidURL = dir.appendingPathComponent("cloudflared.pid")
+    let supervisor = TunnelSupervisor(config: .init(), logURL: dir.appendingPathComponent("log"), pidURL: pidURL)
+
+    func spawnSleep() throws -> Process {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/bin/sleep"); p.arguments = ["30"]
+        try p.run(); return p
+    }
+    // Recorded pid runs a different program (as after pid reuse): left alone.
+    let bystander = try spawnSleep()
+    defer { bystander.terminate() }
+    try "\(bystander.processIdentifier)\n".write(to: pidURL, atomically: true, encoding: .utf8)
+    supervisor.stopLeftoverConnector(binary: "/bin/cat")
+    #expect(bystander.isRunning)
+    #expect(!FileManager.default.fileExists(atPath: pidURL.path), "stale pid file is always cleared")
+
+    // Recorded pid runs the expected binary: stopped.
+    let leftover = try spawnSleep()
+    try "\(leftover.processIdentifier)\n".write(to: pidURL, atomically: true, encoding: .utf8)
+    supervisor.stopLeftoverConnector(binary: "/bin/sleep")
+    leftover.waitUntilExit()
+    #expect(!leftover.isRunning)
+
+    // Garbage and missing files are ignored.
+    try "not a pid".write(to: pidURL, atomically: true, encoding: .utf8)
+    supervisor.stopLeftoverConnector(binary: "/bin/sleep")
+}

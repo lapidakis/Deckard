@@ -101,6 +101,18 @@ public_hosts = ["deckard.example.com"]     # Host values the tunnel forwards
 - Audit rows show `transport=cloudflare caller=cf:<email or client id>`.
 - Changing this section requires a daemon restart.
 
+### `[cloudflare_tunnel]`
+
+Has the daemon run the Cloudflare Tunnel connector itself, so the public hostname is up whenever Deckard is. Written by `deckard cloudflare setup` or the app's Remote Access view.
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Daemon starts and supervises `cloudflared`. |
+| `config_file` | `~/.cloudflared/deckard.yml` | Tunnel config; forwards only `/mcp` to the loopback port. |
+| `binary` | `""` | Path to `cloudflared`. Empty searches Homebrew locations and PATH. |
+
+A missing binary or config is logged and skipped; it never stops the bridge. Enable `[cloudflare_access]` alongside it, otherwise the public hostname is protected only by bearer tokens.
+
 ### `[acl]` and `[acl.profiles.<name>]`
 
 The global `[acl]` block is the default; `[acl.profiles.<name>]` blocks define named profiles that tokens can reference.

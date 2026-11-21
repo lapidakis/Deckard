@@ -17,9 +17,9 @@ Read this file before making changes. README.md is end-user-facing; this file is
 | 4.6 | Contacts (search/get/groups + create/update/delete/set_groups via CNContactStore) | Done |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
-43 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **180 automated tests.**
+43 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **188 automated tests.**
 
-Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). Self-healing MCP session transport for stale-session SDK bug. Menubar UI scaffold (v0.10 series) with native macOS look. First-launch onboarding flow (v0.11+) walks through daemon → token → permissions → connect.
+Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). Stateless MCP HTTP transport (no sessions to go stale). Cloudflare Access auth and a daemon-supervised Cloudflare Tunnel for public access. Menubar UI scaffold (v0.10 series) with native macOS look. First-launch onboarding flow (v0.11+) walks through daemon → token → permissions → connect.
 
 Per-token `interactive_approval` mode (`always` / `never`) lets trusted remote tokens skip the host osascript dialog — `.approve` outcomes record `approved_by_policy` instead of stalling on a popup an off-host operator can't see.
 
@@ -42,7 +42,8 @@ BridgeCore           — MCP server, transports (stdio + HTTP), middleware pipel
                        ApprovalGate, ToolHandler/ToolProvider protocols,
                        SessionHolder, TokenSessions
 BridgeAuth           — TokenRegistry (multi-token tokens.toml), AuthContext,
-                       TailscaleProbe (CLI-based)
+                       TailscaleProbe (CLI-based), AccessJWTVerifier
+                       (Cloudflare Access assertions)
 BridgeConfig         — TOML schema, profiles, on-disk persistence
 BridgePolicy         — ACLEvaluator, AuditSink (JSONL with retention),
                        PolicyPipeline (incl. decision(for:) for tool-list filtering)
@@ -96,7 +97,7 @@ When you add a tool that returns data from external sources (mail, messages, fet
 ```sh
 make build              # daemon, codesigned (preserves TCC across rebuilds)
 make ui                 # menubar app bundle
-make test               # 180 automated tests
+make test               # 188 automated tests
 make restart            # bootout + bootstrap the LaunchAgent
 make logs               # tail stderr.log
 make audit              # tail audit.jsonl
@@ -175,7 +176,10 @@ The UI has its own bundle id (`com.lapidakis.deckard.ui`) and entitlements set; 
 - **Reminders sendability.** `EKReminder` isn't Sendable; `RemindersAdapter.listReminders` filters/sorts/maps inside the EventKit completion handler before resuming the continuation. `summarize`/`detail`/`dueAsDate` are `nonisolated static`.
 - **Contacts sendability + notes entitlement.** `CNContact`/`CNGroup`/`CNMutableContact` are reference types and not Sendable; `ContactsAdapter` does all mapping inside the actor and returns `Sendable` summaries. Group membership is computed by iterating `CNContactStore.groups(matching:)` because there's no public accessor on `CNContact`. **`CNContactNoteKey` is intentionally absent from the fetch keys** — macOS 13+ requires the Apple-granted `com.apple.developer.contacts.notes` entitlement; including the key without it throws `CNErrorCodeAuthorizationDenied`. The `note` field in `ContactDetail` round-trips as `nil` and `update`/`create` writes are no-ops on `note`.
 - **Per-token Server design.** Each bearer token gets its own `MCP.Server` instance with auth context and PolicyPipeline pre-bound. The MCP swift-sdk doesn't expose per-call session context to handler closures, so `tools/call` resolves to the right server via the bearer-secret-to-SessionHolder map in HTTPRunner. Side effect: tools/list per-token filtering works because each Server can filter its own spec list at registration time.
-- **Stale MCP session self-heal.** `StatefulHTTPServerTransport` keeps sessions in memory and rejects fresh `initialize` with HTTP 400 "Session already initialized". HTTPRunner detects this response only for initialize and recreates the SessionHolder when no tool call or approval is in flight; overlapping recovery is rejected. Don't try to "fix" by removing this; the SDK still has the underlying issue.
+- **HTTP transport is stateless; initialize is idempotent.** `SessionHolder` uses the SDK's `StatelessHTTPServerTransport` (no `Mcp-Session-Id`, POST returns JSON, GET/DELETE are 405). The stateful transport held one session per identity, which broke multi-client use, forced a recreate "self-heal" that a re-initializing client turned into a storm (Hermes, 2026-05), and stranded clients after every daemon restart. Two invariants, pinned by `StatelessSessionTests`: `registerIdempotentInitialize` must run AFTER `server.start()` (start re-registers SDK defaults), and Servers must stay non-strict. Do not reintroduce session state or a recreate path.
+- **Request ids are rewritten per request.** The stateless transport keeps one waiter per JSON-RPC id, and independent clients on one identity all count from 1. `RequestIDRewriter` swaps in a unique id before the transport and restores the caller's id on the response (byte-level, because results can be tens of MB). Side effect: client `notifications/cancelled` cannot match a request.
+- **Cloudflare Access assertions are verified, never trusted.** With `[cloudflare_access]` enabled, requests carrying `Cf-Access-Jwt-Assertion` on the loopback listener are authenticated by `AccessJWTVerifier` (RS256 signature against the team's keys, issuer, audience, expiry). Any local process can reach loopback, so header presence proves nothing. Unmapped identities get 403; an assertion never falls back to bearer.
+- **The daemon supervises `cloudflared`.** `[cloudflare_tunnel] enabled = true` makes `TunnelSupervisor` run the connector as a child with backoff. `launchctl kickstart -k` kills the daemon without reaping the child, so the connector's pid is recorded in `cloudflared.pid` and a survivor running the same binary is stopped at next start. `CloudflareSetup` (BridgeConfig) is the one implementation behind both `deckard cloudflare setup` and the UI's Remote Access view.
 - **Per-call AuthContext across the SDK queue.** HTTPRunner replaces the internal metadata reference with a fresh entry in RequestContextStore. MCPHostBuilder consumes it once, fails closed if unavailable, and sets the TaskLocal inside dispatch. HTTP TaskLocal state does not cross the SDK AsyncStream receive task. The real SDK transport regression test guards this boundary.
 - **Tailscale peer ACLs are tailscaled's job.** The bridge does NOT maintain a peer allowlist in `config.toml`. If a request reaches the listener at all, tailscaled has already gated it via your tailnet policy (set in the admin console). Re-implementing that would just duplicate (and drift from) the source of truth. Bearer auth still applies independently. `tailscale whois` runs per request for audit attribution only — failure is non-fatal.
 - **Mail batch tools' AppleScript shape.** `move <list> to <mbox>` and `set read status of <list> to <bool>` BOTH fail in Mail.app on macOS 26 with -10006. The batch path resolves message refs, then iterates per-message in the action loop. The osascript invocation + Mail.app activation is a single ~600ms cost; loop iterations are sub-ms. Don't switch back to list-target forms without re-testing on the target macOS.

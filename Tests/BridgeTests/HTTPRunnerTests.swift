@@ -138,23 +138,3 @@ import MCP
     let decoded = try JSONDecoder().decode([String: String].self, from: data)
     #expect(decoded["error"] == message)
 }
-
-@Test func expiredSessionAfterRestartBecomes404SoClientsReinitialize() {
-    let notInitialized = MCP.HTTPResponse.error(statusCode: 400, .invalidRequest("Bad Request: Session not initialized"))
-    let call = Data(#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#.utf8)
-
-    // Client still holding a session ID from before the restart.
-    let stale = MCP.HTTPRequest(method: "POST", headers: ["Mcp-Session-Id": "old-session"], body: call, path: "/mcp")
-    let converted = HTTPRunner.expiredSessionResponse(for: notInitialized, request: stale)
-    #expect(converted?.statusCode == 404)
-    #expect(String(data: converted?.bodyData ?? Data(), encoding: .utf8)?.contains("expired session") == true)
-
-    // No session ID at all: a client bug, left as 400.
-    let bare = MCP.HTTPRequest(method: "POST", headers: [:], body: call, path: "/mcp")
-    #expect(HTTPRunner.expiredSessionResponse(for: notInitialized, request: bare) == nil)
-
-    // Other 400s and successes are untouched.
-    let other = MCP.HTTPResponse.error(statusCode: 400, .invalidRequest("Bad Request: Unsupported protocol version"))
-    #expect(HTTPRunner.expiredSessionResponse(for: other, request: stale) == nil)
-    #expect(HTTPRunner.expiredSessionResponse(for: .accepted(), request: stale) == nil)
-}
