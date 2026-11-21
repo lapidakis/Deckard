@@ -34,7 +34,7 @@ private final class RecordingHandler: ToolHandler, Sendable {
     let counter = CallCounter()
     let mode: Mode
 
-    enum Mode: Sendable { case ok(text: String), throwError(String) }
+    enum Mode: Sendable { case ok(text: String), throwError(String), errorResult }
 
     init(name: String, mode: Mode = .ok(text: "ok")) {
         self.name = name
@@ -50,6 +50,8 @@ private final class RecordingHandler: ToolHandler, Sendable {
         switch mode {
         case .ok(let text):
             return CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
+        case .errorResult:
+            return CallTool.Result(content: [.text(text: "invalid", annotations: nil, _meta: nil)], isError: true)
         case .throwError(let m):
             throw NSError(domain: "test", code: 0, userInfo: [NSLocalizedDescriptionKey: m])
         }
@@ -348,5 +350,58 @@ private func readAuditLines(_ url: URL) throws -> [[String: Any]] {
     try await Task.sleep(nanoseconds: 50_000_000)
     let rows = try readAuditLines(auditURL)
     #expect(rows.first?["decision"] as? String == "error")
-    #expect((rows.first?["error"] as? String)?.contains("boom") == true)
+    #expect(rows.first?["error"] as? String == "tool execution failed")
+}
+
+@Test func dispatchRedactsThrownErrorsAndOmitsPayloadFromAudit() async throws {
+    let url = tempAuditURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let (policy, _) = makePolicy(decisions: ["test.error": .allow], auditURL: url)
+    let secret = "icb_" + String(repeating: "x", count: 43)
+    let handler = RecordingHandler(name: "test.error", mode: .throwError(secret))
+    let result = await MCPHostBuilder.dispatch(params: .init(name: handler.name), handlers: [handler.name: handler],
+        auth: makeAuth(), policy: policy, middleware: [Redactor(config: .init())],
+        approval: StubApprovalGate(decision: .approved), logger: Logger(label: "test"))
+    let text = result.content.compactMap { if case .text(let s, _, _) = $0 { return s }; return nil }.joined()
+    #expect(!text.contains(secret))
+    #expect(result.isError == true)
+    let audit = try String(contentsOf: url, encoding: .utf8)
+    #expect(!audit.contains(secret))
+}
+
+@Test func dispatchAuditsReturnedToolErrorsAsErrors() async throws {
+    let url = tempAuditURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let (policy, _) = makePolicy(decisions: ["test.error": .allow], auditURL: url)
+    let handler = RecordingHandler(name: "test.error", mode: .errorResult)
+    _ = await MCPHostBuilder.dispatch(params: .init(name: handler.name), handlers: [handler.name: handler],
+        auth: makeAuth(), policy: policy, middleware: [], approval: StubApprovalGate(decision: .approved), logger: Logger(label: "test"))
+    #expect(try readAuditLines(url).last?["decision"] as? String == "error")
+}
+
+private actor RevocationState {
+    var current = true
+    func revoke() { current = false }
+}
+
+private struct RevokingApprovalGate: ApprovalGate {
+    let state: RevocationState
+    func request(_ request: ApprovalRequest) async -> ApprovalDecision {
+        await state.revoke()
+        return .approved
+    }
+}
+
+@Test func dispatchDoesNotWriteIfTokenWasRevokedDuringApproval() async throws {
+    let url = tempAuditURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let state = RevocationState()
+    let policy = PolicyPipeline(acl: .init(), profile: .init(tools: ["test.write": .approve]),
+        audit: AuditSink(url: url), isCallerCurrent: { await state.current })
+    let handler = RecordingHandler(name: "test.write")
+    let result = await MCPHostBuilder.dispatch(params: .init(name: handler.name), handlers: [handler.name: handler],
+        auth: makeAuth(), policy: policy, middleware: [], approval: RevokingApprovalGate(state: state), logger: Logger(label: "test"))
+    #expect(result.isError == true)
+    #expect(await handler.counter.calls.isEmpty)
+    #expect(try readAuditLines(url).last?["decision"] as? String == "denied")
 }

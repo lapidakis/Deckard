@@ -19,14 +19,12 @@ import Hummingbird
     #expect(HTTPRunner.extractBearer(from: fields) == "abc123")
 }
 
-@Test func extractBearerRequiresExactPrefix() {
-    var fields = HTTPFields()
-    fields.append(HTTPField(name: .authorization, value: "bearer abc123"))   // lowercase
-    // Per RFC 6750 the scheme is case-insensitive, but the bridge accepts
-    // only the canonical "Bearer " spelling deliberately — clients sending
-    // "bearer" or "BEARER" trigger the missing-token path. Documented here
-    // so the strictness is intentional.
-    #expect(HTTPRunner.extractBearer(from: fields) == nil)
+@Test func extractBearerAcceptsCaseInsensitiveScheme() {
+    for scheme in ["bearer", "BEARER", "Bearer"] {
+        var fields = HTTPFields()
+        fields.append(HTTPField(name: .authorization, value: "\(scheme) abc123"))
+        #expect(HTTPRunner.extractBearer(from: fields) == "abc123")
+    }
 }
 
 @Test func extractBearerReturnsNilWhenAbsent() {
@@ -123,4 +121,19 @@ import Hummingbird
     #expect(resp.status == .notFound)
     let ct = resp.headers[values: .contentType].joined()
     #expect(ct.contains("application/json"))
+}
+
+@Test func extractBearerRejectsEmptyOrSplitSecret() {
+    for raw in ["Bearer ", "Bearer a b", "Basic a"] {
+        var fields = HTTPFields()
+        fields.append(HTTPField(name: .authorization, value: raw))
+        #expect(HTTPRunner.extractBearer(from: fields) == nil)
+    }
+}
+
+@Test func httpErrorsEscapeJSONCharacters() throws {
+    let message = "bad \"input\"\nline\\end"
+    let data = Data(HTTPRunner.encodedError(message).utf8)
+    let decoded = try JSONDecoder().decode([String: String].self, from: data)
+    #expect(decoded["error"] == message)
 }

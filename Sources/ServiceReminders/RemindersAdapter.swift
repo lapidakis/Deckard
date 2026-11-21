@@ -184,13 +184,15 @@ public actor RemindersAdapter {
             store.fetchReminders(matching: predicate) { items in
                 let raw = items ?? []
                 let filtered = includeCompleted ? raw : raw.filter { !$0.isCompleted }
-                let sorted = filtered.sorted { a, b in
-                    let ad = Self.dueAsDate(a) ?? a.creationDate ?? Date.distantPast
-                    let bd = Self.dueAsDate(b) ?? b.creationDate ?? Date.distantPast
-                    return ad < bd
-                }
+                // Compute each sort key once: dueAsDate builds a Calendar, and
+                // the comparator runs O(n log n) times.
+                let sorted = filtered
+                    .map { (key: Self.dueAsDate($0) ?? $0.creationDate ?? Date.distantPast, item: $0) }
+                    .sorted { $0.key < $1.key }
+                    .map(\.item)
                 let bounded = Array(sorted.prefix(limit))
-                cont.resume(returning: bounded.map { Self.summarize($0, in: outputTz) })
+                let iso = Self.makeISOFormatter(tz: outputTz)
+                cont.resume(returning: bounded.map { Self.summarize($0, in: outputTz, iso: iso) })
             }
         }
     }
@@ -335,14 +337,15 @@ public actor RemindersAdapter {
     // These are static so they can run on the EventKit completion-handler
     // thread without crossing the actor boundary. They only read EKReminder
     // properties — no shared mutable state.
-    nonisolated static func summarize(_ r: EKReminder, in tz: TimeZone) -> ReminderSummary {
-        ReminderSummary(
+    nonisolated static func summarize(_ r: EKReminder, in tz: TimeZone, iso: ISO8601DateFormatter? = nil) -> ReminderSummary {
+        let iso = iso ?? makeISOFormatter(tz: tz)
+        return ReminderSummary(
             id: r.calendarItemIdentifier,
             listId: r.calendar.calendarIdentifier,
             listTitle: r.calendar.title,
             title: r.title ?? "",
             isCompleted: r.isCompleted,
-            dueDate: dueAsDate(r).map { formatISO($0, in: tz) },
+            dueDate: dueAsDate(r).map { iso.string(from: $0) },
             priority: r.priority,
             hasNotes: !(r.notes?.isEmpty ?? true),
             isRecurring: r.hasRecurrenceRules
@@ -374,10 +377,16 @@ public actor RemindersAdapter {
     }
 
     nonisolated static func formatISO(_ d: Date, in tz: TimeZone) -> String {
+        makeISOFormatter(tz: tz).string(from: d)
+    }
+
+    /// Built once per list call so large reminder lists don't allocate a
+    /// formatter per item.
+    nonisolated static func makeISOFormatter(tz: TimeZone) -> ISO8601DateFormatter {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds, .withTimeZone, .withColonSeparatorInTimeZone]
         f.timeZone = tz
-        return f.string(from: d)
+        return f
     }
 
     nonisolated private func parseISO(_ s: String) -> Date? {

@@ -4,7 +4,7 @@ A Mac-resident MCP server that proxies Apple-native services — Mail, Calendar,
 
 The bridge is built around a simple premise: an LLM agent talking to your iCloud should look more like a service account with scoped permissions than a fully-trusted user. Every call passes through the same policy pipeline (auth → ACL → redaction → injection-tagging → approval-gate → audit), and every layer is configurable per token.
 
-**Status:** **v1.0.0-beta.3 (public beta).** 43 tools across 6 services, codesigned + notarized Developer ID build, **111 unit tests** (incl. a schema validator that walks every registered tool), daemon + menubar UI with first-launch onboarding, auto-update via Sparkle (UI) and `deckard self-update` (CLI), CI on every push. Designed for personal homelab use; security model documented in [`docs/security-model.md`](docs/security-model.md). Known beta issues + roadmap in [`CHANGELOG.md`](CHANGELOG.md).
+**Status:** **v1.0.0-beta.3 (public beta).** 43 tools across 6 services, codesigned + notarized Developer ID build, **149 automated tests** (incl. a schema validator that walks every registered tool), daemon + menubar UI with first-launch onboarding, auto-update via Sparkle (UI) and `deckard self-update` (CLI), CI on every push. Designed for personal homelab use; security model documented in [`docs/security-model.md`](docs/security-model.md). Known beta issues + roadmap in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -207,4 +207,6 @@ Per-tool detail in [`docs/configuration.md`](docs/configuration.md).
 - Token CRUD in the menubar UI (creation lives in the onboarding flow; rotate / revoke / set-profile still CLI-only)
 - XPC channel from daemon to menubar UI for approval dialogs — would let `.approve` outcomes prompt remote tokens reliably without falling back to `interactive_approval = "never"`
 - Voice memo transcription via Apple Speech framework (currently agent-side STT)
-- `SessionHolder.recreate()` should drain in-flight requests before swapping the transport — closes the rare "Transport already started" race in the stale-session self-heal path
+- Validate signed-release EventKit/TCC behavior and OpenClaw interoperability before unattended calendar use; see the [calendar setup guide](docs/openclaw-calendar.md).
+
+Calendar agents: [OpenClaw setup](docs/openclaw-calendar.md) · [2026-09-05 security review](docs/reviews/2026-09-05-security-review.md).

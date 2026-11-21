@@ -10,12 +10,18 @@ import BridgeConfig
 /// written during the rename window).
 public actor AuditSink {
     private let url: URL
+    private let enabled: Bool
     private let logger: Logger
     private let encoder: JSONEncoder
     private let isoFormatter: ISO8601DateFormatter
+    /// Directories are created once per process rather than on every row
+    /// (ensureDirs does several stat/mkdir calls). Reset on failure so a
+    /// directory removed underneath us is recreated on the next write.
+    private var directoriesReady = false
 
-    public init(url: URL = BridgePaths.auditFile, logger: Logger = Logger(label: "bridge.audit")) {
+    public init(url: URL = BridgePaths.auditFile, enabled: Bool = true, logger: Logger = Logger(label: "bridge.audit")) {
         self.url = url
+        self.enabled = enabled
         self.logger = logger
         let enc = JSONEncoder()
         enc.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
@@ -26,19 +32,26 @@ public actor AuditSink {
     }
 
     public func record(_ event: AuditEvent) {
+        guard enabled else { return }
         do {
-            try BridgePaths.ensureDirs()
-            let data = try encoder.encode(event) + Data([0x0A]) // newline
-            if !FileManager.default.fileExists(atPath: url.path) {
-                FileManager.default.createFile(atPath: url.path, contents: nil)
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            if !directoriesReady {
+                if url == BridgePaths.auditFile { try BridgePaths.ensureDirs() }
+                else { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true) }
+                directoriesReady = true
             }
-            let handle = try FileHandle(forWritingTo: url)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
-            try handle.synchronize()
+            try FileLock.withExclusiveAccess(to: url.appendingPathExtension("lock")) {
+                let data = try encoder.encode(event) + Data([0x0A]) // newline
+                if !FileManager.default.fileExists(atPath: url.path) {
+                    try PrivateFile.write(Data(), to: url)
+                }
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: data)
+                try handle.synchronize()
+            }
         } catch {
+            directoriesReady = false
             logger.error("Audit write failed: \(error)")
         }
     }
@@ -55,6 +68,18 @@ public actor AuditSink {
     /// no concurrent `record` call can interleave.
     @discardableResult
     public func prune(retentionDays: Int) -> (kept: Int, removed: Int) {
+        guard enabled, FileManager.default.fileExists(atPath: url.path) else { return (0, 0) }
+        do {
+            return try FileLock.withExclusiveAccess(to: url.appendingPathExtension("lock")) {
+                pruneLocked(retentionDays: retentionDays)
+            }
+        } catch {
+            logger.error("Audit prune lock unavailable")
+            return (0, 0)
+        }
+    }
+
+    private func pruneLocked(retentionDays: Int) -> (kept: Int, removed: Int) {
         guard retentionDays > 0 else { return (0, 0) }
         guard FileManager.default.fileExists(atPath: url.path) else { return (0, 0) }
         let cutoff = Date().addingTimeInterval(-Double(retentionDays) * 86_400)
@@ -70,14 +95,14 @@ public actor AuditSink {
 
         var keptLines: [Substring] = []
         var removed = 0
+        let decoder = JSONDecoder()
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            // Parse only the ts field — JSON-aware extraction without decoding
-            // the full event. Format: {"...","ts":"YYYY-MM-DD..."} (sortedKeys
-            // means ts is somewhere in the line as `"ts":"..."`).
-            if let ts = Self.extractTs(from: line), ts >= cutoffStr {
-                keptLines.append(line)
-            } else {
+            // Decode JSON before reading ts so escaped content cannot impersonate a field.
+            if let ts = Self.extractTs(from: line, decoder: decoder), let date = isoFormatter.date(from: ts), date < cutoff {
                 removed += 1
+            } else {
+                // Preserve malformed/unknown timestamps as forensic evidence.
+                keptLines.append(line)
             }
         }
 
@@ -85,8 +110,7 @@ public actor AuditSink {
 
         let newContent = keptLines.joined(separator: "\n") + (keptLines.isEmpty ? "" : "\n")
         do {
-            try newContent.write(to: url, atomically: true, encoding: .utf8)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try PrivateFile.write(Data(newContent.utf8), to: url)
         } catch {
             logger.error("Audit prune: write failed (no entries dropped): \(error)")
             return (keptLines.count + removed, 0)
@@ -95,11 +119,12 @@ public actor AuditSink {
         return (keptLines.count, removed)
     }
 
-    private static func extractTs(from line: Substring) -> String? {
-        // Look for `"ts":"` then capture until the next `"`.
-        guard let tsRange = line.range(of: "\"ts\":\"") else { return nil }
-        let after = line[tsRange.upperBound...]
-        guard let endQuote = after.firstIndex(of: "\"") else { return nil }
-        return String(after[..<endQuote])
+    /// Decodes only `ts` (a real JSON parse, so escaped content elsewhere in
+    /// the row cannot impersonate the field) without materializing the rest
+    /// of the row as a dictionary — prune touches every line in the file.
+    private struct TimestampOnly: Decodable { let ts: String? }
+
+    private static func extractTs(from line: Substring, decoder: JSONDecoder) -> String? {
+        try? decoder.decode(TimestampOnly.self, from: Data(line.utf8)).ts
     }
 }

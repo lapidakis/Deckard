@@ -60,7 +60,8 @@ public struct ConfigStore: Sendable {
     }
 
     public func write(_ config: Config) throws {
-        try BridgePaths.ensureDirs()
+        if url == BridgePaths.configFile { try BridgePaths.ensureDirs() }
+        else { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true) }
         let body: String
         do {
             body = try TOMLEncoder().encode(config)
@@ -75,14 +76,10 @@ public struct ConfigStore: Sendable {
             """
         let full = header + body
         do {
-            try full.write(to: url, atomically: true, encoding: .utf8)
-            try setOwnerOnlyPermissions(url: url)
+            try PrivateFile.write(Data(full.utf8), to: url)
         } catch {
             throw ConfigError.write(url, underlying: error)
         }
     }
 
-    private func setOwnerOnlyPermissions(url: URL) throws {
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-    }
 }

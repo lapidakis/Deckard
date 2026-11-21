@@ -51,7 +51,8 @@ public struct DrivePath: Sendable, Equatable {
     }
 
     /// Resolve a caller-supplied relative path. Empty / "." / "/" all map to the root itself.
-    public static func resolve(_ relative: String) throws -> DrivePath {
+    public static func resolve(_ relative: String, root: URL = iCloudRoot) throws -> DrivePath {
+        guard !relative.contains("\0") else { throw DrivePathError.traversal(relative) }
         let trimmed = relative.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleaned: String
         if trimmed.isEmpty || trimmed == "." || trimmed == "/" {
@@ -80,7 +81,6 @@ public struct DrivePath: Sendable, Equatable {
         }
         let canonicalRel = stack.joined(separator: "/")
 
-        let root = iCloudRoot
         let rootPath = root.standardizedFileURL.path
         // Don't require the root to exist here — `resolve` is pure path
         // canonicalization and is exercised by unit tests on machines
@@ -99,15 +99,15 @@ public struct DrivePath: Sendable, Equatable {
             targetURL = URL(fileURLWithPath: targetPath)
         }
 
-        // Symlink defense: if the target exists, verify the link-resolved path
-        // is also under root. Non-existent targets (fresh writes) skip this —
-        // the parent dir will be checked at write time.
-        if FileManager.default.fileExists(atPath: targetPath) {
-            let canonicalRoot = (rootPath as NSString).resolvingSymlinksInPath
-            let canonicalTarget = (targetPath as NSString).resolvingSymlinksInPath
-            guard canonicalTarget == canonicalRoot
-                || canonicalTarget.hasPrefix(canonicalRoot + "/")
-            else {
+        // Check every existing component, including dangling symlinks and
+        // parents of new files, before an adapter can create directories.
+        // Reject links within the root too: otherwise an allowed write prefix
+        // could alias a different subtree inside iCloud Drive.
+        var componentURL = root
+        for component in stack {
+            componentURL.appendPathComponent(component)
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: componentURL.path),
+               attrs[.type] as? FileAttributeType == .typeSymbolicLink {
                 throw DrivePathError.traversal(relative)
             }
         }

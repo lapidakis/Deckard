@@ -36,27 +36,56 @@ public struct Redactor: ResultMiddleware {
         request: PolicyRequest
     ) -> CallTool.Result {
         guard enabled, !rules.isEmpty else { return result }
-        return mapTextContent(result) { redact($0) }
+        return mapTextContent(result) { text in
+            // Service tools encode objects as JSON text. Redact decoded string
+            // values so escaped newlines/quotes cannot bypass a rule or let a
+            // greedy rule consume JSON delimiters.
+            if let data = text.data(using: .utf8),
+               let object = try? JSONSerialization.jsonObject(with: data),
+               let encoded = try? JSONSerialization.data(
+                   withJSONObject: redactJSON(object), options: [.sortedKeys, .withoutEscapingSlashes]),
+               let json = String(data: encoded, encoding: .utf8) {
+                return json
+            }
+            return redact(text)
+        }
+    }
+
+    private func redactJSON(_ value: Any) -> Any {
+        if let text = value as? String { return redact(text) }
+        if let array = value as? [Any] { return array.map { redactJSON($0) } }
+        if let object = value as? [String: Any] {
+            // drive.read / voice_memo.read_audio return binary as
+            // {"encoding":"base64","content":"..."}. Scanning that blob is
+            // both slow (tens of MB through ~25 regexes) and harmful: rules
+            // like twilio_sid can match inside base64 and corrupt the bytes.
+            // A secret can't be recognized inside base64 anyway.
+            let isBase64 = (object["encoding"] as? String)?.lowercased() == "base64"
+            var out: [String: Any] = [:]
+            out.reserveCapacity(object.count)
+            for (key, child) in object {
+                out[key] = (isBase64 && key == "content") ? child : redactJSON(child)
+            }
+            return out
+        }
+        return value
     }
 
     func redact(_ s: String) -> String {
-        var out = s
+        // One mutable buffer for all rules: replacing match-by-match on an
+        // immutable NSString copied the whole string per match (quadratic on
+        // content with many hits). The template is escaped so a rule name can
+        // never be interpreted as a `$1` back-reference.
+        let out = NSMutableString(string: s)
         for (name, r) in rules {
-            // Recompute length per rule — earlier rules may have mutated `out`.
-            let nsBefore = out as NSString
-            let matches = r.matches(
+            r.replaceMatches(
                 in: out,
                 options: [],
-                range: NSRange(location: 0, length: nsBefore.length)
+                range: NSRange(location: 0, length: out.length),
+                withTemplate: NSRegularExpression.escapedTemplate(for: "[REDACTED:\(name)]")
             )
-            // Reverse iteration keeps earlier match ranges valid as we replace later ones.
-            for m in matches.reversed() {
-                let ns = out as NSString
-                guard m.range.location + m.range.length <= ns.length else { continue }
-                out = ns.replacingCharacters(in: m.range, with: "[REDACTED:\(name)]")
-            }
         }
-        return out
+        return out as String
     }
 
     /// Built-in rule set. Names are stable so users can disable specific ones.
@@ -72,7 +101,8 @@ public struct Redactor: ResultMiddleware {
         ("slack_token",      #"(?<!\w)xox[baprs]-[A-Za-z0-9-]{10,}(?!\w)"#),
         ("bearer_header",    #"(?i)\b(authorization|bearer|x-api-key|api[_-]?key)\s*[:= ]\s*[A-Za-z0-9_\.\-]{20,}"#),
         ("ssn",              #"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)"#),
-        ("private_key",      #"-----BEGIN (RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----"#),
+        ("private_key",      #"(?s)-----BEGIN ((?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY)-----.*?(?:-----END \1-----|$)"#),
+        ("deckard_token",    #"(?<!\w)icb_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])"#),
         ("jwt",              #"\beyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b"#),
         ("google_api_key",   #"\bAIza[0-9A-Za-z_-]{35}\b"#),
         ("gcp_service_acct", #""type"\s*:\s*"service_account""#),

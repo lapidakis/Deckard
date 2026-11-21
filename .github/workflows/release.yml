@@ -43,9 +43,13 @@ concurrency:
 jobs:
   release:
     name: Build, sign, notarize, package
-    runs-on: macos-15
+    # The pinned dependencies need Swift tools 6.4 (swift-collections 1.7.x,
+    # Hummingbird 2.29), which only Xcode 27 ships. `xcode-27` is GitHub's
+    # runner image for it; pin 27.2 so CI matches local builds.
+    runs-on: xcode-27
 
     env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       DECKARD_BUNDLE_ID: ${{ secrets.DECKARD_BUNDLE_ID || 'com.lapidakis.deckard' }}
       DECKARD_UI_BUNDLE_ID: ${{ secrets.DECKARD_UI_BUNDLE_ID || 'com.lapidakis.deckard.ui' }}
       DECKARD_ED_PUBLIC_KEY: ${{ secrets.DECKARD_ED_PUBLIC_KEY }}
@@ -60,12 +64,15 @@ jobs:
 
       - name: Resolve tag
         id: tag
+        env:
+          REQUESTED_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          TAG="${REQUESTED_TAG:-${GITHUB_REF#refs/tags/}}"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+            echo "Invalid release tag" >&2
+            exit 1
           fi
+          echo "name=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Show toolchain versions
         run: swift --version && sw_vers

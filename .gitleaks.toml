@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[rules]]
+id = "deckard-bearer"
+description = "Deckard bearer credential"
+regex = '''\bicb_[A-Za-z0-9_-]{43}\b'''
+entropy = 3.5
+keywords = ["icb_"]

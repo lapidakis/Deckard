@@ -252,8 +252,15 @@ private func applyUpdate(release: ReleaseMeta, latest: String) async throws {
     try runExternal(["/usr/bin/tar", "-xzf", tarball.path, "-C", extracted.path])
 
     let newBinary = extracted.appendingPathComponent("deckard")
-    guard FileManager.default.fileExists(atPath: newBinary.path) else {
+    // lstat, not fileExists: a symlink named `deckard` would be verified via
+    // its target but then installed as the link itself by copyItem, pointing
+    // outside the verified temp directory.
+    let attrs = try? FileManager.default.attributesOfItem(atPath: newBinary.path)
+    guard let kind = attrs?[.type] as? FileAttributeType else {
         throw RuntimeError("extracted tarball is missing 'deckard'")
+    }
+    guard kind == .typeRegular else {
+        throw RuntimeError("extracted 'deckard' is not a regular file (\(kind.rawValue)); refusing to apply")
     }
 
     print("Verifying codesign…")
@@ -336,8 +343,15 @@ private func verifySHA(tarball: URL, sidecar: URL) throws {
     }
 }
 
+/// Designated requirement for the release binary: Apple-anchored chain, our
+/// signing identifier, and our team in the leaf certificate. A bare
+/// TeamIdentifier check would accept any other binary the team ever signed.
+let selfUpdateRequirement =
+    "=anchor apple generic and identifier \"\(BridgePaths.bundleID)\" and certificate leaf[subject.OU] = \"\(expectedTeamID)\""
+
 private func verifyCodesign(binary: URL) throws {
-    let strict = runExternalCapturing(["/usr/bin/codesign", "--verify", "--strict", "--verbose=2", binary.path])
+    let strict = runExternalCapturing(["/usr/bin/codesign", "--verify", "--strict", "--verbose=2",
+                                       "-R", selfUpdateRequirement, binary.path])
     guard strict.exitCode == 0 else {
         throw RuntimeError("codesign --verify failed (\(strict.exitCode)): \(strict.combined)")
     }

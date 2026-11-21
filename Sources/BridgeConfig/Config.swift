@@ -252,8 +252,7 @@ public struct ACLConfig: Codable, Sendable, Equatable {
     public var tools: [String: ACLDecision]
     /// Named profiles that tokens can reference. When a token has a non-nil
     /// `profile` field, the bridge uses `profiles[name]` instead of this
-    /// top-level config. Falls back to top-level when the profile name is
-    /// unknown so a typo doesn't lock out a caller.
+    /// top-level config. Unknown profile names fail closed at startup.
     public var profiles: [String: ProfileConfig]
 
     public init(

@@ -74,7 +74,7 @@ struct Auth: AsyncParsableCommand {
                 let entry = try await registry.add(label: label, profile: profile, description: description)
                 print("Created token '\(label)'.")
                 if let p = entry.profile { print("Profile: \(p)") }
-                print("Secret (will not be shown again):")
+                print("Secret (retrieve later with `deckard auth show`):")
                 print(entry.secret)
                 print()
                 print("To use from an MCP client:")
@@ -91,7 +91,7 @@ struct Auth: AsyncParsableCommand {
     struct Revoke: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "revoke",
-            abstract: "Remove a token by label. Existing connections continue until the daemon restarts."
+            abstract: "Remove a token by label. New requests are rejected immediately, including existing sessions."
         )
 
         @Argument(help: "Label to revoke.")
@@ -102,14 +102,14 @@ struct Auth: AsyncParsableCommand {
             try await registry.ensureLoaded()
             try await registry.revoke(label: label)
             print("Revoked token '\(label)'.")
-            print("Run `deckard restart` to fully drop in-memory holders for this token.")
+            print("New requests using this token are now rejected. Already-running operations may finish.")
         }
     }
 
     struct Rotate: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             commandName: "rotate",
-            abstract: "Generate a new secret for an existing token. Old secret stops working immediately on disk; in-memory holder still serves until daemon restart."
+            abstract: "Generate a new secret for an existing token. Old secret is rejected on the next request. Restart to enable the new secret."
         )
 
         @Argument(help: "Label to rotate.")
@@ -120,7 +120,7 @@ struct Auth: AsyncParsableCommand {
             try await registry.ensureLoaded()
             let entry = try await registry.rotate(label: label)
             print("Rotated token '\(label)'.")
-            print("New secret (will not be shown again):")
+            print("New secret (retrieve later with `deckard auth show`):")
             print(entry.secret)
             print()
             print("Run `deckard restart` so the new secret takes effect.")
@@ -178,7 +178,7 @@ struct Auth: AsyncParsableCommand {
                 } else {
                     print("Cleared profile on '\(label)' (now uses global [acl]).")
                 }
-                print("Run `deckard restart` so the change takes effect.")
+                print("The old session is now blocked. Run `deckard restart` to enable the new profile.")
             } catch let TokenRegistry.RegistryError.notFound(name) {
                 FileHandle.standardError.write(Data("Token label '\(name)' not found\n".utf8))
                 throw ExitCode(1)

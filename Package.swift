@@ -65,6 +65,7 @@ let package = Package(
             name: "ServiceMail",
             dependencies: [
                 "BridgeCore",
+                "BridgeConfig",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
             ],

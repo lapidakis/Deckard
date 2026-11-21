@@ -10,9 +10,11 @@ public struct TokenSessions: Sendable {
     public struct Entry: Sendable {
         public let label: String
         public let holder: SessionHolder
-        public init(label: String, holder: SessionHolder) {
+        public let isCurrent: @Sendable () async -> Bool
+        public init(label: String, holder: SessionHolder, isCurrent: @escaping @Sendable () async -> Bool = { true }) {
             self.label = label
             self.holder = holder
+            self.isCurrent = isCurrent
         }
     }
 

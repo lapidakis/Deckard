@@ -102,6 +102,7 @@ struct GetContactTool: ToolHandler {
 
 struct ListGroupsTool: ToolHandler {
     let name = "contacts.list_groups"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "contacts.list_groups",
         description: "List every contact group with its id, name, and current member count.",
@@ -176,6 +177,7 @@ private func decodeLabeledArray(_ v: Value?) -> [LabeledString] {
 
 struct CreateContactTool: ToolHandler, ApprovalSummarizing {
     let name = "contacts.create"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "contacts.create",
         description: """
@@ -254,6 +256,7 @@ struct CreateContactTool: ToolHandler, ApprovalSummarizing {
 
 struct UpdateContactTool: ToolHandler, ApprovalSummarizing {
     let name = "contacts.update"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "contacts.update",
         description: """
@@ -269,15 +272,15 @@ struct UpdateContactTool: ToolHandler, ApprovalSummarizing {
             "type": .string("object"),
             "properties": .object([
                 "id":           .object(["type": .string("string")]),
-                "given_name":   .object(["type": .string("string")]),
-                "family_name":  .object(["type": .string("string")]),
-                "organization": .object(["type": .string("string")]),
-                "job_title":    .object(["type": .string("string")]),
-                "department":   .object(["type": .string("string")]),
+                "given_name":   .object(["type": .array([.string("string"), .string("null")])]),
+                "family_name":  .object(["type": .array([.string("string"), .string("null")])]),
+                "organization": .object(["type": .array([.string("string"), .string("null")])]),
+                "job_title":    .object(["type": .array([.string("string"), .string("null")])]),
+                "department":   .object(["type": .array([.string("string"), .string("null")])]),
                 "phones":       .object(["type": .string("array"), "items": labeledValueSchema]),
                 "emails":       .object(["type": .string("array"), "items": labeledValueSchema]),
                 "urls":         .object(["type": .string("array"), "items": labeledValueSchema]),
-                "note":         .object(["type": .string("string")]),
+                "note":         .object(["type": .array([.string("string"), .string("null")])]),
             ]),
             "required": .array([.string("id")]),
             "additionalProperties": .bool(false),
@@ -360,6 +363,7 @@ struct DeleteContactTool: ToolHandler, ApprovalSummarizing {
 
 struct SetGroupsTool: ToolHandler, ApprovalSummarizing {
     let name = "contacts.set_groups"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "contacts.set_groups",
         description: """

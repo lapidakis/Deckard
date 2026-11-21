@@ -73,7 +73,7 @@ Most of the wall-clock time is `notarytool submit --wait` (Apple's notarization 
 Watch progress at **Actions → Release** in the GitHub UI. If the build fails:
 
 - **Cert import fails**: confirm `APPLE_DEVELOPER_CERT_BASE64` decodes cleanly. Re-export the .p12 and re-encode if in doubt.
-- **`swift build` fails on macos-15**: usually a Swift version mismatch; the runner image moves slowly but eventually catches up. Pin the runner image with `runs-on: macos-15-large` if you need a specific Xcode.
+- **`swift build` fails on the runner**: usually a Swift version mismatch. CI and release run on the `xcode-27` image with `DEVELOPER_DIR` pinned to Xcode 27.2, because the pinned dependencies need Swift tools 6.4. If a dependency update raises that floor, bump the pinned Xcode in both workflows.
 - **Notarization rejected**: read the log via `xcrun notarytool log <submission-id> --apple-id ... --team-id ... --password ...`. Most common causes — missing hardened runtime flag (`--options runtime`), a mis-set entitlement, or a non-stable timestamp.
 - **`gh release create` fails**: the workflow needs `permissions: contents: write` (already set in the YAML). If you fork and remove that line, the upload will 403.
 

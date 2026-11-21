@@ -1,0 +1,15 @@
+# Merge this named profile into Deckard's config.toml; do not replace your file.
+[acl.profiles.openclaw-calendar]
+default = "deny"
+interactive_approval = "always"
+
+[acl.profiles.openclaw-calendar.tools]
+"health.ping" = "allow"
+"calendar.list_calendars" = "allow"
+"calendar.list_events" = "allow"
+"calendar.search_events" = "allow"
+"calendar.get_event" = "allow"
+"calendar.now" = "allow"
+"calendar.create_event" = "approve"
+"calendar.update_event" = "approve"
+"calendar.delete_event" = "approve"

@@ -21,6 +21,7 @@ public struct RemindersTools: ToolProvider {
 
 struct ListListsTool: ToolHandler {
     let name = "reminders.list_lists"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "reminders.list_lists",
         description: "List every Reminders list. Pass writable_only=true to filter to lists that accept new items.",
@@ -114,6 +115,7 @@ struct GetReminderTool: ToolHandler {
 
 struct CreateReminderTool: ToolHandler, ApprovalSummarizing {
     let name = "reminders.create_reminder"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "reminders.create_reminder",
         description: """
@@ -168,6 +170,7 @@ struct CreateReminderTool: ToolHandler, ApprovalSummarizing {
 
 struct UpdateReminderTool: ToolHandler, ApprovalSummarizing {
     let name = "reminders.update_reminder"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "reminders.update_reminder",
         description: "Update fields on an existing reminder. Only fields supplied are changed. Pass null to clear notes / due.",
@@ -176,8 +179,8 @@ struct UpdateReminderTool: ToolHandler, ApprovalSummarizing {
             "properties": .object([
                 "id":       .object(["type": .string("string")]),
                 "title":    .object(["type": .string("string")]),
-                "notes":    .object(["type": .string("string")]),
-                "due":      .object(["type": .string("string")]),
+                "notes":    .object(["type": .array([.string("string"), .string("null")])]),
+                "due":      .object(["type": .array([.string("string"), .string("null")])]),
                 "priority": .object(["type": .string("integer")]),
             ]),
             "required": .array([.string("id")]),
@@ -225,6 +228,7 @@ struct UpdateReminderTool: ToolHandler, ApprovalSummarizing {
 
 struct CompleteReminderTool: ToolHandler {
     let name = "reminders.complete_reminder"
+    let returnsUntrustedContent = true
     let spec = Tool(
         name: "reminders.complete_reminder",
         description: "Mark a reminder as completed. Idempotent. Returns the updated reminder.",

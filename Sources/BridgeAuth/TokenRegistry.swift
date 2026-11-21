@@ -53,6 +53,10 @@ public actor TokenRegistry {
     private let logger: Logger
     private var entries: [String: Entry] = [:]
     private var loaded = false
+    /// Last parsed registry plus the stat identity it was read under, so
+    /// `isCurrent` (called several times per tool call) does not re-read and
+    /// re-decode TOML when the file is unchanged.
+    private var currentSnapshot: (stamp: FileStamp, tokens: [String: Entry])?
 
     public init(
         url: URL = BridgePaths.tokensFile,
@@ -68,27 +72,30 @@ public actor TokenRegistry {
     /// single-token file if needed. Idempotent.
     public func ensureLoaded() throws {
         if loaded { return }
-        try BridgePaths.ensureDirs()
+        if url == BridgePaths.tokensFile { try BridgePaths.ensureDirs() }
+        else { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true) }
 
-        if FileManager.default.fileExists(atPath: url.path) {
-            try loadFromDisk()
-        } else if FileManager.default.fileExists(atPath: legacyTokenURL.path) {
-            try migrateLegacyToken()
-        } else {
-            // Bootstrap: create a "default" token so the bridge has at least
-            // one bearer that an MCP client can use immediately.
-            let entry = Entry(
-                secret: Self.generateSecret(),
-                created: Self.nowISO(),
-                profile: nil,
-                description: "Bootstrap default token (created on first run)"
-            )
-            entries["default"] = entry
-            try persist()
-            // Do NOT log the secret. Same threat model as tokens.toml (mode 0600);
-            // stderr.log is created with the user's umask (typically 0644) so
-            // anything emitted here is more world-readable than the registry.
-            logger.info("Bootstrap token created with label 'default'. Run `deckard auth show default` to retrieve.")
+        try FileLock.withExclusiveAccess(to: lockURL) {
+            if FileManager.default.fileExists(atPath: url.path) {
+                try loadFromDisk()
+            } else if FileManager.default.fileExists(atPath: legacyTokenURL.path) {
+                try migrateLegacyToken()
+            } else {
+                // Bootstrap: create a "default" token so the bridge has at least
+                // one bearer that an MCP client can use immediately.
+                let entry = Entry(
+                    secret: Self.generateSecret(),
+                    created: Self.nowISO(),
+                    profile: nil,
+                    description: "Bootstrap default token (created on first run)"
+                )
+                entries["default"] = entry
+                try persist()
+                // Do NOT log the secret. Same threat model as tokens.toml (mode 0600);
+                // stderr.log is created with the user's umask (typically 0644) so
+                // anything emitted here is more world-readable than the registry.
+                logger.info("Bootstrap token created with label 'default'. Run `deckard auth show default` to retrieve.")
+            }
         }
         loaded = true
     }
@@ -97,9 +104,56 @@ public actor TokenRegistry {
         do {
             let text = try String(contentsOf: url, encoding: .utf8)
             let decoded = try TOMLDecoder().decode(RegistryFile.self, from: text)
+            try Self.validate(decoded.tokens)
             self.entries = decoded.tokens
         } catch {
-            throw RegistryError.loadFailed("\(error)")
+            throw RegistryError.loadFailed("invalid or unreadable token registry")
+        }
+    }
+
+    /// Re-read without bootstrapping or migration. Revocation, rotation, a
+    /// changed profile, or an unreadable/missing registry invalidates a bound
+    /// session on its next request, including after an approval dialog.
+    ///
+    /// The parsed file is reused only while stat reports the identical device,
+    /// inode, size and nanosecond mtime/ctime. Writers replace the file by
+    /// atomic rename (new inode), and any in-place edit bumps ctime, so a
+    /// revocation is still seen on the very next request. stat runs before the
+    /// read: if the file changes in between, the snapshot is stored under the
+    /// older stamp and simply re-read next time.
+    public func isCurrent(label: String, entry: Entry) -> Bool {
+        guard let stamp = FileStamp(path: url.path) else {
+            currentSnapshot = nil
+            return false
+        }
+        let tokens: [String: Entry]
+        if let snapshot = currentSnapshot, snapshot.stamp == stamp {
+            tokens = snapshot.tokens
+        } else {
+            do {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                let file = try TOMLDecoder().decode(RegistryFile.self, from: text)
+                try Self.validate(file.tokens)
+                tokens = file.tokens
+                currentSnapshot = (stamp, tokens)
+            } catch {
+                currentSnapshot = nil
+                return false
+            }
+        }
+        guard let current = tokens[label] else { return false }
+        return Self.constantTimeEquals(current.secret, entry.secret)
+            && current.profile == entry.profile
+    }
+
+    private static func validate(_ entries: [String: Entry]) throws {
+        var secrets: Set<String> = []
+        for entry in entries.values {
+            guard !entry.secret.isEmpty,
+                  entry.secret.unicodeScalars.allSatisfy({ (33...126).contains($0.value) }),
+                  secrets.insert(entry.secret).inserted else {
+                throw RegistryError.loadFailed("secrets must be nonempty, unique, and contain no whitespace/control characters")
+            }
         }
     }
 
@@ -139,45 +193,66 @@ public actor TokenRegistry {
     }
 
     public func add(label: String, profile: String?, description: String) throws -> Entry {
-        if entries[label] != nil {
-            throw RegistryError.alreadyExists(label)
+        return try mutate { registry in
+            if registry.entries[label] != nil {
+                throw RegistryError.alreadyExists(label)
+            }
+            let entry = Entry(
+                secret: Self.generateSecret(),
+                created: Self.nowISO(),
+                profile: profile,
+                description: description
+            )
+            registry.entries[label] = entry
+            return entry
         }
-        let entry = Entry(
-            secret: Self.generateSecret(),
-            created: Self.nowISO(),
-            profile: profile,
-            description: description
-        )
-        entries[label] = entry
-        try persist()
-        return entry
     }
 
     public func revoke(label: String) throws {
-        guard entries.removeValue(forKey: label) != nil else {
-            throw RegistryError.notFound(label)
+        return try mutate { registry in
+            guard registry.entries.removeValue(forKey: label) != nil else {
+                throw RegistryError.notFound(label)
+            }
         }
-        try persist()
     }
 
     public func rotate(label: String) throws -> Entry {
-        guard var entry = entries[label] else {
-            throw RegistryError.notFound(label)
+        return try mutate { registry in
+            guard var entry = registry.entries[label] else {
+                throw RegistryError.notFound(label)
+            }
+            entry.secret = Self.generateSecret()
+            entry.created = Self.nowISO()
+            registry.entries[label] = entry
+            return entry
         }
-        entry.secret = Self.generateSecret()
-        entry.created = Self.nowISO()
-        entries[label] = entry
-        try persist()
-        return entry
     }
 
     public func setProfile(label: String, profile: String?) throws {
-        guard var entry = entries[label] else {
-            throw RegistryError.notFound(label)
+        return try mutate { registry in
+            guard var entry = registry.entries[label] else {
+                throw RegistryError.notFound(label)
+            }
+            entry.profile = profile
+            registry.entries[label] = entry
         }
-        entry.profile = profile
-        entries[label] = entry
-        try persist()
+    }
+
+    private var lockURL: URL { url.appendingPathExtension("lock") }
+
+    private func mutate<T>(_ body: @Sendable (isolated TokenRegistry) throws -> T) throws -> T {
+        try FileLock.withExclusiveAccess(to: lockURL) {
+            try loadFromDisk()
+            let original = entries
+            do {
+                let value = try body(self)
+                try persist()
+                return value
+            } catch {
+                entries = original
+                throw error
+            }
+        }
     }
 
     private func persist() throws {
@@ -189,8 +264,8 @@ public actor TokenRegistry {
                 # Manage via `deckard auth` subcommands rather than editing.
 
                 """
-            try (header + body).write(to: url, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try Self.validate(entries)
+            try PrivateFile.write(Data((header + body).utf8), to: url)
         } catch let e as RegistryError {
             throw e
         } catch {
@@ -228,5 +303,24 @@ public actor TokenRegistry {
         var diff: UInt8 = 0
         for i in 0..<ab.count { diff |= ab[i] ^ bb[i] }
         return diff == 0
+    }
+}
+
+/// File identity used to decide whether a cached parse is still valid.
+struct FileStamp: Equatable, Sendable {
+    let device: Int64
+    let inode: UInt64
+    let size: Int64
+    let mtimeSec: Int, mtimeNsec: Int
+    let ctimeSec: Int, ctimeNsec: Int
+
+    init?(path: String) {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return nil }
+        device = Int64(st.st_dev)
+        inode = UInt64(st.st_ino)
+        size = Int64(st.st_size)
+        mtimeSec = st.st_mtimespec.tv_sec; mtimeNsec = st.st_mtimespec.tv_nsec
+        ctimeSec = st.st_ctimespec.tv_sec; ctimeNsec = st.st_ctimespec.tv_nsec
     }
 }

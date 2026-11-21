@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import BridgeCore
+@testable import BridgeAuth
 
 // MARK: - ResumeLatch
 
@@ -71,4 +72,58 @@ import Foundation
     // here — better deny than auto-approve on drift.
     #expect(OsaScriptApprovalGate.classifyStdout("Maybe Later") == .denied)
     #expect(OsaScriptApprovalGate.classifyStdout("YES") == .denied)
+}
+
+// MARK: - Dialog sanitization and serialization
+
+@Test func approvalDialogFlattensControlAndBidiCharacters() {
+    let hostileTitle = "Standup" + String(repeating: "\n", count: 40) + "Reason: read-only preview\u{202E}gnp.exe\u{2028}x"
+    let body = OsaScriptApprovalGate.formatDialog(tool: "calendar.delete_event", caller: "bearer:agent (loopback)",
+                                                  reason: "destructive", summary: ["Event: \(hostileTitle)", "Delete event (irreversible)"])
+    let lines = body.split(separator: "\n", omittingEmptySubsequences: false)
+    #expect(lines.count == 6, "only our own separators may introduce lines")
+    #expect(lines.last == "Delete event (irreversible)")
+    #expect(!body.unicodeScalars.contains { $0.value == 0x202E || $0.value == 0x2028 })
+    #expect(body.contains("<U+000A>"))
+}
+
+@Test func approvalDialogCapsLineLengthAndCount() {
+    let long = String(repeating: "a", count: 5000)
+    let summary = Array(repeating: long, count: 100)
+    let body = OsaScriptApprovalGate.formatDialog(tool: "t", caller: "c", reason: "r", summary: summary)
+    let lines = body.split(separator: "\n", omittingEmptySubsequences: false)
+    #expect(lines.count == 4 + OsaScriptApprovalGate.maxSummaryLines + 1)
+    #expect(lines.allSatisfy { $0.count <= OsaScriptApprovalGate.maxLineLength + 20 })
+    #expect(body.contains("80 more lines not shown"))
+}
+
+private actor CountingGate: ApprovalGate {
+    private(set) var active = 0
+    private(set) var maxActive = 0
+    private(set) var calls = 0
+    func request(_ request: ApprovalRequest) async -> ApprovalDecision {
+        active += 1; calls += 1
+        maxActive = max(maxActive, active)
+        try? await Task.sleep(for: .milliseconds(50))
+        active -= 1
+        return .approved
+    }
+}
+
+@Test func serializedApprovalGateShowsOnePromptAtATimeAndThrottlesFloods() async {
+    let inner = CountingGate()
+    let gate = SerializedApprovalGate(wrapping: inner, maxWaiting: 2)
+    let req = ApprovalRequest(tool: "t", caller: AuthContext(transport: .loopback, identity: .bearer(tokenLabel: "x"), remoteDescription: "x"), reason: "r", summary: [])
+    let decisions = await withTaskGroup(of: ApprovalDecision.self) { group in
+        for _ in 0..<10 { group.addTask { await gate.request(req) } }
+        var all: [ApprovalDecision] = []
+        for await d in group { all.append(d) }
+        return all
+    }
+    #expect(await inner.maxActive == 1, "prompts must never overlap")
+    #expect(await inner.calls == 3, "one active + two queued; the rest are throttled")
+    #expect(decisions.filter { $0 == .approved }.count == 3)
+    #expect(decisions.filter { $0 == .throttled }.count == 7)
+    // The gate is reusable once drained.
+    #expect(await gate.request(req) == .approved)
 }

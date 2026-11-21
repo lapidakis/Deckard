@@ -245,7 +245,10 @@ public actor MailAdapter {
 
     private func parseSummaries(_ out: String) -> [MessageSummary] {
         records(out).compactMap { fields in
-            guard fields.count >= 8 else { return nil }
+            // Exactly 8 fields and a numeric id: separators are stripped from
+            // message text in the script, so anything else is malformed or
+            // forged and must not become a record the agent can act on.
+            guard fields.count == 8, Int(fields[0]) != nil else { return nil }
             return MessageSummary(
                 id: fields[0],
                 account: fields[1],
@@ -263,7 +266,7 @@ public actor MailAdapter {
         let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let fields = trimmed.split(separator: MailScripts.fieldSeparator.first!, maxSplits: 7, omittingEmptySubsequences: false).map(String.init)
-        guard fields.count >= 8 else { return nil }
+        guard fields.count == 8, Int(fields[0]) != nil else { return nil }
         let recipients = fields[5].isEmpty ? [] : fields[5].split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
         return Message(
             id: fields[0],

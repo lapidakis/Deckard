@@ -49,11 +49,13 @@ public actor DriveAdapter {
     public static let absoluteMaxDepth: Int = 32
 
     private let settings: DriveConfig
+    private let root: URL
     private let logger: Logger
     private let isoFormatter: ISO8601DateFormatter
 
-    public init(settings: DriveConfig = .init(), logger: Logger = Logger(label: "bridge.drive")) {
+    public init(settings: DriveConfig = .init(), root: URL = DrivePath.iCloudRoot, logger: Logger = Logger(label: "bridge.drive")) {
         self.settings = settings
+        self.root = root.resolvingSymlinksInPath().standardizedFileURL
         self.logger = logger
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -69,7 +71,7 @@ public actor DriveAdapter {
         limit: Int = 200,
         maxDepth: Int = DriveAdapter.defaultMaxDepth
     ) async throws -> [DriveItem] {
-        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
+        try requireRootExists(); let dp = try DrivePath.resolve(relative, root: root)
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: dp.url.path, isDirectory: &isDir) else {
             throw DriveError.notFound(dp.relativePath)
@@ -94,7 +96,7 @@ public actor DriveAdapter {
                 if let level = enumerator?.level, level >= cappedDepth {
                     enumerator?.skipDescendants()
                 }
-                if let item = makeItem(from: url, parent: dp.url, includePlaceholders: true) {
+                if let item = makeItem(from: url, parent: url.deletingLastPathComponent(), includePlaceholders: true) {
                     out.append(item)
                 }
             }
@@ -113,7 +115,7 @@ public actor DriveAdapter {
             }
             for url in sorted {
                 if out.count >= limit { break }
-                if let item = makeItem(from: url, parent: dp.url, includePlaceholders: true) {
+                if let item = makeItem(from: url, parent: url.deletingLastPathComponent(), includePlaceholders: true) {
                     out.append(item)
                 }
             }
@@ -124,7 +126,7 @@ public actor DriveAdapter {
     // MARK: - Stat
 
     public func stat(path relative: String) async throws -> DriveStat {
-        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
+        try requireRootExists(); let dp = try DrivePath.resolve(relative, root: root)
         var isDir: ObjCBool = false
         let fm = FileManager.default
         let physicalExists = fm.fileExists(atPath: dp.url.path, isDirectory: &isDir)
@@ -174,7 +176,7 @@ public actor DriveAdapter {
         maxBytes: Int = DriveAdapter.defaultMaxReadBytes,
         autoMaterialize: Bool = false
     ) async throws -> DriveContent {
-        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
+        try requireRootExists(); let dp = try DrivePath.resolve(relative, root: root)
         let fm = FileManager.default
         let cap = min(max(1, maxBytes), Self.absoluteMaxReadBytes)
 
@@ -233,7 +235,7 @@ public actor DriveAdapter {
         mode: String = "create",
         createDirs: Bool = false
     ) async throws -> DriveStat {
-        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
+        try requireRootExists(); let dp = try DrivePath.resolve(relative, root: root)
         // Block writing to the root itself.
         guard !dp.relativePath.isEmpty else {
             throw DriveError.writeRefused("cannot write to the iCloud Drive root")
@@ -247,14 +249,6 @@ public actor DriveAdapter {
 
         let fm = FileManager.default
         let parent = dp.url.deletingLastPathComponent()
-
-        if !fm.fileExists(atPath: parent.path) {
-            if createDirs {
-                try fm.createDirectory(at: parent, withIntermediateDirectories: true)
-            } else {
-                throw DriveError.notFound(dp.relativePath + " (parent dir missing; pass create_dirs=true to auto-create)")
-            }
-        }
 
         let payload: Data
         switch encoding.lowercased() {
@@ -273,11 +267,24 @@ public actor DriveAdapter {
             throw DriveError.writeRefused("write of \(payload.count) bytes exceeds limit of \(Self.absoluteMaxWriteBytes)")
         }
 
+        guard ["create", "overwrite", "append"].contains(mode.lowercased()) else {
+            throw DriveError.writeRefused("unknown mode; use create | overwrite | append")
+        }
+        if !fm.fileExists(atPath: parent.path) {
+            if createDirs {
+                try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+            } else {
+                throw DriveError.notFound(dp.relativePath + " (parent dir missing; pass create_dirs=true to auto-create)")
+            }
+        }
+
+        // Revalidate after directory creation before opening the destination.
+        _ = try DrivePath.resolve(relative, root: root)
         let exists = fm.fileExists(atPath: dp.url.path)
         switch mode.lowercased() {
         case "create":
             if exists { throw DriveError.alreadyExists(dp.relativePath) }
-            try payload.write(to: dp.url, options: .atomic)
+            try payload.write(to: dp.url, options: [.withoutOverwriting])
         case "overwrite":
             try payload.write(to: dp.url, options: .atomic)
         case "append":
@@ -311,7 +318,7 @@ public actor DriveAdapter {
         limit: Int = 100,
         maxDepth: Int = 8
     ) async throws -> [DriveItem] {
-        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
+        try requireRootExists(); let dp = try DrivePath.resolve(relative, root: root)
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: dp.url.path, isDirectory: &isDir),
               isDir.boolValue else {
@@ -331,7 +338,7 @@ public actor DriveAdapter {
             if let level = enumerator?.level, level >= cappedDepth {
                 enumerator?.skipDescendants()
             }
-            guard let item = makeItem(from: url, parent: dp.url, includePlaceholders: true) else { continue }
+            guard let item = makeItem(from: url, parent: url.deletingLastPathComponent(), includePlaceholders: true) else { continue }
             if let filter = fileTypeFilter, item.type != filter { continue }
             let nameMatches: Bool
             switch matchType {
@@ -350,8 +357,8 @@ public actor DriveAdapter {
     // MARK: - Usage
 
     public func usage() async throws -> DriveUsage {
-        try DrivePath.requireRootExists()
-        let attrs = try FileManager.default.attributesOfFileSystem(forPath: DrivePath.iCloudRoot.path)
+        try requireRootExists()
+        let attrs = try FileManager.default.attributesOfFileSystem(forPath: root.path)
         let total = (attrs[.systemSize] as? NSNumber)?.int64Value ?? 0
         let free = (attrs[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
         let used = max(0, total - free)
@@ -361,8 +368,8 @@ public actor DriveAdapter {
     // MARK: - Materialize
 
     public func materialize(path relative: String, waitSeconds: Double = 0) async throws {
-        try DrivePath.requireRootExists(); let dp = try DrivePath.resolve(relative)
-        let result = run(["/usr/bin/brctl", "download", dp.url.path])
+        try requireRootExists(); let dp = try DrivePath.resolve(relative, root: root)
+        let result = try await Subprocess.run("/usr/bin/brctl", arguments: ["download", dp.url.path], timeoutSeconds: 15)
         if result.exitCode != 0 {
             throw DriveError.brctlFailed(exitCode: result.exitCode, output: result.stdout + result.stderr)
         }
@@ -381,6 +388,12 @@ public actor DriveAdapter {
     }
 
     // MARK: - Helpers
+
+    private func requireRootExists() throws {
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            throw DrivePath.DrivePathError.rootNotFound
+        }
+    }
 
     private func checkWriteAllowed(path: String) throws {
         let prefixes = settings.writeAllowedPrefixes
@@ -426,7 +439,10 @@ public actor DriveAdapter {
         else { kind = "file" }
 
         let visiblePath: String
-        let parentRel = parent.path.replacingOccurrences(of: DrivePath.iCloudRoot.path, with: "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let rootPath = (root.path as NSString).resolvingSymlinksInPath
+        let parentPath = (parent.path as NSString).resolvingSymlinksInPath
+        guard parentPath == rootPath || parentPath.hasPrefix(rootPath + "/") else { return nil }
+        let parentRel = String(parentPath.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if parentRel.isEmpty {
             visiblePath = visibleName
         } else {
@@ -461,32 +477,4 @@ public actor DriveAdapter {
         return nil
     }
 
-    private struct CommandResult {
-        let exitCode: Int32
-        let stdout: String
-        let stderr: String
-    }
-
-    private func run(_ argv: [String]) -> CommandResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: argv[0])
-        proc.arguments = Array(argv.dropFirst())
-        let outPipe = Pipe()
-        let errPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
-        do {
-            try proc.run()
-            proc.waitUntilExit()
-            let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-            let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-            return CommandResult(
-                exitCode: proc.terminationStatus,
-                stdout: String(data: outData, encoding: .utf8) ?? "",
-                stderr: String(data: errData, encoding: .utf8) ?? ""
-            )
-        } catch {
-            return CommandResult(exitCode: -1, stdout: "", stderr: "\(error)")
-        }
-    }
 }

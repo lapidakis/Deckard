@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+import EventKit
+import MCP
+import BridgeCore
 @testable import ServiceCalendar
 
 @Test func calendarDatesParsesIso8601WithZ() throws {
@@ -97,4 +100,58 @@ import Foundation
     } catch {
         Issue.record("wrong error: \(error)")
     }
+}
+
+@Test func calendarRejectsInvalidOrAmbiguousDates() {
+    for value in ["2026-02-30", "2026-13-01", "2026-05-07junk", "2026-05-07T10:00:00",
+                  "2026-05-07T24:00:00Z", "2026-05-07T10:70:00Z", "2026-05-07T10:00:00+30:00"] {
+        #expect(throws: (any Error).self) { try CalendarDates.parse(value) }
+    }
+}
+
+@Test func calendarRejectsReversedAndUnboundedQueries() throws {
+    let start = try CalendarDates.parse("2026-05-07")
+    #expect(throws: (any Error).self) { try CalendarDates.validateRange(start: start, end: start) }
+    #expect(throws: (any Error).self) { try CalendarDates.validateRange(start: start, end: start.addingTimeInterval(-1)) }
+    #expect(throws: (any Error).self) {
+        try CalendarDates.validateRange(start: start, end: start.addingTimeInterval(367 * 86400), maximumDays: 366)
+    }
+    try CalendarDates.validateRange(start: start, end: start.addingTimeInterval(3600))
+    #expect(throws: (any Error).self) { try CalendarDates.validateTitle(" \n\t") }
+}
+
+@Test func calendarRecurrencePreservesOrdinalWeekdays() throws {
+    let rule = EKRecurrenceRule(recurrenceWith: .monthly, interval: 1,
+        daysOfTheWeek: [EKRecurrenceDayOfWeek(.monday, weekNumber: 1), EKRecurrenceDayOfWeek(.friday, weekNumber: -1)],
+        daysOfTheMonth: nil, monthsOfTheYear: nil, weeksOfTheYear: nil, daysOfTheYear: nil,
+        setPositions: nil, end: nil)
+    #expect(CalendarRecurrence.convert(rule).byDay == ["1MO", "-1FR"])
+}
+
+@Test func calendarRecurringWritesRequireOccurrence() throws {
+    #expect(throws: (any Error).self) {
+        try CalendarAdapter.requireOccurrenceSelector(isRecurring: true, occurrenceStartISO: nil)
+    }
+    try CalendarAdapter.requireOccurrenceSelector(isRecurring: false, occurrenceStartISO: nil)
+    try CalendarAdapter.requireOccurrenceSelector(isRecurring: true, occurrenceStartISO: "2026-05-07T10:00:00Z")
+}
+
+@Test func calendarApprovalShowsClearedFields() {
+    let tool = UpdateEventTool(adapter: CalendarAdapter())
+    let lines = tool.approvalSummary(for: ["event_id": .string("fixture"), "notes": .null, "location": .string("")])
+    #expect(lines.contains("notes → (clear)"))
+    #expect(lines.contains("location → (clear)"))
+}
+
+@Test func calendarAllDayDatesFollowDenverDST() throws {
+    let zone = TimeZone(identifier: "America/Denver")!
+    let start = try CalendarDates.parseEventDate("2026-03-08", allDay: true, timeZone: zone)
+    let end = try CalendarDates.parseEventDate("2026-03-09", allDay: true, timeZone: zone)
+    #expect(CalendarDates.localDateString(start, in: zone) == "2026-03-08")
+    #expect(end.timeIntervalSince(start) == 23 * 3600)
+    let fallStart = try CalendarDates.parseEventDate("2026-11-01", allDay: true, timeZone: zone)
+    let fallEnd = try CalendarDates.parseEventDate("2026-11-02", allDay: true, timeZone: zone)
+    #expect(fallEnd.timeIntervalSince(fallStart) == 25 * 3600)
+    #expect(throws: (any Error).self) { try CalendarDates.parseEventDate("2026-03-08", allDay: false, timeZone: zone) }
+    #expect(throws: (any Error).self) { try CalendarDates.parseEventDate("2026-03-08T00:00:00Z", allDay: true, timeZone: zone) }
 }

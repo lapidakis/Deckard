@@ -85,3 +85,15 @@ import Foundation
     #expect(r.missing.isEmpty)
     #expect(r.failed.isEmpty)
 }
+
+@Test func mailScriptsStripSeparatorsFromMessageText() {
+    // A subject/sender containing U+001F/U+001E must not be able to shift
+    // fields or fabricate records; every message-derived field is cleaned.
+    let get = MailScripts.getMessage(account: "a", mailbox: "INBOX", id: "1")
+    for field in ["msgSubj", "msgFrom", "toRecips", "msgBody"] {
+        #expect(get.contains("my clean(\(field))"), "getMessage must clean \(field)")
+    }
+    #expect(get.contains("on clean(s)"))
+    #expect(MailScripts.listMailboxes.contains("my clean(mboxName)"))
+    #expect(MailScripts.listMailboxes.contains("on clean(s)"))
+}
