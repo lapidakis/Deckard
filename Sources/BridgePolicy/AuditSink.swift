@@ -14,6 +14,10 @@ public actor AuditSink {
     private let logger: Logger
     private let encoder: JSONEncoder
     private let isoFormatter: ISO8601DateFormatter
+    /// Directories are created once per process rather than on every row
+    /// (ensureDirs does several stat/mkdir calls). Reset on failure so a
+    /// directory removed underneath us is recreated on the next write.
+    private var directoriesReady = false
 
     public init(url: URL = BridgePaths.auditFile, enabled: Bool = true, logger: Logger = Logger(label: "bridge.audit")) {
         self.url = url
@@ -30,8 +34,11 @@ public actor AuditSink {
     public func record(_ event: AuditEvent) {
         guard enabled else { return }
         do {
-            if url == BridgePaths.auditFile { try BridgePaths.ensureDirs() }
-            else { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true) }
+            if !directoriesReady {
+                if url == BridgePaths.auditFile { try BridgePaths.ensureDirs() }
+                else { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true) }
+                directoriesReady = true
+            }
             try FileLock.withExclusiveAccess(to: url.appendingPathExtension("lock")) {
                 let data = try encoder.encode(event) + Data([0x0A]) // newline
                 if !FileManager.default.fileExists(atPath: url.path) {
@@ -44,6 +51,7 @@ public actor AuditSink {
                 try handle.synchronize()
             }
         } catch {
+            directoriesReady = false
             logger.error("Audit write failed: \(error)")
         }
     }
@@ -87,9 +95,10 @@ public actor AuditSink {
 
         var keptLines: [Substring] = []
         var removed = 0
+        let decoder = JSONDecoder()
         for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
             // Decode JSON before reading ts so escaped content cannot impersonate a field.
-            if let ts = Self.extractTs(from: line), let date = isoFormatter.date(from: ts), date < cutoff {
+            if let ts = Self.extractTs(from: line, decoder: decoder), let date = isoFormatter.date(from: ts), date < cutoff {
                 removed += 1
             } else {
                 // Preserve malformed/unknown timestamps as forensic evidence.
@@ -110,9 +119,12 @@ public actor AuditSink {
         return (keptLines.count, removed)
     }
 
-    private static func extractTs(from line: Substring) -> String? {
-        guard let data = String(line).data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        return object["ts"] as? String
+    /// Decodes only `ts` (a real JSON parse, so escaped content elsewhere in
+    /// the row cannot impersonate the field) without materializing the rest
+    /// of the row as a dictionary — prune touches every line in the file.
+    private struct TimestampOnly: Decodable { let ts: String? }
+
+    private static func extractTs(from line: Substring, decoder: JSONDecoder) -> String? {
+        try? decoder.decode(TimestampOnly.self, from: Data(line.utf8)).ts
     }
 }

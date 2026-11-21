@@ -17,7 +17,7 @@ Read this file before making changes. README.md is end-user-facing; this file is
 | 4.6 | Contacts (search/get/groups + create/update/delete/set_groups via CNContactStore) | Done |
 | 5 | iMessage (chat.db read + AppleScript send) | Not started |
 
-43 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **149 automated tests.**
+43 MCP tools total. Codesigned with Developer ID (`com.lapidakis.deckard`, team `NZL3HS8AH4`). Hardened runtime. **162 automated tests.**
 
 Multi-token authentication with per-token ACL profiles is shipped (v0.8.0). Durable audit log with retention pruning (v0.7.1). Self-healing MCP session transport for stale-session SDK bug. Menubar UI scaffold (v0.10 series) with native macOS look. First-launch onboarding flow (v0.11+) walks through daemon → token → permissions → connect.
 
@@ -96,7 +96,7 @@ When you add a tool that returns data from external sources (mail, messages, fet
 ```sh
 make build              # daemon, codesigned (preserves TCC across rebuilds)
 make ui                 # menubar app bundle
-make test               # 149 automated tests
+make test               # 162 automated tests
 make restart            # bootout + bootstrap the LaunchAgent
 make logs               # tail stderr.log
 make audit              # tail audit.jsonl
@@ -185,6 +185,9 @@ The UI has its own bundle id (`com.lapidakis.deckard.ui`) and entitlements set; 
 - **Sparkle bundle layout requires manual rpath.** `swift build` outside Xcode doesn't add `@executable_path/../Frameworks` to the binary's rpath, so the embedded `Sparkle.framework` won't resolve at launch. `scripts/build-ui-app.sh` runs `install_name_tool -add_rpath` BEFORE codesigning — modifying load commands invalidates the signature, so order matters.
 - **Sparkle nested codesigning order.** `--deep` is deprecated; nested artifacts must be signed bottom-up: XPC services → Updater.app → Autoupdate → Sparkle.framework → outer .app. The build script does this in order; reshuffling will produce a bundle that codesign verifies but won't launch on Gatekeeper-strict Macs.
 - **Self-update verification chain.** `deckard self-update` requires SHA match + codesign verify + TeamIdentifier=NZL3HS8AH4 + spctl assess. Loosening any of these is a security regression. The check happens against the extracted binary in temp; the swap only proceeds after all four pass.
+
+- **Command Line Tools-only toolchains (no Xcode).** With CLT 6.4+ and the macOS 27 SDK, `deckard-ui` fails (`SwiftUIMacros` plugin ships only with Xcode) and `swift test` fails to load `TestingMacros`. The daemon builds fine: `swift build --product deckard`. Run tests with `swift test -Xswiftc -load-plugin-library -Xswiftc /Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing/libTestingMacros.dylib` in a checkout without the UI target. Do not "fix" this by pointing `SDKROOT` at the macOS 26 SDK: Swift 6.4 makes current Hummingbird/swift-collections use stdlib APIs only in the 27 SDK.
+- **Build output moved.** The new SwiftPM build backend writes to `.build/out/Products/{Debug,Release}` (`.build/debug` and `.build/release` are symlinks there). A LaunchAgent installed under the old layout still runs `.build/arm64-apple-macosx/debug/deckard`, so `make build && make restart` restarts the old binary until `deckard install --force` rewrites the plist.
 
 ## What I should not do without asking
 

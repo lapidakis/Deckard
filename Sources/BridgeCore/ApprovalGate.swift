@@ -25,6 +25,8 @@ public enum ApprovalDecision: Sendable, Equatable {
     case approved
     case denied
     case timeout
+    /// Refused without prompting because other prompts were already pending.
+    case throttled
 }
 
 /// Pluggable approval mechanism. The default impl is `OsaScriptApprovalGate`;
@@ -109,6 +111,7 @@ public struct OsaScriptApprovalGate: ApprovalGate {
             case .approved: logger.info("Approval granted for tool=\(req.tool)")
             case .denied:   logger.info("Approval denied for tool=\(req.tool)")
             case .timeout:  logger.info("Approval timed out for tool=\(req.tool)")
+            case .throttled: break  // classifyStdout never produces this
             }
             // Surface the raw output for unexpected cases the classifier
             // mapped to .denied — they're worth investigating in stderr.log.
@@ -150,15 +153,52 @@ public struct OsaScriptApprovalGate: ApprovalGate {
     }
 
     private func formatDialog(req: ApprovalRequest) -> String {
-        var lines: [String] = []
-        lines.append("Tool: \(req.tool)")
-        lines.append("Caller: \(req.caller.auditCaller) (\(req.caller.transport.rawValue))")
-        lines.append("Reason: \(req.reason)")
-        lines.append("")
-        for s in req.summary {
-            lines.append(s)
+        Self.formatDialog(tool: req.tool,
+                          caller: "\(req.caller.auditCaller) (\(req.caller.transport.rawValue))",
+                          reason: req.reason, summary: req.summary)
+    }
+
+    static let maxLineLength = 200
+    static let maxSummaryLines = 20
+
+    /// Summary lines often carry third-party text (an invite's title, a
+    /// recipient an injected agent chose). Each line is flattened and capped so
+    /// such text cannot push the real action out of the dialog with embedded
+    /// newlines or reorder it with bidi controls.
+    static func formatDialog(tool: String, caller: String, reason: String, summary: [String]) -> String {
+        var lines = [
+            "Tool: \(sanitizeLine(tool))",
+            "Caller: \(sanitizeLine(caller))",
+            "Reason: \(sanitizeLine(reason))",
+            "",
+        ]
+        lines += summary.prefix(maxSummaryLines).map(sanitizeLine)
+        if summary.count > maxSummaryLines {
+            lines.append("... (\(summary.count - maxSummaryLines) more lines not shown)")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Replaces control and format characters (newlines, U+2028/2029, bidi
+    /// overrides and isolates, zero-width joiners) with a visible marker and
+    /// truncates to `maxLineLength` characters.
+    static func sanitizeLine(_ s: String) -> String {
+        var out = String.UnicodeScalarView()
+        var count = 0
+        for scalar in s.unicodeScalars {
+            if count >= maxLineLength {
+                out.append(contentsOf: "...".unicodeScalars)
+                break
+            }
+            switch scalar.properties.generalCategory {
+            case .control, .format, .lineSeparator, .paragraphSeparator:
+                out.append(contentsOf: String(format: "<U+%04X>", scalar.value).unicodeScalars)
+            default:
+                out.append(scalar)
+            }
+            count += 1
+        }
+        return String(out)
     }
 
     private enum OsaResult {
@@ -189,5 +229,42 @@ public struct OsaScriptApprovalGate: ApprovalGate {
             }
         }
         return out
+    }
+}
+
+// MARK: - Serialization
+
+/// Shows at most one approval prompt at a time, shared across every token.
+///
+/// Without this, concurrent tools/call requests each open their own dialog,
+/// so an injected agent could flood the screen and fish for a misclick on
+/// "Allow". A small queue absorbs legitimate bursts; beyond it requests are
+/// refused (`.throttled`) without prompting.
+public actor SerializedApprovalGate: ApprovalGate {
+    private let inner: any ApprovalGate
+    private let maxWaiting: Int
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    public init(wrapping inner: any ApprovalGate, maxWaiting: Int = 2) {
+        self.inner = inner
+        self.maxWaiting = maxWaiting
+    }
+
+    public func request(_ request: ApprovalRequest) async -> ApprovalDecision {
+        if busy {
+            guard waiters.count < maxWaiting else { return .throttled }
+            await withCheckedContinuation { waiters.append($0) }
+            // Ownership was handed over directly; `busy` is still true.
+        } else {
+            busy = true
+        }
+        let decision = await inner.request(request)
+        if waiters.isEmpty {
+            busy = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+        return decision
     }
 }

@@ -8,6 +8,13 @@
 - Bound subprocess execution and reject Drive/Voice Memo symlink escapes.
 - Update Sparkle to 2.9.6, SwiftNIO to 2.101.0, and NIO HTTP/2 to 1.45.0 after advisory scans.
 - Add regression coverage, a reproducible OSV scan, and an OpenClaw calendar-only profile.
+- Sanitize approval dialogs (control/bidi characters flattened, lines and line count capped) and show one prompt at a time; excess concurrent prompts are refused and audited as `throttled`.
+- Strip U+001E/U+001F from Mail message text in AppleScript and require exact field counts with numeric ids, so a crafted subject cannot forge senders or fabricate records.
+- Discard request contexts the MCP SDK rejects, so retries on a dead session cannot lock a token out with 503s. Log rejected bearer tokens (IP only, never the token).
+- Self-update verifies a full code requirement (Apple anchor, `com.lapidakis.deckard` identifier, team OU) and refuses a non-regular extracted binary.
+- Broaden `<untrusted>` defanging to spaced and JSON-escaped tags in one pass.
+- Performance: skip redaction/injection regexes over base64 payloads (also fixes rules corrupting base64 bytes); cache `tailscale whois` per peer; signal subprocess exit instead of polling every 25 ms; cache parsed `tokens.toml` keyed on stat identity; create audit directories once; decode only `ts` when pruning; reuse date formatters across calendar and reminder lists.
+- Update all dependencies to the latest releases within existing version ranges (Hummingbird 2.29.0, SwiftNIO 2.105.0, swift-crypto 5.1.2, Sparkle 2.10.1, MCP swift-sdk 0.12.1, and others); OSV scan clean.
 - Compatibility: Tailscale now needs an authoritative CLI address; calendar writes require strict dates and recurrence selectors; Drive rejects symlink aliases. See [review](docs/reviews/2026-09-05-security-review.md).
 
 ## v1.0.0-beta.3 — fingerprint scrub before going public

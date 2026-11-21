@@ -227,3 +227,23 @@ private func makeRegistry(tokens: URL, legacy: URL) -> TokenRegistry {
     try await third.ensureLoaded()
     #expect(await third.allEntries().map(\.0).sorted() == ["default", "first", "second"])
 }
+
+@Test func registryCacheSeesSameSizeInPlaceEdit() async throws {
+    // isCurrent caches the parsed file keyed on stat identity. An in-place
+    // (non-rename) rewrite of identical length must still invalidate it.
+    let p = tempPaths(); defer { p.cleanup() }
+    let r = makeRegistry(tokens: p.tokens, legacy: p.legacy)
+    try await r.ensureLoaded()
+    let entry = try #require(await r.entry(for: "default"))
+    #expect(await r.isCurrent(label: "default", entry: entry))
+    #expect(await r.isCurrent(label: "default", entry: entry), "cached path must agree")
+    let original = try String(contentsOf: p.tokens, encoding: .utf8)
+    let last = entry.secret.last!
+    let swapped = String(entry.secret.dropLast()) + (last == "A" ? "B" : "A")
+    let edited = original.replacingOccurrences(of: entry.secret, with: swapped)
+    #expect(edited.utf8.count == original.utf8.count)
+    let handle = try FileHandle(forWritingTo: p.tokens)
+    try handle.write(contentsOf: Data(edited.utf8))
+    try handle.close()
+    #expect(!(await r.isCurrent(label: "default", entry: entry)))
+}

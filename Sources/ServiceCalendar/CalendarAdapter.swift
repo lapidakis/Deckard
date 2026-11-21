@@ -120,7 +120,8 @@ public actor CalendarAdapter {
         let raw = store.events(matching: predicate)
         let sorted = raw.sorted { $0.startDate < $1.startDate }
         let bounded = Array(sorted.prefix(max(1, min(500, limit))))
-        return bounded.map { summarize($0, in: outputTz) }
+        let rendering = CalendarDates.Rendering(tz: outputTz)
+        return bounded.map { summarize($0, using: rendering) }
     }
 
     public func searchEvents(
@@ -145,7 +146,8 @@ public actor CalendarAdapter {
                 || (e.notes?.lowercased().contains(q) ?? false)
         }
         let sorted = matched.sorted { $0.startDate < $1.startDate }
-        return Array(sorted.prefix(max(1, min(500, limit)))).map { summarize($0, in: outputTz) }
+        let rendering = CalendarDates.Rendering(tz: outputTz)
+        return Array(sorted.prefix(max(1, min(500, limit)))).map { summarize($0, using: rendering) }
     }
 
     public func getEvent(id: String, tzID: String?, occurrenceStartISO: String? = nil) async throws -> CalendarEvent {
@@ -180,11 +182,12 @@ public actor CalendarAdapter {
             .filter { $0.startDate > now }
             .prefix(max(1, min(20, nextLimit)))
 
+        let rendering = CalendarDates.Rendering(tz: outputTz)
         return CalendarNowSnapshot(
-            now: CalendarDates.format(now, in: outputTz),
+            now: rendering.format(now),
             timeZone: outputTz.identifier,
-            current: current.map { summarize($0, in: outputTz) },
-            next: Array(next).map { summarize($0, in: outputTz) }
+            current: current.map { summarize($0, using: rendering) },
+            next: next.map { summarize($0, using: rendering) }
         )
     }
 
@@ -361,7 +364,7 @@ public actor CalendarAdapter {
         return cal
     }
 
-    private func summarize(_ e: EKEvent, in tz: TimeZone) -> EventSummary {
+    private func summarize(_ e: EKEvent, using fmt: CalendarDates.Rendering) -> EventSummary {
         let allDay = e.isAllDay
         let attendees: [String] = (e.attendees ?? []).map { p in
             let name = p.name ?? ""
@@ -373,11 +376,11 @@ public actor CalendarAdapter {
             calendarId: e.calendar.calendarIdentifier,
             calendarTitle: e.calendar.title,
             title: e.title ?? "",
-            start: CalendarDates.format(e.startDate, in: tz),
-            end: CalendarDates.format(e.endDate, in: tz),
+            start: fmt.format(e.startDate),
+            end: fmt.format(e.endDate),
             isAllDay: allDay,
-            localStartDate: allDay ? CalendarDates.localDateString(e.startDate, in: tz) : nil,
-            localEndDate:   allDay ? CalendarDates.localDateString(e.endDate, in: tz) : nil,
+            localStartDate: allDay ? fmt.localDateString(e.startDate) : nil,
+            localEndDate:   allDay ? fmt.localDateString(e.endDate) : nil,
             location: e.location,
             isRecurring: e.hasRecurrenceRules,
             recurrenceRule: firstRecurrence(of: e),

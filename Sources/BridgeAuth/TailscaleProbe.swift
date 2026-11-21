@@ -38,6 +38,17 @@ public actor TailscaleProbe {
     private let logger: Logger
     private var cachedBinary: String?
 
+    // whois results feed audit attribution only (never authorization), and a
+    // node's tailnet IP is stable, so caching avoids spawning the CLI
+    // (~15-40 ms) on every HTTP request. Failures expire sooner so a peer
+    // that just joined is attributed quickly.
+    private struct WhoisEntry { let peer: PeerInfo?; let expires: ContinuousClock.Instant }
+    private var whoisCache: [String: WhoisEntry] = [:]
+    private var whoisInFlight: [String: Task<PeerInfo?, Never>] = [:]
+    static let whoisSuccessTTL: Duration = .seconds(300)
+    static let whoisFailureTTL: Duration = .seconds(30)
+    static let whoisCacheLimit = 512
+
     public init(logger: Logger = Logger(label: "bridge.tailscale")) {
         self.logger = logger
     }
@@ -105,6 +116,24 @@ public actor TailscaleProbe {
     /// Resolves a remote tailnet IP to a peer name + user. Best-effort: returns
     /// nil if Tailscale can't tell us. Never throws; bearer authentication remains mandatory.
     public func whois(remoteIP: String) async -> PeerInfo? {
+        let now = ContinuousClock.now
+        if let hit = whoisCache[remoteIP], hit.expires > now { return hit.peer }
+        // Concurrent requests from one peer share a single lookup.
+        if let pending = whoisInFlight[remoteIP] { return await pending.value }
+        let task = Task { await self.lookupWhois(remoteIP: remoteIP) }
+        whoisInFlight[remoteIP] = task
+        let peer = await task.value
+        whoisInFlight[remoteIP] = nil
+        if whoisCache.count >= Self.whoisCacheLimit {
+            whoisCache = whoisCache.filter { $0.value.expires > now }
+            if whoisCache.count >= Self.whoisCacheLimit { whoisCache.removeAll() }
+        }
+        let ttl = peer == nil ? Self.whoisFailureTTL : Self.whoisSuccessTTL
+        whoisCache[remoteIP] = WhoisEntry(peer: peer, expires: ContinuousClock.now.advanced(by: ttl))
+        return peer
+    }
+
+    private func lookupWhois(remoteIP: String) async -> PeerInfo? {
         guard let bin = try? await findBinary() else { return nil }
         let r = await run([bin, "whois", "--json", remoteIP])
         guard r.exitCode == 0 else {

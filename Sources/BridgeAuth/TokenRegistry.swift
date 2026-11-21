@@ -53,6 +53,10 @@ public actor TokenRegistry {
     private let logger: Logger
     private var entries: [String: Entry] = [:]
     private var loaded = false
+    /// Last parsed registry plus the stat identity it was read under, so
+    /// `isCurrent` (called several times per tool call) does not re-read and
+    /// re-decode TOML when the file is unchanged.
+    private var currentSnapshot: (stamp: FileStamp, tokens: [String: Entry])?
 
     public init(
         url: URL = BridgePaths.tokensFile,
@@ -110,17 +114,36 @@ public actor TokenRegistry {
     /// Re-read without bootstrapping or migration. Revocation, rotation, a
     /// changed profile, or an unreadable/missing registry invalidates a bound
     /// session on its next request, including after an approval dialog.
+    ///
+    /// The parsed file is reused only while stat reports the identical device,
+    /// inode, size and nanosecond mtime/ctime. Writers replace the file by
+    /// atomic rename (new inode), and any in-place edit bumps ctime, so a
+    /// revocation is still seen on the very next request. stat runs before the
+    /// read: if the file changes in between, the snapshot is stored under the
+    /// older stamp and simply re-read next time.
     public func isCurrent(label: String, entry: Entry) -> Bool {
-        do {
-            let text = try String(contentsOf: url, encoding: .utf8)
-            let file = try TOMLDecoder().decode(RegistryFile.self, from: text)
-            try Self.validate(file.tokens)
-            guard let current = file.tokens[label] else { return false }
-            return Self.constantTimeEquals(current.secret, entry.secret)
-                && current.profile == entry.profile
-        } catch {
+        guard let stamp = FileStamp(path: url.path) else {
+            currentSnapshot = nil
             return false
         }
+        let tokens: [String: Entry]
+        if let snapshot = currentSnapshot, snapshot.stamp == stamp {
+            tokens = snapshot.tokens
+        } else {
+            do {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                let file = try TOMLDecoder().decode(RegistryFile.self, from: text)
+                try Self.validate(file.tokens)
+                tokens = file.tokens
+                currentSnapshot = (stamp, tokens)
+            } catch {
+                currentSnapshot = nil
+                return false
+            }
+        }
+        guard let current = tokens[label] else { return false }
+        return Self.constantTimeEquals(current.secret, entry.secret)
+            && current.profile == entry.profile
     }
 
     private static func validate(_ entries: [String: Entry]) throws {
@@ -280,5 +303,24 @@ public actor TokenRegistry {
         var diff: UInt8 = 0
         for i in 0..<ab.count { diff |= ab[i] ^ bb[i] }
         return diff == 0
+    }
+}
+
+/// File identity used to decide whether a cached parse is still valid.
+struct FileStamp: Equatable, Sendable {
+    let device: Int64
+    let inode: UInt64
+    let size: Int64
+    let mtimeSec: Int, mtimeNsec: Int
+    let ctimeSec: Int, ctimeNsec: Int
+
+    init?(path: String) {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return nil }
+        device = Int64(st.st_dev)
+        inode = UInt64(st.st_ino)
+        size = Int64(st.st_size)
+        mtimeSec = st.st_mtimespec.tv_sec; mtimeNsec = st.st_mtimespec.tv_nsec
+        ctimeSec = st.st_ctimespec.tv_sec; ctimeNsec = st.st_ctimespec.tv_nsec
     }
 }

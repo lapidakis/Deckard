@@ -23,7 +23,7 @@ public struct MCPHostBuilder: Sendable {
         serverVersion: String = BridgeCore.version,
         providers: [any ToolProvider],
         middleware: [any ResultMiddleware] = [],
-        approval: any ApprovalGate = OsaScriptApprovalGate(),
+        approval: any ApprovalGate = SerializedApprovalGate(wrapping: OsaScriptApprovalGate()),
         logger: Logger = Logger(label: "bridge.host")
     ) {
         self.serverName = serverName
@@ -177,6 +177,9 @@ public struct MCPHostBuilder: Sendable {
                 case .timeout:
                     await policy.recordApprovalDecision(request, decision: "timeout")
                     return CallTool.Result(content: [.text(text: "Approval prompt timed out.", annotations: nil, _meta: nil)], isError: true)
+                case .throttled:
+                    await policy.recordApprovalDecision(request, decision: "throttled")
+                    return CallTool.Result(content: [.text(text: "Other approval prompts are already pending; tool not executed. Retry after they are answered.", annotations: nil, _meta: nil)], isError: true)
                 }
             }
         case .allow:

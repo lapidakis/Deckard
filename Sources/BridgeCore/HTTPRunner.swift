@@ -130,6 +130,9 @@ public struct HTTPRunner: Sendable {
                 return unauthorized(reason: "missing_token", message: "Missing bearer token")
             }
             guard let entry = sessions.entry(for: token), await entry.isCurrent() else {
+                // Wrong or revoked token: worth surfacing (a misconfigured
+                // client, or someone guessing). Never log the token itself.
+                logger.warning("Rejected bearer token transport=\(bind.transportLabel.rawValue) remote=\(remoteIP ?? "unknown")")
                 return unauthorized(reason: "invalid_token", message: "Invalid bearer token")
             }
             resolvedHolder = entry.holder
@@ -182,7 +185,8 @@ public struct HTTPRunner: Sendable {
         )
 
         let preparedBody: Data
-        do { preparedBody = try holder.contexts.prepare(bodyData, auth: perCallAuth) }
+        let contextID: String?
+        do { (preparedBody, contextID) = try holder.contexts.prepare(bodyData, auth: perCallAuth) }
         catch { return jsonError(status: .serviceUnavailable, message: "Too many pending requests; retry later") }
         let mcpRequest = MCP.HTTPRequest(
             method: req.method.rawValue,
@@ -227,6 +231,9 @@ public struct HTTPRunner: Sendable {
             }
         }
 
+        if mcpResponse.statusCode >= 400 {
+            holder.contexts.discard(contextID)
+        }
         return convert(mcpResponse, logger: logger)
     }
 

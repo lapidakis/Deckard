@@ -120,6 +120,34 @@ public enum CalendarDates {
         return f.string(from: d)
     }
 
+    /// Formatters for one output zone, built once per list call and reused for
+    /// every event. Allocating an ISO8601DateFormatter (plus two DateFormatters
+    /// for all-day events) per event dominated large calendar reads. Output is
+    /// identical to `format(_:in:)` / `localDateString(_:in:)`.
+    ///
+    /// `@unchecked Sendable`: both formatters are configured in `init` and
+    /// never mutated afterwards, and Foundation documents (ISO8601)DateFormatter
+    /// as safe to use from multiple threads once configured.
+    public final class Rendering: @unchecked Sendable {
+        private let iso = ISO8601DateFormatter()
+        private let day = DateFormatter()
+
+        public init(tz: TimeZone) {
+            iso.formatOptions = [
+                .withInternetDateTime, .withFractionalSeconds,
+                .withTimeZone, .withColonSeparatorInTimeZone,
+            ]
+            iso.timeZone = tz
+            day.locale = Locale(identifier: "en_US_POSIX")
+            day.calendar = Calendar(identifier: .gregorian)
+            day.dateFormat = "yyyy-MM-dd"
+            day.timeZone = tz
+        }
+
+        public func format(_ d: Date) -> String { iso.string(from: d) }
+        public func localDateString(_ d: Date) -> String { day.string(from: d) }
+    }
+
     /// Local-calendar date string (yyyy-MM-dd) for the supplied date in the
     /// supplied tz. Useful for all-day events: an event marked "May 6 all-day"
     /// in MT has start=2026-05-06T06:00Z, end=2026-05-07T06:00Z. Showing the

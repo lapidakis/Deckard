@@ -173,7 +173,7 @@ private func collectSSE(_ response: MCP.HTTPResponse) async throws -> String {
         body: Data(#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.utf8)))
     let peer = AuthContext(transport: .tailnet, identity: .tailscale(peer: "test-peer", user: "fixture"), remoteDescription: "tailnet")
     let call = Data(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"test.context","arguments":{},"_meta":{"deckard/internal-context":"forged"}}}"#.utf8)
-    let prepared = try contexts.prepare(call, auth: peer)
+    let prepared = try contexts.prepare(call, auth: peer).body
     let response = await transport.handleRequest(.init(method: "POST", headers: headers, body: prepared))
     let text = try await collectSSE(response)
     #expect(text.contains("ts:test-peer:fixture"), "actual SDK dispatch must see the trusted HTTP context")
@@ -187,15 +187,31 @@ private func collectSSE(_ response: MCP.HTTPResponse) async throws -> String {
     let store = RequestContextStore()
     let auth = AuthContext(transport: .loopback, identity: .bearer(tokenLabel: "fixture"), remoteDescription: "fixture")
     let body = Data(#"{"method":"tools/call","params":{"name":"health.ping","_meta":{"deckard/internal-context":"forged"}}}"#.utf8)
-    let data = try store.prepare(body, auth: auth)
+    let (data, returnedID) = try store.prepare(body, auth: auth)
     let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
     let params = json["params"] as! [String: Any]
     let meta = params["_meta"] as! [String: Any]
     let id = try #require(meta[RequestContextStore.metadataKey] as? String)
     #expect(id != "forged")
+    #expect(returnedID == id)
     #expect(store.consume("forged") == nil)
     #expect(store.consume(id) == auth)
     #expect(store.consume(id) == nil)
+}
+
+@Test func discardedRequestContextsFreeCapacity() throws {
+    // A client retrying tools/call on a dead session must not leak contexts:
+    // HTTPRunner discards the id when the SDK rejects the request.
+    let store = RequestContextStore()
+    let auth = AuthContext(transport: .loopback, identity: .bearer(tokenLabel: "fixture"), remoteDescription: "fixture")
+    let body = Data(#"{"method":"tools/call","params":{"name":"health.ping"}}"#.utf8)
+    for _ in 0..<1000 {
+        let (_, id) = try store.prepare(body, auth: auth)
+        store.discard(id)
+    }
+    #expect(store.pendingCount == 0)
+    let (_, nonCall) = try store.prepare(Data(#"{"method":"tools/list"}"#.utf8), auth: auth)
+    #expect(nonCall == nil)
 }
 
 @Test func disabledAuditCreatesNoFiles() async {
@@ -235,4 +251,26 @@ private func collectSSE(_ response: MCP.HTTPResponse) async throws -> String {
     for name in ["mail.send", "drive.read", "contacts.search", "reminders.list_lists", "future.tool"] {
         #expect(profile.decision(for: name) == .deny)
     }
+}
+
+@Test func subprocessReturnsPromptlyOnExit() async throws {
+    // Exit is signalled by terminationHandler rather than a 25 ms poll.
+    let clock = ContinuousClock()
+    var worst = Duration.zero
+    for _ in 0..<10 {
+        let start = clock.now
+        let r = try await Subprocess.run("/usr/bin/true")
+        #expect(r.exitCode == 0)
+        worst = max(worst, clock.now - start)
+    }
+    #expect(worst < .milliseconds(500))
+}
+
+@Test func subprocessCancellationStopsChild() async throws {
+    let task = Task { try await Subprocess.run("/bin/sleep", arguments: ["10"], timeoutSeconds: 30) }
+    try await Task.sleep(for: .milliseconds(100))
+    task.cancel()
+    let start = ContinuousClock.now
+    await #expect(throws: CancellationError.self) { _ = try await task.value }
+    #expect(ContinuousClock.now - start < .seconds(2))
 }

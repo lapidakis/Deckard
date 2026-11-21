@@ -49,6 +49,26 @@ enum MailScripts {
         }
     }
 
+    /// AppleScript handler that strips our field/record separators from
+    /// message-derived text. Without it a subject containing U+001F/U+001E
+    /// shifts fields (forged sender/date in mail.get) or fabricates whole
+    /// records with arbitrary ids in mail.list, steering later write calls.
+    /// Inside `tell application "Mail"` blocks call it as `my clean(x)`.
+    static let cleanHandler = """
+    on clean(s)
+        set s to s as string
+        set oldTID to AppleScript's text item delimiters
+        repeat with sep in {character id 30, character id 31}
+            set AppleScript's text item delimiters to (sep as string)
+            set parts to text items of s
+            set AppleScript's text item delimiters to " "
+            set s to parts as string
+        end repeat
+        set AppleScript's text item delimiters to oldTID
+        return s
+    end clean
+    """
+
     /// Lists every mailbox across every Mail.app account.
     static let listMailboxes: String = """
     set out to ""
@@ -60,11 +80,12 @@ enum MailScripts {
             repeat with mbox in mailboxes of a
                 set mboxName to name of mbox as string
                 set unreadN to (unread count of mbox) as integer
-                set out to out & acctName & FS & mboxName & FS & unreadN & RS
+                set out to out & my clean(acctName) & FS & my clean(mboxName) & FS & unreadN & RS
             end repeat
         end repeat
     end tell
     return out
+    \(cleanHandler)
     """
 
     /// Builds a list/search script. If `filter.textQuery` is empty, no text
@@ -157,7 +178,7 @@ enum MailScripts {
                                 on error
                                     set msgRead to false
                                 end try
-                                set out to out & msgID & FS & (name of a as string) & FS & mboxName & FS & msgSubj & FS & msgFrom & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
+                                set out to out & msgID & FS & my clean(name of a as string) & FS & my clean(mboxName) & FS & my clean(msgSubj) & FS & my clean(msgFrom) & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
                                 set mboxCount to mboxCount + 1
                             end repeat
                         end if
@@ -166,6 +187,7 @@ enum MailScripts {
             end repeat
         end tell
         return out
+        \(cleanHandler)
         """
     }
 
@@ -217,8 +239,9 @@ enum MailScripts {
                 end repeat
             end try
             set msgBody to (content of found as string)
-            return theID & FS & theAcct & FS & theMbox & FS & msgSubj & FS & msgFrom & FS & toRecips & FS & msgDate & FS & msgBody
+            return theID & FS & theAcct & FS & theMbox & FS & my clean(msgSubj) & FS & my clean(msgFrom) & FS & my clean(toRecips) & FS & msgDate & FS & my clean(msgBody)
         end tell
+        \(cleanHandler)
         """
     }
 

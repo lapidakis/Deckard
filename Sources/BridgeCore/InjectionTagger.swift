@@ -31,9 +31,14 @@ public struct InjectionTagger: ResultMiddleware {
     ) -> CallTool.Result {
         guard enabled, tool.returnsUntrustedContent || result.isError == true else { return result }
         return mapTextContent(result) { content in
-            let ns = content as NSString
+            // For base64 payloads (drive.read, voice_memo.read_audio) scan only
+            // the surrounding metadata: a filename can carry an injection, the
+            // encoded bytes can't, and nine regex passes over ~30 MB of base64
+            // cost seconds per call.
+            let scanned = Self.isBase64Payload(content) ? Self.stripBase64Runs(content) : content
+            let ns = scanned as NSString
             let suspicious = patterns.contains {
-                $0.firstMatch(in: content, options: [], range: NSRange(location: 0, length: ns.length)) != nil
+                $0.firstMatch(in: scanned, options: [], range: NSRange(location: 0, length: ns.length)) != nil
             }
             if !suspicious && !alwaysWrap { return content }
 
@@ -53,17 +58,44 @@ public struct InjectionTagger: ResultMiddleware {
     /// with visibly-escaped variants so the wrapper can't be closed by content.
     /// The replacement deliberately does NOT contain the wrapper tags
     /// themselves — otherwise we'd loop forever finding our own substitution.
+    ///
+    /// Matches tolerate whitespace inside the tag and a JSON-escaped slash
+    /// (`<\/untrusted>`), since payloads are usually JSON text and an agent
+    /// may decode `\/` back to `/`. One regex pass per tag: the previous
+    /// rescan-from-start loop was quadratic on content stuffed with tags.
     static func defangWrapperTags(_ s: String) -> String {
-        var out = s
-        for (needle, replacement) in [
-            ("</untrusted>", "[escaped close-untrusted]"),
-            ("<untrusted>",  "[escaped open-untrusted]"),
-        ] {
-            while let r = out.range(of: needle, options: .caseInsensitive) {
-                out.replaceSubrange(r, with: replacement)
-            }
+        let out = NSMutableString(string: s)
+        for (regex, replacement) in wrapperTagRegexes {
+            regex.replaceMatches(
+                in: out, options: [], range: NSRange(location: 0, length: out.length),
+                withTemplate: replacement)
         }
-        return out
+        return out as String
+    }
+
+    private static let wrapperTagRegexes: [(NSRegularExpression, String)] = [
+        (try! NSRegularExpression(pattern: #"<\s*\\?/\s*untrusted\s*>"#, options: [.caseInsensitive]),
+         "[escaped close-untrusted]"),
+        (try! NSRegularExpression(pattern: #"<\s*untrusted\s*>"#, options: [.caseInsensitive]),
+         "[escaped open-untrusted]"),
+    ]
+
+    private static let base64Marker = try! NSRegularExpression(
+        pattern: #""encoding"\s*:\s*"base64""#, options: [.caseInsensitive])
+    private static let base64Run = try! NSRegularExpression(pattern: #"[A-Za-z0-9+/=]{256,}"#)
+
+    /// Service tools encode `encoding` before `content`, so the marker sits
+    /// in the first few hundred characters; avoid scanning the whole blob.
+    static func isBase64Payload(_ s: String) -> Bool {
+        let ns = s as NSString
+        let probe = NSRange(location: 0, length: min(ns.length, 4096))
+        return base64Marker.firstMatch(in: s, options: [], range: probe) != nil
+    }
+
+    static func stripBase64Runs(_ s: String) -> String {
+        base64Run.stringByReplacingMatches(
+            in: s, options: [], range: NSRange(location: 0, length: (s as NSString).length),
+            withTemplate: "")
     }
 
     /// Conservative pattern set. False positives = noisy banner; false negatives

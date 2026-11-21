@@ -35,6 +35,8 @@ public enum Subprocess {
         proc.standardInput = stdin
         proc.standardOutput = stdout
         proc.standardError = stderr
+        let exitLatch = ExitLatch()
+        proc.terminationHandler = { _ in exitLatch.signal() }
         try proc.run()
         defer {
             if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
@@ -46,15 +48,65 @@ public enum Subprocess {
             let err = try fm.attributesOfItem(atPath: stderrURL.path)[.size] as? NSNumber
             return (out?.intValue ?? 0) + (err?.intValue ?? 0)
         }
+        // Wake on exit immediately instead of polling every 25 ms (which added
+        // ~12 ms to every osascript call). The tick only bounds how often the
+        // deadline and output size are re-checked while the child runs.
         while proc.isRunning {
             try Task.checkCancellation()
-            guard ContinuousClock.now < deadline else { throw Failure.timeout }
+            let now = ContinuousClock.now
+            guard now < deadline else { throw Failure.timeout }
             guard try outputSize() <= maxOutputBytes else { throw Failure.outputLimit }
-            try await Task.sleep(for: .milliseconds(25))
+            let tick = min(Duration.milliseconds(100), deadline - now)
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await exitLatch.wait() }
+                group.addTask { try? await Task.sleep(for: tick) }
+                await group.next()
+                group.cancelAll()
+            }
         }
         guard try outputSize() <= maxOutputBytes else { throw Failure.outputLimit }
         return Output(exitCode: proc.terminationStatus,
                       stdout: try String(contentsOf: stdoutURL, encoding: .utf8),
                       stderr: try String(contentsOf: stderrURL, encoding: .utf8))
+    }
+}
+
+/// One-shot signal set from `Process.terminationHandler`. `wait()` returns
+/// when the process has exited or the waiting task is cancelled.
+final class ExitLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var exited = false
+    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+
+    func signal() {
+        lock.lock()
+        exited = true
+        let pending = waiters
+        waiters.removeAll()
+        lock.unlock()
+        for continuation in pending.values { continuation.resume() }
+    }
+
+    func wait() async {
+        let id = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                lock.lock()
+                // Covers both orderings: exit (or cancellation) may already
+                // have happened before this continuation was registered.
+                if exited || Task.isCancelled {
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                waiters[id] = continuation
+                lock.unlock()
+            }
+        } onCancel: {
+            lock.lock()
+            let continuation = waiters.removeValue(forKey: id)
+            lock.unlock()
+            continuation?.resume()
+        }
     }
 }
