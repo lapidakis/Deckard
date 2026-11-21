@@ -19,6 +19,7 @@ final class OnboardingState: ObservableObject {
     enum Step: Int, CaseIterable, Identifiable {
         case welcome
         case daemon
+        case access
         case token
         case permissions
         case connect
@@ -29,6 +30,7 @@ final class OnboardingState: ObservableObject {
             switch self {
             case .welcome:     return "Welcome"
             case .daemon:      return "Daemon"
+            case .access:      return "Remote access"
             case .token:       return "Token"
             case .permissions: return "Permissions"
             case .connect:     return "Connect"
