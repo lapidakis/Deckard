@@ -31,6 +31,16 @@ enum MailScripts {
         var bareDateTz: TimeZone = .current   // tz for parsing bare yyyy-MM-dd inputs
         var unreadOnly: Bool = false
         var perMailboxCap: Int = 50
+        /// Seconds the script may spend before it stops walking and returns
+        /// what it has. The script must end itself: when Deckard's own
+        /// timeout kills osascript, Mail keeps evaluating the request on its
+        /// main thread and every later Mail call queues behind it.
+        var budgetSeconds: Int = 25
+        /// Most message bodies read per mailbox during a body search. Reading
+        /// `content` makes Mail render the message's HTML through WebKit.
+        var bodyScanCap: Int = 100
+        /// With no `since`, body text is searched only this many days back.
+        var bodyWindowDays: Int = 30
         /// Only consulted when `mailbox` is empty. An explicit mailbox filter
         /// always wins (explicitly asking for Archive/Junk should work).
         var scope: MailboxScope = .primary
@@ -113,25 +123,122 @@ enum MailScripts {
         let acctEsc = applescriptEscape(filter.account)
         let mboxEsc = applescriptEscape(filter.mailbox)
 
-        // Build the whose clause: AND-ed conditions, only including those active.
-        var conds: [String] = []
-        if !filter.textQuery.isEmpty {
+        // Conditions Mail can answer from its message index.
+        var structural: [String] = []
+        if filter.sinceISO != nil { structural.append("(date received ≥ sinceDate)") }
+        if filter.beforeISO != nil { structural.append("(date received < beforeDate)") }
+        if filter.unreadOnly { structural.append("(read status is false)") }
+
+        // NEVER put `content` in a `whose` clause. Mail evaluates every term
+        // for every message in the mailbox (no short-circuit on the date
+        // terms), and `content` renders each message's HTML through WebKit on
+        // Mail's main thread. A cross-mailbox "any field" search did that for
+        // the whole account, ran past the 60s timeout, and kept Mail busy
+        // afterwards so every later request timed out too (2026-11).
+        //
+        // Instead: phase 1 matches subject/sender in `whose` (index-backed);
+        // phase 2 reads bodies one message at a time, only for candidates
+        // that pass the structural filter, capped and time-budgeted.
+        let hasText = !filter.textQuery.isEmpty
+        var headerTerm: String?
+        var scanBodies = false
+        if hasText {
             switch filter.textField {
-            case .subject: conds.append("(subject contains theQ)")
-            case .sender:  conds.append("(sender contains theQ)")
-            case .body:    conds.append("(content contains theQ)")
-            case .any:     conds.append("(subject contains theQ or sender contains theQ or content contains theQ)")
+            case .subject: headerTerm = "(subject contains theQ)"
+            case .sender:  headerTerm = "(sender contains theQ)"
+            case .body:    scanBodies = true
+            case .any:     headerTerm = "(subject contains theQ or sender contains theQ)"; scanBodies = true
             }
         }
-        if filter.sinceISO != nil { conds.append("(date received ≥ sinceDate)") }
-        if filter.beforeISO != nil { conds.append("(date received < beforeDate)") }
-        if filter.unreadOnly { conds.append("(read status is false)") }
 
-        let whoseClause = conds.isEmpty ? "messages of mbox" : "messages of mbox whose " + conds.joined(separator: " and ")
+        func whose(_ conds: [String]) -> String {
+            conds.isEmpty ? "messages of mbox" : "messages of mbox whose " + conds.joined(separator: " and ")
+        }
+        let runHeaderPhase = !hasText || headerTerm != nil
+        let headerQuery = whose((headerTerm.map { [$0] } ?? []) + structural)
+        // Without a lower date bound a body scan would walk the whole
+        // mailbox; bound it to a recent window.
+        var bodyConds = structural
+        if scanBodies && filter.sinceISO == nil { bodyConds.insert("(date received ≥ bodyFloor)", at: 0) }
+        let bodyQuery = whose(bodyConds)
 
         let sinceSetup = filter.sinceISO.flatMap { asDateSetup(varName: "sinceDate", iso: $0, bareDateTz: filter.bareDateTz) } ?? ""
         let beforeSetup = filter.beforeISO.flatMap { asDateSetup(varName: "beforeDate", iso: $0, bareDateTz: filter.bareDateTz) } ?? ""
         let skipList = applescriptListLiteral(skipNamesForScope(filter.scope))
+
+        // Emits one record for message `m`; shared by both phases.
+        let emit = """
+                            set msgSubj to (subject of m as string)
+                            set msgFrom to (sender of m as string)
+                            try
+                                set msgDateSent to ((date sent of m) as «class isot» as string)
+                            on error
+                                set msgDateSent to ""
+                            end try
+                            try
+                                set msgDateRecv to ((date received of m) as «class isot» as string)
+                            on error
+                                set msgDateRecv to ""
+                            end try
+                            try
+                                set msgRead to read status of m
+                            on error
+                                set msgRead to false
+                            end try
+                            set out to out & msgID & FS & my clean(acctName) & FS & my clean(mboxName) & FS & my clean(msgSubj) & FS & my clean(msgFrom) & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
+                            set mboxCount to mboxCount + 1
+        """
+
+        let headerPhase = !runHeaderPhase ? "" : """
+                    try
+                        set msgs to (\(headerQuery))
+                    on error
+                        set msgs to {}
+                    end try
+                    repeat with m in msgs
+                        if mboxCount ≥ perMboxCap then exit repeat
+                        if ((current date) - startedAt) > budgetSecs then
+                            set partialReason to "time"
+                            exit repeat
+                        end if
+                        set msgID to (id of m as string)
+                        set end of emittedIDs to msgID
+        \(emit)
+                    end repeat
+        """
+
+        let bodyPhase = !scanBodies ? "" : """
+                    if partialReason is not "time" then
+                        try
+                            set cands to (\(bodyQuery))
+                        on error
+                            set cands to {}
+                        end try
+                        set examined to 0
+                        repeat with m in cands
+                            if mboxCount ≥ perMboxCap then exit repeat
+                            if examined ≥ bodyCap then
+                                if partialReason is "" then set partialReason to "bodycap"
+                                exit repeat
+                            end if
+                            if ((current date) - startedAt) > budgetSecs then
+                                set partialReason to "time"
+                                exit repeat
+                            end if
+                            set msgID to (id of m as string)
+                            if emittedIDs does not contain msgID then
+                                set examined to examined + 1
+                                set bodyText to ""
+                                try
+                                    set bodyText to (content of m as string)
+                                end try
+                                if bodyText contains theQ then
+        \(emit)
+                                end if
+                            end if
+                        end repeat
+                    end if
+        """
 
         return """
         set out to ""
@@ -142,12 +249,23 @@ enum MailScripts {
         set theMbox to "\(mboxEsc)"
         set skipList to \(skipList)
         set perMboxCap to \(max(1, filter.perMailboxCap))
+        set bodyCap to \(max(1, filter.bodyScanCap))
+        set budgetSecs to \(max(1, filter.budgetSeconds))
+        set startedAt to (current date)
+        set bodyFloor to (current date) - (\(max(1, filter.bodyWindowDays)) * days)
+        set partialReason to ""
+        set skippedCount to 0
         \(sinceSetup)
         \(beforeSetup)
         tell application "Mail"
+            -- Collect the mailboxes to walk, inbox first, so the most useful
+            -- results are in hand if the time budget runs out.
+            set targets to {}
             repeat with a in accounts
-                if theAcct = "" or (name of a as string) = theAcct then
-                    repeat with mbox in mailboxes of a
+                set acctName to (name of a as string)
+                if theAcct = "" or acctName = theAcct then
+                    repeat with mboxRef in mailboxes of a
+                        set mbox to contents of mboxRef
                         set mboxName to (name of mbox as string)
                         set walkThis to false
                         if theMbox = "" then
@@ -166,40 +284,38 @@ enum MailScripts {
                             set walkThis to true
                         end if
                         if walkThis then
-                            try
-                                set msgs to (\(whoseClause))
-                            on error
-                                set msgs to {}
-                            end try
-                            set mboxCount to 0
-                            repeat with m in msgs
-                                if mboxCount ≥ perMboxCap then exit repeat
-                                set msgID to (id of m as string)
-                                set msgSubj to (subject of m as string)
-                                set msgFrom to (sender of m as string)
-                                try
-                                    set msgDateSent to ((date sent of m) as «class isot» as string)
-                                on error
-                                    set msgDateSent to ""
-                                end try
-                                try
-                                    set msgDateRecv to ((date received of m) as «class isot» as string)
-                                on error
-                                    set msgDateRecv to ""
-                                end try
-                                try
-                                    set msgRead to read status of m
-                                on error
-                                    set msgRead to false
-                                end try
-                                set out to out & msgID & FS & my clean(name of a as string) & FS & my clean(mboxName) & FS & my clean(msgSubj) & FS & my clean(msgFrom) & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
-                                set mboxCount to mboxCount + 1
-                            end repeat
+                            set isInbox to false
+                            ignoring case
+                                set isInbox to (mboxName is "INBOX")
+                            end ignoring
+                            if isInbox then
+                                set beginning of targets to {mbox, acctName, mboxName}
+                            else
+                                set end of targets to {mbox, acctName, mboxName}
+                            end if
                         end if
                     end repeat
                 end if
             end repeat
+
+            repeat with target in targets
+                if partialReason is "time" or ((current date) - startedAt) > budgetSecs then
+                    set partialReason to "time"
+                    set skippedCount to skippedCount + 1
+                else
+                    set mbox to item 1 of target
+                    set acctName to item 2 of target
+                    set mboxName to item 3 of target
+                    set mboxCount to 0
+                    set emittedIDs to {}
+        \(headerPhase)
+        \(bodyPhase)
+                end if
+            end repeat
         end tell
+        if partialReason is not "" then
+            set out to out & "!partial" & FS & partialReason & FS & skippedCount & RS
+        end if
         return out
         \(cleanHandler)
         """

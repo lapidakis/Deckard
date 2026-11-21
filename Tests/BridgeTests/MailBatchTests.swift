@@ -132,3 +132,94 @@ import Foundation
     #expect(summary.dateSent?.hasSuffix("+00:00") == true)
     #expect(summary.dateReceived == nil)
 }
+
+// MARK: - Search script shape (the 2026-11 Mail lock-up)
+
+private func filter(_ field: MailSearchField, query: String = "invoice", since: String? = nil) -> MailScripts.MessageFilter {
+    var f = MailScripts.MessageFilter()
+    f.textField = field
+    f.textQuery = query
+    f.sinceISO = since
+    return f
+}
+
+@Test func mailSearchNeverPutsBodyTextInAWhoseClause() {
+    // `content` inside `whose` makes Mail render every message's HTML on its
+    // main thread, for the whole mailbox, regardless of date filters.
+    for field in [MailSearchField.any, .body, .subject, .sender] {
+        for since in [nil, "2026-11-20"] as [String?] {
+            let script = MailScripts.listMessages(filter(field, since: since))
+            for line in script.split(separator: "\n") where line.contains("whose") {
+                #expect(!line.contains("content"), "field=\(field) since=\(since ?? "nil"): \(line)")
+            }
+        }
+    }
+}
+
+@Test func mailSearchBoundsBodyScansAndBudgetsItsOwnTime() {
+    let anyNoSince = MailScripts.listMessages(filter(.any))
+    #expect(anyNoSince.contains("(subject contains theQ or sender contains theQ)"), "headers are matched across all dates")
+    #expect(anyNoSince.contains("(date received ≥ bodyFloor)"), "bodies need a lower date bound")
+    #expect(anyNoSince.contains("examined ≥ bodyCap"))
+    #expect(anyNoSince.contains("> budgetSecs"))
+    #expect(anyNoSince.contains(#""!partial""#))
+
+    let anySince = MailScripts.listMessages(filter(.any, since: "2026-11-20"))
+    #expect(!anySince.contains("(date received ≥ bodyFloor)"), "an explicit since replaces the default window")
+
+    // Header-only searches and plain listings never read bodies.
+    for script in [MailScripts.listMessages(filter(.subject)), MailScripts.listMessages(filter(.sender)),
+                   MailScripts.listMessages(MailScripts.MessageFilter())] {
+        #expect(!script.contains("content of m"))
+    }
+    #expect(MailScripts.listMessages(filter(.body)).contains("content of m"))
+    // Inbox is walked first so it survives a budget cutoff.
+    #expect(anyNoSince.contains("set beginning of targets to"))
+}
+
+@Test func mailIncompleteNotesAreParsedFromTheTrailer() {
+    let f = MailScripts.MessageFilter()
+    let fs = MailScripts.fieldSeparator, rs = MailScripts.recordSeparator
+    let record = ["12", "iCloud", "INBOX", "s", "x", "", "", "true"].joined(separator: fs) + rs
+    #expect(MailAdapter.parseIncomplete(record, filter: f) == nil)
+    let timed = MailAdapter.parseIncomplete(record + "!partial\(fs)time\(fs)3\(rs)", filter: f)
+    #expect(timed?.contains("3 mailboxes were not searched") == true)
+    #expect(timed?.contains("\(f.budgetSeconds)s") == true)
+    let capped = MailAdapter.parseIncomplete("!partial\(fs)bodycap\(fs)0\(rs)", filter: f)
+    #expect(capped?.contains("at most \(f.bodyScanCap) messages") == true)
+    // A message whose subject merely says "!partial" is a normal 8-field record.
+    let lookalike = ["13", "iCloud", "INBOX", "!partial", "x", "", "", "true"].joined(separator: fs) + rs
+    #expect(MailAdapter.parseIncomplete(lookalike, filter: f) == nil)
+}
+
+@Test func generatedMailScriptsCompile() throws {
+    // Catches AppleScript syntax errors in the generated source, which
+    // otherwise only surface at runtime against a live Mail.app.
+    let osacompile = "/usr/bin/osacompile"
+    guard FileManager.default.isExecutableFile(atPath: osacompile),
+          FileManager.default.fileExists(atPath: "/System/Applications/Mail.app") else { return }
+    var unread = filter(.any, since: "2026-11-20"); unread.unreadOnly = true; unread.mailbox = "INBOX"
+    let scripts: [(String, String)] = [
+        ("list", MailScripts.listMessages(MailScripts.MessageFilter())),
+        ("any", MailScripts.listMessages(filter(.any))),
+        ("any-since-unread", MailScripts.listMessages(unread)),
+        ("body", MailScripts.listMessages(filter(.body))),
+        ("subject", MailScripts.listMessages(filter(.subject, since: "2026-11-20T15:30:00-06:00"))),
+        ("mailboxes", MailScripts.listMailboxes),
+        ("get", MailScripts.getMessage(account: "a", mailbox: "INBOX", id: "1")),
+    ]
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent("deckard-osa-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    for (name, source) in scripts {
+        let input = dir.appendingPathComponent("\(name).applescript")
+        try source.write(to: input, atomically: true, encoding: .utf8)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: osacompile)
+        p.arguments = ["-o", dir.appendingPathComponent("\(name).scpt").path, input.path]
+        let err = Pipe(); p.standardError = err; p.standardOutput = Pipe()
+        try p.run(); p.waitUntilExit()
+        let message = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        #expect(p.terminationStatus == 0, "\(name) does not compile: \(message)")
+    }
+}

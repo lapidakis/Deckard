@@ -101,7 +101,7 @@ struct ListMessagesTool: ToolHandler {
             unreadOnly: unread, scope: scope,
             tzID: tz, limit: limit
         )
-        return jsonResult(result)
+        return messageListResult(result)
     }
 }
 
@@ -123,6 +123,14 @@ struct SearchMailTool: ToolHandler {
           - "with_archive"      — include Archive
           - "all"               — include everything
         Explicit `mailbox` filter always wins.
+
+        Speed: `field` "subject" or "sender" is fast. "body" and the default
+        "any" also read message bodies, which is slow: bodies are only
+        searched in messages from the last 30 days unless `since` is given
+        (subject and sender are always searched across all dates), and at
+        most 100 bodies per mailbox. A search that would run long stops
+        after about 25 seconds and returns what it found with a note saying
+        the results may be incomplete.
 
         For listing without a query, use mail.list_messages.
         """,
@@ -172,7 +180,7 @@ struct SearchMailTool: ToolHandler {
             unreadOnly: unread, scope: scope,
             tzID: tz, limit: limit
         )
-        return jsonResult(results)
+        return messageListResult(results)
     }
 }
 
@@ -216,6 +224,16 @@ struct GetMessageTool: ToolHandler {
 }
 
 // MARK: - helpers
+
+/// The message array as before, plus a second text item when the search
+/// stopped early so the caller knows not to treat the list as exhaustive.
+func messageListResult(_ list: MailAdapter.MessageList) -> CallTool.Result {
+    let base = jsonResult(list.messages)
+    guard let note = list.incomplete, base.isError != true else { return base }
+    return CallTool.Result(
+        content: base.content + [.text(text: "Note from Deckard: \(note)", annotations: nil, _meta: nil)],
+        isError: false)
+}
 
 func jsonResult<T: Encodable>(_ value: T) -> CallTool.Result {
     do {

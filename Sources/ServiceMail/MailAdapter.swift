@@ -42,7 +42,7 @@ public actor MailAdapter {
         scope: MailboxScope = .primary,
         tzID: String? = nil,
         limit: Int = 25
-    ) async throws -> [MessageSummary] {
+    ) async throws -> MessageList {
         try validateDates(since: sinceISO, before: beforeISO, tzID: tzID)
         var filter = MailScripts.MessageFilter()
         filter.account = account
@@ -59,7 +59,9 @@ public actor MailAdapter {
         // Sort on Mail's raw local timestamps first (uniform, so lexical
         // order is chronological), then attach the offset for output.
         let outputTz = Self.resolveTz(tzID)
-        return Self.sortByMostRecent(raw).prefix(limit).map { $0.withOffsets(in: outputTz) }
+        return MessageList(
+            messages: Self.sortByMostRecent(raw).prefix(limit).map { $0.withOffsets(in: outputTz) },
+            incomplete: Self.parseIncomplete(out, filter: filter))
     }
 
     /// Searches messages with a text filter (and optional structural filters).
@@ -74,7 +76,7 @@ public actor MailAdapter {
         scope: MailboxScope = .primary,
         tzID: String? = nil,
         limit: Int = 25
-    ) async throws -> [MessageSummary] {
+    ) async throws -> MessageList {
         try validateDates(since: sinceISO, before: beforeISO, tzID: tzID)
         var filter = MailScripts.MessageFilter()
         filter.account = account
@@ -92,7 +94,9 @@ public actor MailAdapter {
         // Sort on Mail's raw local timestamps first (uniform, so lexical
         // order is chronological), then attach the offset for output.
         let outputTz = Self.resolveTz(tzID)
-        return Self.sortByMostRecent(raw).prefix(limit).map { $0.withOffsets(in: outputTz) }
+        return MessageList(
+            messages: Self.sortByMostRecent(raw).prefix(limit).map { $0.withOffsets(in: outputTz) },
+            incomplete: Self.parseIncomplete(out, filter: filter))
     }
 
     public struct BatchResult: Codable, Sendable {
@@ -174,6 +178,36 @@ public actor MailAdapter {
         let d = ContinuousClock().now - start
         return Int(d.components.seconds * 1000) +
             Int(d.components.attoseconds / 1_000_000_000_000_000)
+    }
+
+    /// Messages plus, when the script stopped early, why.
+    public struct MessageList: Sendable {
+        public let messages: [MessageSummary]
+        /// Human-readable reason the results may be incomplete, or nil.
+        public let incomplete: String?
+    }
+
+    /// Reads the script's `!partial` trailer. The script ends itself when its
+    /// time budget or body-scan cap is reached, rather than being killed.
+    static func parseIncomplete(_ out: String, filter: MailScripts.MessageFilter) -> String? {
+        let recSep = Character(MailScripts.recordSeparator)
+        let fieldSep = Character(MailScripts.fieldSeparator)
+        for record in out.split(separator: recSep, omittingEmptySubsequences: true) {
+            let fields = record.split(separator: fieldSep, omittingEmptySubsequences: false).map(String.init)
+            // Message records start with a numeric id, so this cannot collide.
+            guard fields.count == 3, fields[0] == "!partial" else { continue }
+            let skipped = Int(fields[2]) ?? 0
+            switch fields[1] {
+            case "time":
+                let boxes = skipped > 0 ? " \(skipped) mailbox\(skipped == 1 ? " was" : "es were") not searched." : ""
+                return "Results may be incomplete: the search stopped after \(filter.budgetSeconds)s to keep Mail responsive.\(boxes) Narrow it with `mailbox`, `since`, or `field` (subject/sender are much faster than body)."
+            case "bodycap":
+                return "Results may be incomplete: message bodies were checked in at most \(filter.bodyScanCap) messages per mailbox. Subject and sender matches are complete. Narrow it with `mailbox` or a tighter `since`/`before`."
+            default:
+                return "Results may be incomplete."
+            }
+        }
+        return nil
     }
 
     static func resolveTz(_ id: String?) -> TimeZone {

@@ -390,11 +390,11 @@ public actor CalendarAdapter {
             calendarId: e.calendar.calendarIdentifier,
             calendarTitle: e.calendar.title,
             title: e.title ?? "",
-            start: fmt.format(e.startDate),
-            end: fmt.format(e.endDate),
+            start: allDay ? fmt.formatAllDay(e.startDate) : fmt.format(e.startDate),
+            end: allDay ? fmt.formatAllDay(e.endDate) : fmt.format(e.endDate),
             isAllDay: allDay,
-            localStartDate: allDay ? fmt.localDateString(e.startDate) : nil,
-            localEndDate:   allDay ? fmt.localDateString(e.endDate) : nil,
+            localStartDate: allDay ? fmt.allDayDateString(e.startDate) : nil,
+            localEndDate:   allDay ? fmt.allDayDateString(e.endDate) : nil,
             location: e.location,
             isRecurring: e.hasRecurrenceRules,
             recurrenceRule: firstRecurrence(of: e),
@@ -416,16 +416,17 @@ public actor CalendarAdapter {
             return name.isEmpty ? email : "\(name) <\(email)>"
         }
         let allDay = e.isAllDay
+        let fmt = CalendarDates.Rendering(tz: tz)
         return CalendarEvent(
             id: e.eventIdentifier ?? "",
             calendarId: e.calendar.calendarIdentifier,
             calendarTitle: e.calendar.title,
             title: e.title ?? "",
-            start: CalendarDates.format(e.startDate, in: tz),
-            end: CalendarDates.format(e.endDate, in: tz),
+            start: allDay ? fmt.formatAllDay(e.startDate) : fmt.format(e.startDate),
+            end: allDay ? fmt.formatAllDay(e.endDate) : fmt.format(e.endDate),
             isAllDay: allDay,
-            localStartDate: allDay ? CalendarDates.localDateString(e.startDate, in: tz) : nil,
-            localEndDate:   allDay ? CalendarDates.localDateString(e.endDate, in: tz) : nil,
+            localStartDate: allDay ? fmt.allDayDateString(e.startDate) : nil,
+            localEndDate:   allDay ? fmt.allDayDateString(e.endDate) : nil,
             location: e.location,
             notes: e.notes,
             url: e.url?.absoluteString,
