@@ -20,8 +20,13 @@ concurrency:
 
 jobs:
   test:
-    name: swift test (macOS 15, Apple Silicon)
-    runs-on: macos-15
+    name: swift test (Xcode 27, Apple Silicon)
+    # The pinned dependencies need Swift tools 6.4 (swift-collections 1.7.x,
+    # Hummingbird 2.29), which only Xcode 27 ships. `xcode-27` is GitHub's
+    # runner image for it; pin 27.2 so CI matches local builds.
+    runs-on: xcode-27
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
 
     steps:
       - uses: actions/checkout@v4
