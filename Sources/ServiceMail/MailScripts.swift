@@ -189,7 +189,45 @@ enum MailScripts {
                             set mboxCount to mboxCount + 1
         """
 
-        let headerPhase = !runHeaderPhase ? "" : """
+        // Unfiltered listing: fetch each property for the leading range in
+        // one Apple Event (`subject of (messages 1 thru n of mbox)`), not
+        // one event per property per message. Per-message gets cost ~25 ms
+        // each, which made a cross-mailbox listing exhaust the time budget.
+        let unfiltered = !hasText && structural.isEmpty
+        let bulkPhase = """
+                    try
+                        set n to (count of messages of mbox)
+                        if n > perMboxCap then set n to perMboxCap
+                        if n > 0 then
+                            set idList to id of (messages 1 thru n of mbox)
+                            set subjList to subject of (messages 1 thru n of mbox)
+                            set fromList to sender of (messages 1 thru n of mbox)
+                            set sentList to date sent of (messages 1 thru n of mbox)
+                            set recvList to date received of (messages 1 thru n of mbox)
+                            set readList to read status of (messages 1 thru n of mbox)
+                            repeat with i from 1 to n
+                                set msgID to ((item i of idList) as string)
+                                try
+                                    set msgDateSent to ((item i of sentList) as «class isot» as string)
+                                on error
+                                    set msgDateSent to ""
+                                end try
+                                try
+                                    set msgDateRecv to ((item i of recvList) as «class isot» as string)
+                                on error
+                                    set msgDateRecv to ""
+                                end try
+                                set msgRead to false
+                                try
+                                    set msgRead to ((item i of readList) as boolean)
+                                end try
+                                set out to out & msgID & FS & my clean(acctName) & FS & my clean(mboxName) & FS & my clean((item i of subjList) as string) & FS & my clean((item i of fromList) as string) & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
+                            end repeat
+                        end if
+                    end try
+        """
+
+        let headerPhase = unfiltered ? bulkPhase : (!runHeaderPhase ? "" : """
                     try
                         set msgs to (\(headerQuery))
                     on error
@@ -205,7 +243,7 @@ enum MailScripts {
                         set end of emittedIDs to msgID
         \(emit)
                     end repeat
-        """
+        """)
 
         let bodyPhase = !scanBodies ? "" : """
                     if partialReason is not "time" then
