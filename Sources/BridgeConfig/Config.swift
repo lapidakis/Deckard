@@ -16,6 +16,7 @@ public struct Config: Codable, Sendable, Equatable {
     public var audit: AuditConfig
     public var cloudflareAccess: CloudflareAccessConfig
     public var cloudflareTunnel: CloudflareTunnelConfig
+    public var search: SearchConfig
 
     public init(
         server: ServerConfig = .init(),
@@ -27,7 +28,8 @@ public struct Config: Codable, Sendable, Equatable {
         drive: DriveConfig = .init(),
         audit: AuditConfig = .init(),
         cloudflareAccess: CloudflareAccessConfig = .init(),
-        cloudflareTunnel: CloudflareTunnelConfig = .init()
+        cloudflareTunnel: CloudflareTunnelConfig = .init(),
+        search: SearchConfig = .init()
     ) {
         self.server = server
         self.tailscale = tailscale
@@ -39,12 +41,14 @@ public struct Config: Codable, Sendable, Equatable {
         self.audit = audit
         self.cloudflareAccess = cloudflareAccess
         self.cloudflareTunnel = cloudflareTunnel
+        self.search = search
     }
 
     enum CodingKeys: String, CodingKey {
         case server, tailscale, auth, acl, redaction, injection, drive, audit
         case cloudflareAccess = "cloudflare_access"
         case cloudflareTunnel = "cloudflare_tunnel"
+        case search
     }
 
     public init(from decoder: Decoder) throws {
@@ -59,6 +63,7 @@ public struct Config: Codable, Sendable, Equatable {
         self.audit = try c.decodeIfPresent(AuditConfig.self, forKey: .audit) ?? .init()
         self.cloudflareAccess = try c.decodeIfPresent(CloudflareAccessConfig.self, forKey: .cloudflareAccess) ?? .init()
         self.cloudflareTunnel = try c.decodeIfPresent(CloudflareTunnelConfig.self, forKey: .cloudflareTunnel) ?? .init()
+        self.search = try c.decodeIfPresent(SearchConfig.self, forKey: .search) ?? .init()
     }
 }
 
@@ -450,5 +455,34 @@ public struct CloudflareTunnelConfig: Codable, Sendable, Equatable {
         self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
         self.configFile = try c.decodeIfPresent(String.self, forKey: .configFile) ?? d.configFile
         self.binary = try c.decodeIfPresent(String.self, forKey: .binary) ?? d.binary
+    }
+}
+
+/// How search is served.
+///
+/// ```toml
+/// [search]
+/// use_spotlight = true   # fast, complete mail search; needs Full Disk Access
+/// ```
+///
+/// `use_spotlight` is the user's *choice*; it only takes effect when macOS has
+/// actually granted the daemon Full Disk Access. Without the grant the bridge
+/// keeps using Mail.app scripting (slower; body text limited to recent mail).
+/// Off by default: Full Disk Access reaches far more than mail, so it is
+/// never assumed.
+public struct SearchConfig: Codable, Sendable, Equatable {
+    public var useSpotlight: Bool
+
+    public init(useSpotlight: Bool = false) {
+        self.useSpotlight = useSpotlight
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case useSpotlight = "use_spotlight"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.useSpotlight = try c.decodeIfPresent(Bool.self, forKey: .useSpotlight) ?? false
     }
 }

@@ -23,6 +23,9 @@ struct SettingsView: View {
             RemoteAccessTab(status: status)
                 .tabItem { Label("Remote Access", systemImage: "globe") }
 
+            SearchAccessTab(status: status)
+                .tabItem { Label("Search", systemImage: "magnifyingglass") }
+
             TailscaleTab(status: status)
                 .tabItem { Label("Tailscale", systemImage: "network") }
 

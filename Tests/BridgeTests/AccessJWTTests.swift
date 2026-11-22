@@ -360,3 +360,55 @@ private func status(_ result: Result<HTTPRunner.Caller, HTTPRunner.Rejection>) -
     try "not a pid".write(to: pidURL, atomically: true, encoding: .utf8)
     supervisor.stopLeftoverConnector(binary: "/bin/sleep")
 }
+
+// MARK: - Search choice, daemon status, Spotlight probe
+
+@Test func searchConfigDefaultsToNoFullDiskAccess() throws {
+    #expect(Config().search.useSpotlight == false)
+    let on = try TOMLDecoder().decode(Config.self, from: "[search]\nuse_spotlight = true\n")
+    #expect(on.search.useSpotlight)
+    #expect(try TOMLDecoder().decode(Config.self, from: try TOMLEncoder().encode(on)) == on)
+}
+
+@Test func daemonStatusRoundTripsAndFullDiskAccessCheckIsReadOnly() throws {
+    let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let url = dir.appendingPathComponent("daemon-status.json")
+    #expect(DaemonStatus.read(from: url) == nil)
+    let status = DaemonStatus(pid: 4242, startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                              fullDiskAccess: false, spotlightRequested: true, mailSearchBackend: "mail_app")
+    try status.write(to: url)
+    #expect(DaemonStatus.read(from: url) == status)
+    let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+    #expect(mode?.intValue == 0o600)
+
+    // A home with no TCC database reads as "not granted"; one with a
+    // readable file reads as granted. Nothing is created or modified.
+    #expect(!FullDiskAccess.isGranted(home: dir))
+    let tcc = dir.appendingPathComponent("Library/Application Support/com.apple.TCC")
+    try FileManager.default.createDirectory(at: tcc, withIntermediateDirectories: true)
+    try Data("x".utf8).write(to: tcc.appendingPathComponent("TCC.db"))
+    #expect(FullDiskAccess.isGranted(home: dir))
+    #expect(try Data(contentsOf: tcc.appendingPathComponent("TCC.db")) == Data("x".utf8))
+}
+
+@Test func spotlightProbeLogsShapeWithoutNamesOrContent() {
+    let path = "/Users/someone/Library/Mail/V10/1A2B3C4D-1111-2222-3333-444455556666/Tax Receipts.mbox/9F8E7D6C-AAAA-BBBB-CCCC-DDDDEEEEFFFF/Data/3/1/Messages/831686.emlx"
+    let shape = SpotlightProbe.maskedShape(of: path, home: "/Users/someone")
+    #expect(shape == "~/Library/Mail/V10/<uuid>/<name>.mbox/<uuid>/Data/<n>/<n>/Messages/<n>.emlx")
+    #expect(!shape.contains("Tax") && !shape.contains("831686") && !shape.contains("someone"))
+    #expect(SpotlightProbe.maskedShape(of: "/Users/someone/Library/Mail/V10/x/INBOX.mbox/Messages/12.partial.emlx", home: "/Users/someone")
+        .hasSuffix("/Messages/<n>.<part>.emlx"))
+
+    let mdls = """
+    kMDItemSubject                 = "Quarterly numbers, do not forward"
+    kMDItemAuthors                 = (
+        "Someone Private"
+    )
+    com_apple_mail_read            = 1
+    """
+    let names = SpotlightProbe.attributeNames(mdls: mdls)
+    #expect(names == ["com_apple_mail_read", "kMDItemAuthors", "kMDItemSubject"])
+    #expect(!names.joined().contains("Quarterly") && !names.joined().contains("Private"))
+}

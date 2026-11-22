@@ -89,6 +89,7 @@ struct OnboardingView: View {
         case .access:      RemoteAccessStep(status: status, onboarding: onboarding)
         case .token:       TokenStep(onboarding: onboarding)
         case .permissions: PermissionsStep(onboarding: onboarding)
+        case .search:      SearchStep(status: status, onboarding: onboarding)
         case .connect:     ConnectStep(onboarding: onboarding, status: status)
         case .done:        DoneStep(onboarding: onboarding)
         }

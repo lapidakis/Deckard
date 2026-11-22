@@ -113,6 +113,14 @@ Has the daemon run the Cloudflare Tunnel connector itself, so the public hostnam
 
 A missing binary or config is logged and skipped; it never stops the bridge. Enable `[cloudflare_access]` alongside it, otherwise the public hostname is protected only by bearer tokens.
 
+### `[search]`
+
+| Key | Default | Notes |
+|---|---|---|
+| `use_spotlight` | `false` | Ask for fast, complete mail search through the Mac's own index. Only takes effect once the daemon has Full Disk Access (System Settings > Privacy & Security > Full Disk Access, add the `deckard` binary, restart). Without the grant, Mail.app scripting is used. |
+
+Full Disk Access reaches much more than mail, so it is never assumed. The daemon writes what it was actually granted to `~/Library/Application Support/Deckard/daemon-status.json` at startup.
+
 ### `[acl]` and `[acl.profiles.<name>]`
 
 The global `[acl]` block is the default; `[acl.profiles.<name>]` blocks define named profiles that tokens can reference.

@@ -68,6 +68,26 @@ public struct BridgeServer: Sendable {
             }
             var allowedHosts = ["127.0.0.1:\(config.server.loopbackPort)", "localhost:\(config.server.loopbackPort)"]
             if let tailnetIP { allowedHosts.append("\(tailnetIP):\(config.tailscale.port)") }
+            // Report what this process is actually allowed to do. The app and
+            // CLI cannot check the daemon's privacy grants themselves.
+            let hasFullDiskAccess = FullDiskAccess.isGranted()
+            let spotlightActive = config.search.useSpotlight && hasFullDiskAccess
+            do {
+                try DaemonStatus(
+                    pid: ProcessInfo.processInfo.processIdentifier, startedAt: Date(),
+                    fullDiskAccess: hasFullDiskAccess, spotlightRequested: config.search.useSpotlight,
+                    // The Spotlight mail backend is not wired in yet; report
+                    // the path that really serves mail.search.
+                    mailSearchBackend: "mail_app"
+                ).write()
+            } catch {
+                logger.warning("Could not write daemon status: \(error)")
+            }
+            if config.search.useSpotlight && !hasFullDiskAccess {
+                logger.warning("[search] use_spotlight is on but the daemon does not have Full Disk Access; mail search stays on Mail.app scripting. Grant it in System Settings > Privacy & Security > Full Disk Access, then restart.")
+            }
+            let spotlightProbe = spotlightActive ? SpotlightProbe(logger: logger) : nil
+
             let accessConfig = config.cloudflareAccess
             if accessConfig.enabled {
                 guard !accessConfig.teamDomain.isEmpty, !accessConfig.audiences.isEmpty else {
@@ -183,6 +203,9 @@ public struct BridgeServer: Sendable {
                     }
                 }
 
+                if let spotlightProbe {
+                    group.addTask { await spotlightProbe.run() }
+                }
                 if config.cloudflareTunnel.enabled {
                     let supervisor = TunnelSupervisor(config: config.cloudflareTunnel, logger: logger)
                     group.addTask { await supervisor.run() }

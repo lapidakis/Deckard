@@ -321,6 +321,26 @@ struct PermissionsStep: View {
     }
 }
 
+// MARK: - Search
+
+/// One decision: Full Disk Access for fast, complete search, or no extra
+/// permission and slower, partial results. Standard is the default.
+struct SearchStep: View {
+    @ObservedObject var status: BridgeStatusModel
+    @ObservedObject var onboarding: OnboardingState
+    @StateObject private var model = SearchAccessModel()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Search").font(.title2.bold())
+            Text("How should Deckard search your mail? You can change this later in Settings.")
+                .foregroundStyle(.secondary)
+            ScrollView { SearchAccessView(model: model, status: status) }
+            OnboardingNav(onboarding: onboarding)
+        }
+    }
+}
+
 // MARK: - Connect
 
 struct ConnectStep: View {
