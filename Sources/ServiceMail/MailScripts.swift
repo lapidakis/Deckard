@@ -31,6 +31,16 @@ enum MailScripts {
         var bareDateTz: TimeZone = .current   // tz for parsing bare yyyy-MM-dd inputs
         var unreadOnly: Bool = false
         var perMailboxCap: Int = 50
+        /// Seconds the script may spend before it stops walking and returns
+        /// what it has. The script must end itself: when Deckard's own
+        /// timeout kills osascript, Mail keeps evaluating the request on its
+        /// main thread and every later Mail call queues behind it.
+        var budgetSeconds: Int = 25
+        /// Most message bodies read per mailbox during a body search. Reading
+        /// `content` makes Mail render the message's HTML through WebKit.
+        var bodyScanCap: Int = 100
+        /// With no `since`, body text is searched only this many days back.
+        var bodyWindowDays: Int = 30
         /// Only consulted when `mailbox` is empty. An explicit mailbox filter
         /// always wins (explicitly asking for Archive/Junk should work).
         var scope: MailboxScope = .primary
@@ -69,6 +79,81 @@ enum MailScripts {
     end clean
     """
 
+    /// Mailbox helpers shared by every script.
+    ///
+    /// Mail's scripting reports only a mailbox's own name, so two nested
+    /// mailboxes called "Utilities" look identical, while Mail's database (and
+    /// the fast search path) identifies a mailbox by its full path. Every tool
+    /// therefore speaks full paths ("Bills/Utilities"):
+    ///   - `mboxPath` builds the path by walking containers up to the account.
+    ///   - `findMailbox` resolves a path with Mail's own path-style specifier,
+    ///     then falls back to a bare-name match so callers that pass a nested
+    ///     mailbox's own name keep working, but only when exactly one mailbox
+    ///     has that name; otherwise it errors rather than pick one.
+    static let mailboxHandlers = """
+    on findMailbox(acct, mboxName)
+        tell application "Mail"
+            try
+                set mb to mailbox mboxName of acct
+                set probe to name of mb
+                return mb
+            end try
+            set hits to {}
+            repeat with mbRef in mailboxes of acct
+                if (name of mbRef as string) = mboxName then set end of hits to contents of mbRef
+            end repeat
+            if (count of hits) = 1 then return item 1 of hits
+            if (count of hits) > 1 then error "ambiguous_mailbox: several mailboxes are named '" & mboxName & "'; use a full path from mail.list_mailboxes"
+        end tell
+        return missing value
+    end findMailbox
+
+    on mboxPath(mb)
+        tell application "Mail"
+            set p to (name of mb as string)
+            set c to container of mb
+            repeat 8 times
+                try
+                    set upper to container of c
+                on error
+                    -- c is the account: the path is complete.
+                    exit repeat
+                end try
+                set p to ((name of c) as string) & "/" & p
+                set c to upper
+            end repeat
+        end tell
+        return p
+    end mboxPath
+    """
+
+    /// Every account (id and name) with the paths of the mailboxes Mail
+    /// itself lists for it. One record per mailbox: id, name, path.
+    ///
+    /// Mail's database identifies accounts by id and can hold mailboxes that
+    /// Mail no longer shows or scripts (an old tree left by a previous
+    /// account setup). The fast path only searches mailboxes that appear
+    /// here, so search can never reach a mailbox `mail.list_mailboxes` hides
+    /// and `mail.get_message` cannot open.
+    static let listAccountMailboxes: String = """
+    set out to ""
+    set RS to "\u{1E}"
+    set FS to "\u{1F}"
+    tell application "Mail"
+        repeat with a in accounts
+            set acctID to (id of a as string)
+            set acctName to my clean(name of a as string)
+            set out to out & acctID & FS & acctName & FS & "" & RS
+            repeat with mbox in mailboxes of a
+                set out to out & acctID & FS & acctName & FS & my clean(my mboxPath(contents of mbox)) & RS
+            end repeat
+        end repeat
+    end tell
+    return out
+    \(cleanHandler)
+    \(mailboxHandlers)
+    """
+
     /// Lists every mailbox across every Mail.app account.
     static let listMailboxes: String = """
     set out to ""
@@ -78,14 +163,30 @@ enum MailScripts {
         repeat with a in accounts
             set acctName to name of a as string
             repeat with mbox in mailboxes of a
-                set mboxName to name of mbox as string
+                set leafName to name of mbox as string
+                set mboxName to my mboxPath(contents of mbox)
                 set unreadN to (unread count of mbox) as integer
+                -- Mail reports `unread count` as 0 for an account's INBOX
+                -- reached through `mailboxes of account`, even when it holds
+                -- unread mail (seen on macOS 27 with iCloud; other mailboxes
+                -- report correctly). Count the inbox's unread messages
+                -- directly. Limited to INBOX because the query is slow on
+                -- large mailboxes such as Junk.
+                ignoring case
+                    set isInbox to (leafName is "INBOX")
+                end ignoring
+                if isInbox then
+                    try
+                        set unreadN to count of (messages of mbox whose read status is false)
+                    end try
+                end if
                 set out to out & my clean(acctName) & FS & my clean(mboxName) & FS & unreadN & RS
             end repeat
         end repeat
     end tell
     return out
     \(cleanHandler)
+    \(mailboxHandlers)
     """
 
     /// Builds a list/search script. If `filter.textQuery` is empty, no text
@@ -99,25 +200,160 @@ enum MailScripts {
         let acctEsc = applescriptEscape(filter.account)
         let mboxEsc = applescriptEscape(filter.mailbox)
 
-        // Build the whose clause: AND-ed conditions, only including those active.
-        var conds: [String] = []
-        if !filter.textQuery.isEmpty {
+        // Conditions Mail can answer from its message index.
+        var structural: [String] = []
+        if filter.sinceISO != nil { structural.append("(date received ≥ sinceDate)") }
+        if filter.beforeISO != nil { structural.append("(date received < beforeDate)") }
+        if filter.unreadOnly { structural.append("(read status is false)") }
+
+        // NEVER put `content` in a `whose` clause. Mail evaluates every term
+        // for every message in the mailbox (no short-circuit on the date
+        // terms), and `content` renders each message's HTML through WebKit on
+        // Mail's main thread. A cross-mailbox "any field" search did that for
+        // the whole account, ran past the 60s timeout, and kept Mail busy
+        // afterwards so every later request timed out too (2026-11).
+        //
+        // Instead: phase 1 matches subject/sender in `whose` (index-backed);
+        // phase 2 reads bodies one message at a time, only for candidates
+        // that pass the structural filter, capped and time-budgeted.
+        let hasText = !filter.textQuery.isEmpty
+        var headerTerm: String?
+        var scanBodies = false
+        if hasText {
             switch filter.textField {
-            case .subject: conds.append("(subject contains theQ)")
-            case .sender:  conds.append("(sender contains theQ)")
-            case .body:    conds.append("(content contains theQ)")
-            case .any:     conds.append("(subject contains theQ or sender contains theQ or content contains theQ)")
+            case .subject: headerTerm = "(subject contains theQ)"
+            case .sender:  headerTerm = "(sender contains theQ)"
+            case .body:    scanBodies = true
+            case .any:     headerTerm = "(subject contains theQ or sender contains theQ)"; scanBodies = true
             }
         }
-        if filter.sinceISO != nil { conds.append("(date received ≥ sinceDate)") }
-        if filter.beforeISO != nil { conds.append("(date received < beforeDate)") }
-        if filter.unreadOnly { conds.append("(read status is false)") }
 
-        let whoseClause = conds.isEmpty ? "messages of mbox" : "messages of mbox whose " + conds.joined(separator: " and ")
+        func whose(_ conds: [String]) -> String {
+            conds.isEmpty ? "messages of mbox" : "messages of mbox whose " + conds.joined(separator: " and ")
+        }
+        let runHeaderPhase = !hasText || headerTerm != nil
+        let headerQuery = whose((headerTerm.map { [$0] } ?? []) + structural)
+        // Without a lower date bound a body scan would walk the whole
+        // mailbox; bound it to a recent window.
+        var bodyConds = structural
+        if scanBodies && filter.sinceISO == nil { bodyConds.insert("(date received ≥ bodyFloor)", at: 0) }
+        let bodyQuery = whose(bodyConds)
 
         let sinceSetup = filter.sinceISO.flatMap { asDateSetup(varName: "sinceDate", iso: $0, bareDateTz: filter.bareDateTz) } ?? ""
         let beforeSetup = filter.beforeISO.flatMap { asDateSetup(varName: "beforeDate", iso: $0, bareDateTz: filter.bareDateTz) } ?? ""
         let skipList = applescriptListLiteral(skipNamesForScope(filter.scope))
+
+        // Emits one record for message `m`; shared by both phases.
+        let emit = """
+                            set msgSubj to (subject of m as string)
+                            set msgFrom to (sender of m as string)
+                            try
+                                set msgDateSent to ((date sent of m) as «class isot» as string)
+                            on error
+                                set msgDateSent to ""
+                            end try
+                            try
+                                set msgDateRecv to ((date received of m) as «class isot» as string)
+                            on error
+                                set msgDateRecv to ""
+                            end try
+                            try
+                                set msgRead to read status of m
+                            on error
+                                set msgRead to false
+                            end try
+                            set out to out & msgID & FS & my clean(acctName) & FS & my clean(mboxName) & FS & my clean(msgSubj) & FS & my clean(msgFrom) & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
+                            set mboxCount to mboxCount + 1
+        """
+
+        // Unfiltered listing: fetch each property for the leading range in
+        // one Apple Event (`subject of (messages 1 thru n of mbox)`), not
+        // one event per property per message. Per-message gets cost ~25 ms
+        // each, which made a cross-mailbox listing exhaust the time budget.
+        let unfiltered = !hasText && structural.isEmpty
+        let bulkPhase = """
+                    try
+                        set n to (count of messages of mbox)
+                        if n > perMboxCap then set n to perMboxCap
+                        if n > 0 then
+                            set idList to id of (messages 1 thru n of mbox)
+                            set subjList to subject of (messages 1 thru n of mbox)
+                            set fromList to sender of (messages 1 thru n of mbox)
+                            set sentList to date sent of (messages 1 thru n of mbox)
+                            set recvList to date received of (messages 1 thru n of mbox)
+                            set readList to read status of (messages 1 thru n of mbox)
+                            repeat with i from 1 to n
+                                set msgID to ((item i of idList) as string)
+                                try
+                                    set msgDateSent to ((item i of sentList) as «class isot» as string)
+                                on error
+                                    set msgDateSent to ""
+                                end try
+                                try
+                                    set msgDateRecv to ((item i of recvList) as «class isot» as string)
+                                on error
+                                    set msgDateRecv to ""
+                                end try
+                                set msgRead to false
+                                try
+                                    set msgRead to ((item i of readList) as boolean)
+                                end try
+                                set out to out & msgID & FS & my clean(acctName) & FS & my clean(mboxName) & FS & my clean((item i of subjList) as string) & FS & my clean((item i of fromList) as string) & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
+                            end repeat
+                        end if
+                    end try
+        """
+
+        let headerPhase = unfiltered ? bulkPhase : (!runHeaderPhase ? "" : """
+                    try
+                        set msgs to (\(headerQuery))
+                    on error
+                        set msgs to {}
+                    end try
+                    repeat with m in msgs
+                        if mboxCount ≥ perMboxCap then exit repeat
+                        if ((current date) - startedAt) > budgetSecs then
+                            set partialReason to "time"
+                            exit repeat
+                        end if
+                        set msgID to (id of m as string)
+                        set end of emittedIDs to msgID
+        \(emit)
+                    end repeat
+        """)
+
+        let bodyPhase = !scanBodies ? "" : """
+                    if partialReason is not "time" then
+                        try
+                            set cands to (\(bodyQuery))
+                        on error
+                            set cands to {}
+                        end try
+                        set examined to 0
+                        repeat with m in cands
+                            if mboxCount ≥ perMboxCap then exit repeat
+                            if examined ≥ bodyCap then
+                                if partialReason is "" then set partialReason to "bodycap"
+                                exit repeat
+                            end if
+                            if ((current date) - startedAt) > budgetSecs then
+                                set partialReason to "time"
+                                exit repeat
+                            end if
+                            set msgID to (id of m as string)
+                            if emittedIDs does not contain msgID then
+                                set examined to examined + 1
+                                set bodyText to ""
+                                try
+                                    set bodyText to (content of m as string)
+                                end try
+                                if bodyText contains theQ then
+        \(emit)
+                                end if
+                            end if
+                        end repeat
+                    end if
+        """
 
         return """
         set out to ""
@@ -128,20 +364,34 @@ enum MailScripts {
         set theMbox to "\(mboxEsc)"
         set skipList to \(skipList)
         set perMboxCap to \(max(1, filter.perMailboxCap))
+        set bodyCap to \(max(1, filter.bodyScanCap))
+        set budgetSecs to \(max(1, filter.budgetSeconds))
+        set startedAt to (current date)
+        set bodyFloor to (current date) - (\(max(1, filter.bodyWindowDays)) * days)
+        set partialReason to ""
+        set skippedCount to 0
         \(sinceSetup)
         \(beforeSetup)
         tell application "Mail"
+            -- Collect the mailboxes to walk, inbox first, so the most useful
+            -- results are in hand if the time budget runs out.
+            set targets to {}
+            set exactTargets to {}
+            set leafTargets to {}
             repeat with a in accounts
-                if theAcct = "" or (name of a as string) = theAcct then
-                    repeat with mbox in mailboxes of a
-                        set mboxName to (name of mbox as string)
+                set acctName to (name of a as string)
+                if theAcct = "" or acctName = theAcct then
+                    repeat with mboxRef in mailboxes of a
+                        set mbox to contents of mboxRef
+                        set leafName to (name of mbox as string)
+                        set mboxName to my mboxPath(mbox)
                         set walkThis to false
                         if theMbox = "" then
                             -- Cross-mailbox: respect scope skip list (case-insensitive).
                             set walkThis to true
                             ignoring case
                                 repeat with skipName in skipList
-                                    if mboxName is (skipName as string) then
+                                    if leafName is (skipName as string) then
                                         set walkThis to false
                                         exit repeat
                                     end if
@@ -149,45 +399,65 @@ enum MailScripts {
                             end ignoring
                         else if mboxName = theMbox then
                             -- Explicit mailbox filter wins regardless of scope.
-                            set walkThis to true
+                            set end of exactTargets to {mbox, acctName, mboxName}
+                        else if leafName = theMbox then
+                            set end of leafTargets to {mbox, acctName, mboxName}
                         end if
                         if walkThis then
-                            try
-                                set msgs to (\(whoseClause))
-                            on error
-                                set msgs to {}
-                            end try
-                            set mboxCount to 0
-                            repeat with m in msgs
-                                if mboxCount ≥ perMboxCap then exit repeat
-                                set msgID to (id of m as string)
-                                set msgSubj to (subject of m as string)
-                                set msgFrom to (sender of m as string)
-                                try
-                                    set msgDateSent to ((date sent of m) as «class isot» as string)
-                                on error
-                                    set msgDateSent to ""
-                                end try
-                                try
-                                    set msgDateRecv to ((date received of m) as «class isot» as string)
-                                on error
-                                    set msgDateRecv to ""
-                                end try
-                                try
-                                    set msgRead to read status of m
-                                on error
-                                    set msgRead to false
-                                end try
-                                set out to out & msgID & FS & my clean(name of a as string) & FS & my clean(mboxName) & FS & my clean(msgSubj) & FS & my clean(msgFrom) & FS & msgDateSent & FS & msgDateRecv & FS & (msgRead as string) & RS
-                                set mboxCount to mboxCount + 1
-                            end repeat
+                            set isInbox to false
+                            ignoring case
+                                set isInbox to (leafName is "INBOX")
+                            end ignoring
+                            if isInbox then
+                                set beginning of targets to {mbox, acctName, mboxName}
+                            else
+                                set end of targets to {mbox, acctName, mboxName}
+                            end if
                         end if
                     end repeat
                 end if
             end repeat
+
+            if theMbox is not "" then
+                -- A full path names exactly one mailbox. A bare name is
+                -- accepted only when one mailbox has it; several is an
+                -- error listing the paths, never a silent multi-folder search.
+                if (count of exactTargets) > 0 then
+                    set targets to exactTargets
+                else if (count of leafTargets) = 1 then
+                    set targets to leafTargets
+                else if (count of leafTargets) > 1 then
+                    set amb to "!ambiguous"
+                    repeat with t in leafTargets
+                        set amb to amb & FS & my clean(item 3 of t)
+                    end repeat
+                    return amb & RS
+                else
+                    return "!nomailbox" & RS
+                end if
+            end if
+
+            repeat with target in targets
+                if partialReason is "time" or ((current date) - startedAt) > budgetSecs then
+                    set partialReason to "time"
+                    set skippedCount to skippedCount + 1
+                else
+                    set mbox to item 1 of target
+                    set acctName to item 2 of target
+                    set mboxName to item 3 of target
+                    set mboxCount to 0
+                    set emittedIDs to {}
+        \(headerPhase)
+        \(bodyPhase)
+                end if
+            end repeat
         end tell
+        if partialReason is not "" then
+            set out to out & "!partial" & FS & partialReason & FS & skippedCount & RS
+        end if
         return out
         \(cleanHandler)
+        \(mailboxHandlers)
         """
     }
 
@@ -207,14 +477,12 @@ enum MailScripts {
             set found to missing value
             repeat with a in accounts
                 if (name of a as string) = theAcct then
-                    repeat with mbox in mailboxes of a
-                        if (name of mbox as string) = theMbox then
-                            try
-                                set found to (first message of mbox whose id is (theID as integer))
-                            end try
-                            exit repeat
-                        end if
-                    end repeat
+                    set mbox to my findMailbox(contents of a, theMbox)
+                    if mbox is not missing value then
+                        try
+                            set found to (first message of mbox whose id is (theID as integer))
+                        end try
+                    end if
                     exit repeat
                 end if
             end repeat
@@ -238,10 +506,20 @@ enum MailScripts {
                     end if
                 end repeat
             end try
+            try
+                set msgDateRecv to ((date received of found) as «class isot» as string)
+            on error
+                set msgDateRecv to ""
+            end try
+            set msgRead to false
+            try
+                set msgRead to read status of found
+            end try
             set msgBody to (content of found as string)
-            return theID & FS & theAcct & FS & theMbox & FS & my clean(msgSubj) & FS & my clean(msgFrom) & FS & my clean(toRecips) & FS & msgDate & FS & my clean(msgBody)
+            return theID & FS & theAcct & FS & theMbox & FS & my clean(msgSubj) & FS & my clean(msgFrom) & FS & my clean(toRecips) & FS & msgDate & FS & msgDateRecv & FS & (msgRead as string) & FS & my clean(msgBody)
         end tell
         \(cleanHandler)
+        \(mailboxHandlers)
         """
     }
 
@@ -366,22 +644,25 @@ enum MailScripts {
     /// Components are then extracted in the SYSTEM timezone (where AppleScript
     /// dates live), so the AppleScript date object represents the same absolute
     /// moment as the input.
-    static func asDateSetup(varName: String, iso: String, bareDateTz: TimeZone = .current) -> String? {
+    /// Parses the `since`/`before` forms the mail tools accept: a full ISO
+    /// 8601 timestamp (with or without fractional seconds), or a bare
+    /// `yyyy-MM-dd` meaning midnight in `bareDateTz`.
+    static func parseDate(iso: String, bareDateTz: TimeZone = .current) -> Date? {
         let formatter1 = ISO8601DateFormatter()
         formatter1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var date = formatter1.date(from: iso)
-        if date == nil {
-            let formatter2 = ISO8601DateFormatter()
-            formatter2.formatOptions = [.withInternetDateTime]
-            date = formatter2.date(from: iso)
-        }
-        if date == nil {
-            // bare yyyy-MM-dd → midnight in the caller's tz (default: system local)
-            let dayFmt = DateFormatter()
-            dayFmt.dateFormat = "yyyy-MM-dd"
-            dayFmt.timeZone = bareDateTz
-            date = dayFmt.date(from: iso)
-        }
+        if let date = formatter1.date(from: iso) { return date }
+        let formatter2 = ISO8601DateFormatter()
+        formatter2.formatOptions = [.withInternetDateTime]
+        if let date = formatter2.date(from: iso) { return date }
+        // bare yyyy-MM-dd → midnight in the caller's tz (default: system local)
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "yyyy-MM-dd"
+        dayFmt.timeZone = bareDateTz
+        return dayFmt.date(from: iso)
+    }
+
+    static func asDateSetup(varName: String, iso: String, bareDateTz: TimeZone = .current) -> String? {
+        let date = parseDate(iso: iso, bareDateTz: bareDateTz)
         guard let date else { return nil }
         let cal = Calendar(identifier: .gregorian)
         let comps = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
@@ -425,12 +706,7 @@ enum MailScripts {
             set srcMbox to missing value
             repeat with a in accounts
                 if (name of a as string) = theAcct then
-                    repeat with mbox in mailboxes of a
-                        if (name of mbox as string) = theMbox then
-                            set srcMbox to mbox
-                            exit repeat
-                        end if
-                    end repeat
+                    set srcMbox to my findMailbox(contents of a, theMbox)
                     exit repeat
                 end if
             end repeat
@@ -439,12 +715,7 @@ enum MailScripts {
             set destMbox to missing value
             repeat with a in accounts
                 if (name of a as string) = tgtAcct then
-                    repeat with mbox in mailboxes of a
-                        if (name of mbox as string) = tgtMbox then
-                            set destMbox to mbox
-                            exit repeat
-                        end if
-                    end repeat
+                    set destMbox to my findMailbox(contents of a, tgtMbox)
                     exit repeat
                 end if
             end repeat
@@ -491,6 +762,7 @@ enum MailScripts {
             end repeat
             return outputText
         end tell
+        \(mailboxHandlers)
         """
     }
 
@@ -511,12 +783,7 @@ enum MailScripts {
             set srcMbox to missing value
             repeat with a in accounts
                 if (name of a as string) = theAcct then
-                    repeat with mbox in mailboxes of a
-                        if (name of mbox as string) = theMbox then
-                            set srcMbox to mbox
-                            exit repeat
-                        end if
-                    end repeat
+                    set srcMbox to my findMailbox(contents of a, theMbox)
                     exit repeat
                 end if
             end repeat
@@ -558,6 +825,7 @@ enum MailScripts {
             end repeat
             return outputText
         end tell
+        \(mailboxHandlers)
         """
     }
 

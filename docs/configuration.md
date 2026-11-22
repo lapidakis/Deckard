@@ -77,6 +77,52 @@ deckard tailscale whois 100.x.y.z   # resolve a tailnet IP to peer + user
 |---|---|---|
 | `require_token` | `true` | Must be true for HTTP; false fails startup. Stdio relies on the OS process boundary. |
 
+`bearer_tokens` (default `true`) controls whether tokens from `tokens.toml` are accepted at all. Set it to `false` to make Cloudflare Access the only way in over HTTP. The daemon refuses to start with `bearer_tokens = false` unless `[cloudflare_access]` is enabled. stdio is unaffected.
+
+### `[cloudflare_access]`
+
+Accepts callers that Cloudflare Access has authenticated (Managed OAuth sign-in, or an Access service token) and that arrive through a Cloudflare Tunnel on the loopback listener. Off by default.
+
+```toml
+[cloudflare_access]
+enabled = true
+team_domain = "myteam.cloudflareaccess.com"
+audiences = ["<application AUD tag>"]      # from the Access application
+public_hosts = ["deckard.example.com"]     # Host values the tunnel forwards
+
+[cloudflare_access.identities]
+"me@example.com" = "claude"                # user email -> ACL profile
+"abc123.access"  = "triage"                # service token client id -> ACL profile
+```
+
+- Deckard verifies the `Cf-Access-Jwt-Assertion` header on every request: RS256 signature against the team's published keys, issuer, audience, and expiry. The header alone is never trusted, because any local process can reach the loopback port.
+- An identity that verifies but is not listed under `identities` gets 403. Every identity must name a profile; there is no fallback to the global `[acl]`, and an unknown profile name is deny-all.
+- A request carrying an assertion is judged on it alone. It never falls back to a bearer token.
+- Audit rows show `transport=cloudflare caller=cf:<email or client id>`.
+- Changing this section requires a daemon restart.
+
+### `[cloudflare_tunnel]`
+
+Has the daemon run the Cloudflare Tunnel connector itself, so the public hostname is up whenever Deckard is. Written by `deckard cloudflare setup` or the app's Remote Access view.
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Daemon starts and supervises `cloudflared`. |
+| `config_file` | `~/.cloudflared/deckard.yml` | Tunnel config; forwards only `/mcp` to the loopback port. |
+| `binary` | `""` | Path to `cloudflared`. Empty searches Homebrew locations and PATH. |
+
+A missing binary or config is logged and skipped; it never stops the bridge. Enable `[cloudflare_access]` alongside it, otherwise the public hostname is protected only by bearer tokens.
+
+### `[search]`
+
+| Key | Default | Notes |
+|---|---|---|
+| `fast_search` | `false` | Read Mail's own message database and message files directly for `mail.list_messages` and `mail.search`. Only takes effect once the daemon has Full Disk Access (System Settings > Privacy & Security > Full Disk Access, add the `deckard` binary, restart). |
+
+With fast search, finding mail by subject, sender, date, mailbox or read state is answered from Mail's database in milliseconds, and message text is searched across all mail by reading the message files. Without it, Mail.app scripting is used: slower, and message text is only searched 30 days back unless `since` is given.
+
+Full Disk Access reaches much more than mail, so it is never assumed. The daemon writes what it was actually granted, and which path is serving mail search, to `~/Library/Application Support/Deckard/daemon-status.json` at startup. Mail's database is Apple's private format; if its layout is not what Deckard expects, the daemon logs a warning and uses Mail.app scripting. `use_spotlight` is accepted as an older name for this key.
+
 ### `[acl]` and `[acl.profiles.<name>]`
 
 The global `[acl]` block is the default; `[acl.profiles.<name>]` blocks define named profiles that tokens can reference.

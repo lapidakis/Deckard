@@ -39,23 +39,44 @@ public struct HTTPRunner: Sendable {
         }
     }
 
+    /// Cloudflare Access state for the loopback listener that `cloudflared`
+    /// connects to. `sessions` maps a verified identity (email or service
+    /// token common name) to that identity's session holder and profile.
+    public struct AccessEnforcement: Sendable {
+        public let verifier: AccessJWTVerifier
+        public let sessions: [String: TokenSessions.Entry]
+        public init(verifier: AccessJWTVerifier, sessions: [String: TokenSessions.Entry]) {
+            self.verifier = verifier
+            self.sessions = sessions
+        }
+    }
+
+    static let accessAssertionHeader = HTTPField.Name("Cf-Access-Jwt-Assertion")!
+    static let connectingIPHeader = HTTPField.Name("Cf-Connecting-Ip")!
+
     private let bind: Bind
     private let sessions: TokenSessions
     private let requireToken: Bool
+    private let bearerTokens: Bool
     private let tailscale: TailscaleEnforcement?
+    private let access: AccessEnforcement?
     private let logger: Logger
 
     public init(
         bind: Bind,
         sessions: TokenSessions,
         requireToken: Bool,
+        bearerTokens: Bool = true,
         tailscale: TailscaleEnforcement? = nil,
+        access: AccessEnforcement? = nil,
         logger: Logger = Logger(label: "bridge.http")
     ) {
         self.bind = bind
         self.sessions = sessions
         self.requireToken = requireToken
+        self.bearerTokens = bearerTokens
         self.tailscale = tailscale
+        self.access = access
         self.logger = logger
     }
 
@@ -65,24 +86,29 @@ public struct HTTPRunner: Sendable {
         let requireToken = self.requireToken
         let bind = self.bind
         let tailscale = self.tailscale
+        let access = self.access
+        let bearerTokens = self.bearerTokens
 
         let router = Router(context: PeerAwareRequestContext.self)
         router.on("/mcp", method: .post) { req, ctx -> Response in
             try await Self.handle(
                 req: req, ctx: ctx, bind: bind, sessions: sessions,
-                requireToken: requireToken, tailscale: tailscale, logger: runnerLogger
+                requireToken: requireToken, bearerTokens: bearerTokens,
+                tailscale: tailscale, access: access, logger: runnerLogger
             )
         }
         router.on("/mcp", method: .get) { req, ctx -> Response in
             try await Self.handle(
                 req: req, ctx: ctx, bind: bind, sessions: sessions,
-                requireToken: requireToken, tailscale: tailscale, logger: runnerLogger
+                requireToken: requireToken, bearerTokens: bearerTokens,
+                tailscale: tailscale, access: access, logger: runnerLogger
             )
         }
         router.on("/mcp", method: .delete) { req, ctx -> Response in
             try await Self.handle(
                 req: req, ctx: ctx, bind: bind, sessions: sessions,
-                requireToken: requireToken, tailscale: tailscale, logger: runnerLogger
+                requireToken: requireToken, bearerTokens: bearerTokens,
+                tailscale: tailscale, access: access, logger: runnerLogger
             )
         }
 
@@ -118,37 +144,24 @@ public struct HTTPRunner: Sendable {
         bind: Bind,
         sessions: TokenSessions,
         requireToken: Bool,
+        bearerTokens: Bool = true,
         tailscale: TailscaleEnforcement?,
+        access: AccessEnforcement? = nil,
         logger: Logger
     ) async throws -> Response {
         let remoteIP = ctx.remoteAddress?.ipAddress
 
-        var resolvedHolder: SessionHolder?
-        var resolvedLabel: String?
-        if requireToken {
-            guard let token = extractBearer(from: req.headers) else {
-                return unauthorized(reason: "missing_token", message: "Missing bearer token")
-            }
-            guard let entry = sessions.entry(for: token), await entry.isCurrent() else {
-                // Wrong or revoked token: worth surfacing (a misconfigured
-                // client, or someone guessing). Never log the token itself.
-                logger.warning("Rejected bearer token transport=\(bind.transportLabel.rawValue) remote=\(remoteIP ?? "unknown")")
-                return unauthorized(reason: "invalid_token", message: "Invalid bearer token")
-            }
-            resolvedHolder = entry.holder
-            resolvedLabel = entry.label
-        } else {
-            // require_token = false (rare/dev). Pick the first available
-            // session holder. With no token, identity is unknowable.
-            resolvedHolder = sessions.entry(for: "")?.holder
-            resolvedLabel = sessions.entry(for: "")?.label
-            if resolvedHolder == nil {
-                return jsonError(status: .internalServerError, message: "No session holder configured")
-            }
-        }
-
-        guard let holder = resolvedHolder, let label = resolvedLabel else {
-            return unauthorized(reason: "invalid_token", message: "Invalid bearer token")
+        let holder: SessionHolder
+        let label: String
+        let accessAuth: AuthContext?
+        switch await authenticate(
+            headers: req.headers, remoteIP: remoteIP, bind: bind, sessions: sessions,
+            requireToken: requireToken, bearerTokens: bearerTokens, access: access, logger: logger
+        ) {
+        case .success(let caller):
+            (holder, label, accessAuth) = (caller.holder, caller.label, caller.accessAuth)
+        case .failure(let rejection):
+            return rejection.response
         }
 
         // Tailnet listener: best-effort whois so the audit row can attribute
@@ -180,7 +193,7 @@ public struct HTTPRunner: Sendable {
         // when whois succeeded so audit rows can attribute "ts:laptop:user"
         // instead of just "bearer:host", and remoteDescription captures the
         // raw IP for forensic use.
-        let perCallAuth = makePerCallAuth(
+        let perCallAuth = accessAuth ?? makePerCallAuth(
             bind: bind, label: label, remoteIP: remoteIP, peer: resolvedPeer
         )
 
@@ -188,10 +201,13 @@ public struct HTTPRunner: Sendable {
         let contextID: String?
         do { (preparedBody, contextID) = try holder.contexts.prepare(bodyData, auth: perCallAuth) }
         catch { return jsonError(status: .serviceUnavailable, message: "Too many pending requests; retry later") }
+        // Independent clients on one identity all number their requests from
+        // 1; give each request a unique id for its trip through the transport.
+        let (uniqueBody, originalID) = RequestIDRewriter.rewrite(preparedBody)
         let mcpRequest = MCP.HTTPRequest(
             method: req.method.rawValue,
             headers: headers,
-            body: preparedBody.isEmpty ? nil : preparedBody,
+            body: uniqueBody.isEmpty ? nil : uniqueBody,
             path: req.uri.path
         )
 
@@ -199,42 +215,93 @@ public struct HTTPRunner: Sendable {
         var mcpResponse = await BridgeCallContext.$override.withValue(perCallAuth) {
             await transport.handleRequest(mcpRequest)
         }
-
-        // Self-heal: the SDK's StatefulHTTPServerTransport keeps a session in
-        // memory across MCP-client reconnects and rejects fresh initialize
-        // calls with 400 "Session already initialized." When we see that, tear
-        // down and recreate the transport+server pair, then retry once.
-        if isStaleSessionError(mcpResponse, request: mcpRequest) {
-            // Some clients re-`initialize` on every request instead of reusing
-            // the session ID. Recreating the transport heals that — but it's
-            // budgeted (see RecreateThrottle): a client stuck re-initializing on
-            // a tight loop, or several workers sharing one token, would otherwise
-            // tear down the live session on every call, starving real tool calls
-            // and churning the daemon ~1/sec (the Hermes tailnet storm, 2026-05).
-            switch await holder.selfHeal() {
-            case .recreated:
-                // Log at .debug so stderr doesn't fill with thousands of these
-                // per day for clients that legitimately re-initialize.
-                logger.debug("Stale MCP session detected; recreated transport in place")
-                let fresh = await holder.currentTransport()
-                mcpResponse = await BridgeCallContext.$override.withValue(perCallAuth) {
-                    await fresh.handleRequest(mcpRequest)
-                }
-            case .throttled:
-                // Budget spent: stop honoring blind re-inits. Return the SDK's
-                // own 400 unchanged rather than weaponizing recreate. Warn (not
-                // debug) so a looping client is visible to the operator without
-                // having to raise the log level.
-                logger.warning("Self-heal deferred (busy or budget exhausted) for token=\(label); client likely re-initializing without reusing Mcp-Session-Id — returning stale-session response without recreate")
-            case .failed(let err):
-                logger.error("Failed to recreate transport: \(err)")
-            }
-        }
-
+        mcpResponse = RequestIDRewriter.restore(mcpResponse, originalID: originalID)
         if mcpResponse.statusCode >= 400 {
             holder.contexts.discard(contextID)
         }
         return convert(mcpResponse, logger: logger)
+    }
+
+    struct Caller: Sendable {
+        let holder: SessionHolder
+        let label: String
+        /// Set when the caller was authenticated by a Cloudflare Access assertion.
+        let accessAuth: AuthContext?
+    }
+
+    struct Rejection: Error {
+        let response: Response
+        init(_ response: Response) { self.response = response }
+    }
+
+    /// Decides who is calling, from headers alone, before the body is read.
+    /// Separate from `handle` so the precedence rules are unit-testable.
+    static func authenticate(
+        headers: HTTPFields,
+        remoteIP: String?,
+        bind: Bind,
+        sessions: TokenSessions,
+        requireToken: Bool,
+        bearerTokens: Bool,
+        access: AccessEnforcement?,
+        logger: Logger
+    ) async -> Result<Caller, Rejection> {
+        var resolvedHolder: SessionHolder?
+        var resolvedLabel: String?
+        var accessAuth: AuthContext?
+        if let access, let assertion = headers[accessAssertionHeader] {
+            // A request carrying an Access assertion is judged on that alone;
+            // it never falls back to bearer (its Authorization header holds
+            // Access's own opaque OAuth token, not one of ours).
+            let identity: AccessJWTVerifier.Identity
+            do {
+                identity = try await access.verifier.verify(assertion)
+            } catch {
+                logger.warning("Rejected Cloudflare Access assertion: \(error) remote=\(remoteIP ?? "unknown")")
+                return .failure(.init(unauthorized(reason: "invalid_token", message: "Invalid Cloudflare Access assertion")))
+            }
+            guard let entry = access.sessions[identity.subject], await entry.isCurrent() else {
+                // Authenticated by Access but not mapped to a profile here.
+                logger.warning("Cloudflare Access identity has no profile mapping: \(identity.subject)")
+                return .failure(.init(jsonError(status: .forbidden, message: "Identity is not authorized for this server")))
+            }
+            resolvedHolder = entry.holder
+            resolvedLabel = entry.label
+            accessAuth = AuthContext(
+                transport: .cloudflare,
+                identity: .cloudflareAccess(subject: identity.subject),
+                remoteDescription: "cloudflare:\(sanitizedClientIP(headers[connectingIPHeader]) ?? "?")"
+            )
+        } else if requireToken {
+            guard bearerTokens else {
+                return .failure(.init(unauthorized(reason: "invalid_token", message: "Bearer tokens are disabled; sign in through Cloudflare Access")))
+            }
+            guard let token = extractBearer(from: headers) else {
+                return .failure(.init(unauthorized(reason: "missing_token", message: "Missing bearer token")))
+            }
+            guard let entry = sessions.entry(for: token), await entry.isCurrent() else {
+                // Wrong or revoked token: worth surfacing (a misconfigured
+                // client, or someone guessing). Never log the token itself.
+                logger.warning("Rejected bearer token transport=\(bind.transportLabel.rawValue) remote=\(remoteIP ?? "unknown")")
+                return .failure(.init(unauthorized(reason: "invalid_token", message: "Invalid bearer token")))
+            }
+            resolvedHolder = entry.holder
+            resolvedLabel = entry.label
+        } else {
+            // require_token = false (rare/dev). Pick the first available
+            // session holder. With no token, identity is unknowable.
+            resolvedHolder = sessions.entry(for: "")?.holder
+            resolvedLabel = sessions.entry(for: "")?.label
+            if resolvedHolder == nil {
+                return .failure(.init(jsonError(status: .internalServerError, message: "No session holder configured")))
+            }
+        }
+
+        guard let holder = resolvedHolder, let label = resolvedLabel else {
+            return .failure(.init(unauthorized(reason: "invalid_token", message: "Invalid bearer token")))
+        }
+        return .success(Caller(holder: holder, label: label, accessAuth: accessAuth))
+
     }
 
     static func makePerCallAuth(
@@ -264,6 +331,9 @@ public struct HTTPRunner: Sendable {
             remoteDescription = remoteIP ?? "127.0.0.1"
         case .stdio:
             remoteDescription = remoteIP ?? "stdio"
+        case .cloudflare:
+            // Access requests build their AuthContext in `handle`.
+            remoteDescription = "cloudflare:\(remoteIP ?? "?")"
         }
         return AuthContext(
             transport: transport,
@@ -272,15 +342,16 @@ public struct HTTPRunner: Sendable {
         )
     }
 
-    static func isStaleSessionError(_ response: MCP.HTTPResponse, request: MCP.HTTPRequest) -> Bool {
-        guard response.statusCode == 400 else { return false }
-        guard request.method.uppercased() == "POST",
-              let data = request.body,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              json["method"] as? String == "initialize" else { return false }
-        guard let body = response.bodyData,
-              let s = String(data: body, encoding: .utf8) else { return false }
-        return s.contains("Session already initialized")
+    /// `Cf-Connecting-Ip` is set by Cloudflare's edge, but it is still header
+    /// text headed for the audit log and approval dialog: accept only
+    /// address-shaped values.
+    static func sanitizedClientIP(_ raw: String?) -> String? {
+        guard let raw, !raw.isEmpty, raw.count <= 45,
+              raw.unicodeScalars.allSatisfy({ c in
+                  (48...57).contains(c.value) || (65...70).contains(c.value) || (97...102).contains(c.value)
+                      || c == "." || c == ":"
+              }) else { return nil }
+        return raw
     }
 
     static func extractBearer(from headers: HTTPFields) -> String? {

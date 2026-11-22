@@ -155,3 +155,24 @@ import BridgeCore
     #expect(throws: (any Error).self) { try CalendarDates.parseEventDate("2026-03-08", allDay: false, timeZone: zone) }
     #expect(throws: (any Error).self) { try CalendarDates.parseEventDate("2026-03-08T00:00:00Z", allDay: true, timeZone: zone) }
 }
+
+@Test func allDayEventsKeepTheirDateInEveryRequestedZone() throws {
+    let denver = TimeZone(identifier: "America/Denver")!
+    var mac = Calendar(identifier: .gregorian); mac.timeZone = denver
+    // EventKit's shape for an all-day event on 2026-11-22 on a Mac in Denver.
+    let start = mac.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 0, minute: 0, second: 0))!
+    let end = mac.date(from: DateComponents(year: 2026, month: 11, day: 22, hour: 23, minute: 59, second: 59))!
+
+    for (zone, offset) in [("America/Chicago", "-06:00"), ("America/Los_Angeles", "-08:00"),
+                           ("America/Denver", "-07:00"), ("Asia/Tokyo", "+09:00"), ("UTC", "Z")] {
+        let r = CalendarDates.Rendering(tz: TimeZone(identifier: zone)!, systemTz: denver)
+        #expect(r.formatAllDay(start) == "2026-11-22T00:00:00.000\(offset)", "\(zone) start")
+        #expect(r.formatAllDay(end) == "2026-11-22T23:59:59.000\(offset)", "\(zone) end")
+        // West of the Mac the converted instant is the previous day; the date must not move.
+        #expect(r.allDayDateString(start) == "2026-11-22", "\(zone) date")
+        #expect(r.allDayDateString(end) == "2026-11-22", "\(zone) end date")
+    }
+    // Timed events are still converted as instants.
+    let chicago = CalendarDates.Rendering(tz: TimeZone(identifier: "America/Chicago")!, systemTz: denver)
+    #expect(chicago.format(start) == "2026-11-22T01:00:00.000-06:00")
+}

@@ -1,6 +1,38 @@
 # Changelog
 
-## Unreleased — calendar and security review
+## v1.0.0-beta.4 — Cloudflare access, fast mail search, stateless transport
+
+Public access through Cloudflare (Tunnel + Access with OAuth sign-in), mail search that reads Mail's own database when Full Disk Access is granted, a stateless HTTP transport, and a security and correctness pass across the tools.
+
+**Upgrade notes**
+
+- `GET /mcp` and `DELETE /mcp` now return 405: the HTTP transport is stateless. Clients that only POST are unaffected.
+- Mail tools return and accept full mailbox paths (`Parent/Child`). A bare name still works when it is unambiguous.
+- `mail.search` and `mail.list_messages` return errors for an unknown mailbox, an inverted date range, or a `limit` outside 1 to 200, where they used to return an empty list or clamp.
+- Mail timestamps carry a UTC offset; all-day calendar events are anchored to the requested `tz`.
+- Tailscale needs an authoritative CLI address; calendar writes require strict dates and recurrence selectors; Drive rejects symlink aliases.
+- Everything new is off by default: `[cloudflare_access]`, `[cloudflare_tunnel]`, `[search] fast_search`.
+
+### Cloudflare, search and transport
+
+- **HTTP transport is now stateless.** No `Mcp-Session-Id`; any number of clients can share one identity, and a daemon restart no longer strands clients. `initialize` is idempotent. The stale-session self-heal, its throttle and the lifecycle gate are removed. Each request gets a unique id through the transport so concurrent clients reusing the same JSON-RPC id cannot collide. Compatibility: `GET /mcp` and `DELETE /mcp` return 405; client cancellation notifications are not honoured.
+- **Permanent Cloudflare Tunnel.** `[cloudflare_tunnel] enabled = true` has the daemon run and supervise `cloudflared` (restart with backoff, log at `~/Library/Logs/Deckard/cloudflared.log`, leftover connector cleaned up after a daemon restart). New `deckard cloudflare setup` creates the tunnel, writes a config that forwards only `/mcp`, routes DNS and updates `config.toml`; `deckard cloudflare status` reports the state.
+- **Fast mail search by reading Mail's own database.** With `[search] fast_search = true` and Full Disk Access granted to the daemon, `mail.list_messages` and `mail.search` read Mail's Envelope Index (SQLite) for subject, sender, dates, mailbox and read state, and read message text from the `.emlx` files, decoding MIME parts (quoted-printable, base64, multipart, HTML). Mail.app is not involved except to map account ids to names, and Deckard keeps no copy. The schema is validated at startup; any mismatch or error falls back to Mail.app scripting per request. Spotlight was the original plan but exposes no Mail content to other processes on macOS 27.
+- **Mail tools speak full mailbox paths.** Mail's scripting reports only a mailbox's own name, so two nested mailboxes called "Utilities" were indistinguishable. `mail.list_mailboxes` and message results now return paths such as `Bills/Utilities`, and every tool that takes a mailbox resolves a path (an exact path always wins; a bare name is accepted only when exactly one mailbox has it, otherwise the error lists the full paths). The fast path searches only mailboxes Mail itself lists, so it cannot return messages from a tree left in Mail's database that `mail.list_mailboxes` does not show and `mail.get_message` cannot open.
+- **Mail input errors instead of empty results:** an unknown mailbox or account, `since` later than `before`, and a `limit` outside 1 to 200 now return an error. `mail.get_message` also returns `date_received` and `is_read`, and drops the placeholder characters Mail leaves where inline images were.
+- **Search choice in onboarding and Settings.** Pick standard search (no extra permission; slower, partial mail results) or fast search, which needs Full Disk Access for the daemon. The daemon reports whether it actually has the grant, and which mail search path is in effect, in `daemon-status.json`, since the app cannot check another process's grants. `[search] use_spotlight` is still read as an alias of `fast_search`.
+- **Remote access in the menubar app.** New onboarding step and Settings tab to enable Tailscale and/or Cloudflare, sign in to Cloudflare, create the tunnel and record the Access sign-in details.
+- Add `[cloudflare_access]`: accept callers authenticated by Cloudflare Access (Managed OAuth or service tokens) through a Cloudflare Tunnel. Deckard verifies the forwarded assertion (RS256 signature, issuer, audience, expiry) and maps the identity to an ACL profile; unmapped identities are refused.
+- Add `[auth] bearer_tokens` (default `true`) to switch bearer tokens off when Access is the only intended way in.
+- New audit transport `cloudflare` and caller form `cf:<identity>`.
+- Return 404 (not the SDK's 400 "Session not initialized") when a client presents a session ID the daemon no longer knows, e.g. after a restart, so MCP clients re-initialize instead of staying stuck.
+- **Fix `mail.search` locking up Mail.** The default "any" field put `content contains` in an AppleScript `whose` clause, which made Mail render every message's HTML on its main thread for every mailbox, ignoring date filters; after Deckard's 60s timeout Mail kept going and every later Mail call timed out behind it. Subject/sender are now matched in `whose`, bodies are read one message at a time only for date-filtered candidates (last 30 days when no `since`, at most 100 per mailbox), the inbox is walked first, and the script stops itself after 25s. Stopped-early results carry a note saying they may be incomplete. Also applies the time budget to `mail.list_messages`, and unfiltered listings now fetch each property for a mailbox in one request instead of one per message (cross-mailbox listing: about 26s to 6s on a 30-mailbox account).
+- All-day calendar events are anchored to the requested `tz`: `start`/`end` are midnight and 23:59:59 on the event's own date in that zone, and `local_start_date`/`local_end_date` no longer shift a day for callers west of the Mac. Previously the Mac-zone midnight was converted as an instant (01:00 Central for a Mountain-time Mac).
+- Mail timestamps (`date_sent`, `date_received`) now carry an explicit UTC offset and are expressed in the `tz` argument's zone when given (the Mac's zone otherwise). They were previously bare local wall-clock times, so a caller in another zone read them off by the difference.
+- Fix `mail.list_mailboxes` reporting 0 unread for an account's INBOX: Mail's `unread count` is wrong for that mailbox, so the inbox's unread messages are now counted directly.
+- Tool calls blocked by a missing macOS privacy grant (Calendar, Reminders, Contacts, Mail automation, iCloud Drive, Voice Memos) now return a fixed "macOS permission required" message saying what to enable and that it must be done at the Mac, with `_meta.error_kind = macos_permission_required`. Already-denied access fails immediately instead of waiting; the Calendar prompt wait drops from 60s to 15s.
+
+### Security and calendar review
 
 - Harden token revocation, private atomic persistence, cross-process audit/token writes, error redaction, and per-request identity propagation through the MCP SDK.
 - Fence session recovery against executing tools and approvals; enforce HTTP bearer auth and exact Host/Origin checks.

@@ -131,21 +131,50 @@ public enum CalendarDates {
     public final class Rendering: @unchecked Sendable {
         private let iso = ISO8601DateFormatter()
         private let day = DateFormatter()
+        private let systemDay = DateFormatter()
+        private let systemCalendar: Calendar
+        private let outputCalendar: Calendar
 
-        public init(tz: TimeZone) {
+        /// `systemTz` is the zone EventKit resolves floating dates in: the
+        /// Mac's. Injectable for tests.
+        public init(tz: TimeZone, systemTz: TimeZone = .current) {
             iso.formatOptions = [
                 .withInternetDateTime, .withFractionalSeconds,
                 .withTimeZone, .withColonSeparatorInTimeZone,
             ]
             iso.timeZone = tz
-            day.locale = Locale(identifier: "en_US_POSIX")
-            day.calendar = Calendar(identifier: .gregorian)
-            day.dateFormat = "yyyy-MM-dd"
-            day.timeZone = tz
+            for (formatter, zone) in [(day, tz), (systemDay, systemTz)] {
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.calendar = Calendar(identifier: .gregorian)
+                formatter.dateFormat = "yyyy-MM-dd"
+                formatter.timeZone = zone
+            }
+            var system = Calendar(identifier: .gregorian); system.timeZone = systemTz
+            var output = Calendar(identifier: .gregorian); output.timeZone = tz
+            systemCalendar = system
+            outputCalendar = output
         }
 
         public func format(_ d: Date) -> String { iso.string(from: d) }
         public func localDateString(_ d: Date) -> String { day.string(from: d) }
+
+        // All-day events are "floating": EventKit hands them back as midnight
+        // to 23:59:59 in the Mac's zone. Converting that instant to another
+        // zone makes a Mountain-time all-day event start at 01:00 Central, or
+        // at 23:00 the previous day Pacific. An all-day event belongs to a
+        // calendar date, not an instant, so keep the wall-clock time and
+        // re-anchor it in the requested zone.
+
+        /// Start or end of an all-day event: same date and wall-clock time,
+        /// expressed in the output zone.
+        public func formatAllDay(_ d: Date) -> String {
+            let wallClock = systemCalendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: d)
+            return format(outputCalendar.date(from: wallClock) ?? d)
+        }
+
+        /// The calendar date an all-day event falls on (yyyy-MM-dd), which is
+        /// the same everywhere and so is read in the Mac's zone.
+        public func allDayDateString(_ d: Date) -> String { systemDay.string(from: d) }
     }
 
     /// Local-calendar date string (yyyy-MM-dd) for the supplied date in the

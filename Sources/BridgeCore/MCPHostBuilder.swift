@@ -34,10 +34,44 @@ public struct MCPHostBuilder: Sendable {
         self.logger = logger
     }
 
+    /// Replace the SDK's default `initialize` handler with an idempotent one.
+    ///
+    /// MUST be called after `server.start(transport:)` — `start()` re-registers
+    /// the SDK's default handlers (`registerDefaultHandlers`), which would
+    /// silently overwrite this override if it ran first.
+    ///
+    /// The SDK default rejects a second `initialize` with "Server is already
+    /// initialized". That is wrong for Deckard's long-lived per-identity
+    /// servers behind a stateless HTTP transport: every client (re)connect
+    /// opens with `initialize`, and all of them must succeed against the same
+    /// Server.
+    ///
+    /// The override cannot call the SDK's private `setInitialState`, so
+    /// `Server.isInitialized` stays false. That is harmless in non-strict mode
+    /// (Deckard's configuration): nothing gates on it. If a Server is ever
+    /// built with `.strict`, every non-init request would 400 — don't.
+    public func registerIdempotentInitialize(on server: Server) async {
+        let serverInfo = Server.Info(name: serverName, version: serverVersion)
+        let capabilities = await server.capabilities
+        await server.withMethodHandler(Initialize.self) { params in
+            // Mirrors the SDK-internal Version.negotiate (not public): echo a
+            // supported client version, otherwise offer our latest.
+            let negotiated = Version.supported.contains(params.protocolVersion)
+                ? params.protocolVersion
+                : Version.latest
+            return Initialize.Result(
+                protocolVersion: negotiated,
+                capabilities: capabilities,
+                serverInfo: serverInfo,
+                instructions: nil
+            )
+        }
+    }
+
     /// Build a Server (not yet started) with all tools registered through the
     /// caller-supplied policy pipeline. The `auth` describes the caller for
     /// audit purposes; `policy` carries that caller's ACL profile.
-    public func build(auth: AuthContext, policy: PolicyPipeline, lifecycle: SessionLifecycleGate = .init(), contexts: RequestContextStore? = nil) async -> Server {
+    public func build(auth: AuthContext, policy: PolicyPipeline, contexts: RequestContextStore? = nil) async -> Server {
         let server = Server(
             name: serverName,
             version: serverVersion,
@@ -66,13 +100,6 @@ public struct MCPHostBuilder: Sendable {
         let middleware = self.middleware
         let approval = self.approval
         await server.withMethodHandler(CallTool.self) { params in
-            guard lifecycle.beginCall() else {
-                let request = PolicyRequest(auth: BridgeCallContext.override ?? auth, tool: params.name,
-                                            argKeys: params.arguments.map { Array($0.keys) } ?? [])
-                await policy.recordResult(request, latencyMs: 0, resultBytes: nil, error: "session recovering; tool not executed")
-                return CallTool.Result(content: [.text(text: "Session recovering; tool not executed. Reconnect and retry.", annotations: nil, _meta: nil)], isError: true)
-            }
-            defer { lifecycle.endCall() }
             let perCallAuth: AuthContext
             if let contexts {
                 guard let resolved = contexts.consume(params._meta?[RequestContextStore.metadataKey]?.stringValue) else {
@@ -229,6 +256,22 @@ public struct MCPHostBuilder: Sendable {
             return CallTool.Result(content: processed.content, isError: processed.isError, _meta: meta)
         } catch {
             let ms = elapsedMs(since: start)
+            // A missing macOS privacy grant is the one failure the caller can
+            // act on only by telling the person at the Mac, so it gets a
+            // fixed, safe message (no framework text) and its own audit note.
+            if let permission = MacPermissionError.classify(error, tool: params.name) {
+                await policy.recordResult(request, latencyMs: ms, resultBytes: nil,
+                                          error: "macos permission required: \(permission.service.rawValue) (\(permission.state.rawValue))")
+                logger.warning("tool_blocked tool=\(params.name) macos_permission=\(permission.service.rawValue) state=\(permission.state.rawValue) elapsed_ms=\(ms)")
+                let meta = Metadata(additionalFields: [
+                    "error_kind": .string("macos_permission_required"),
+                    "service": .string(permission.service.rawValue),
+                    "state": .string(permission.state.rawValue),
+                ])
+                return CallTool.Result(
+                    content: [.text(text: permission.description, annotations: nil, _meta: nil)],
+                    isError: true, _meta: meta)
+            }
             // Framework errors can echo event notes, file paths, or credentials.
             // Apply the same output policy as successful results; keep payloads
             // out of audit/stderr even when redaction is disabled by the user.

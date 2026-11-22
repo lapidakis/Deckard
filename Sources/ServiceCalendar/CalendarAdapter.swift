@@ -54,7 +54,16 @@ public actor CalendarAdapter {
     private var accessTask: Task<Bool, Error>?
 
     private func ensureAccess() async throws {
-        if accessGranted && EKEventStore.authorizationStatus(for: .event) == .fullAccess { return }
+        let status = EKEventStore.authorizationStatus(for: .event)
+        if accessGranted && status == .fullAccess { return }
+        // Already refused (or write-only): asking again shows no prompt, so
+        // fail immediately instead of making a remote caller wait.
+        switch status {
+        case .denied, .restricted, .writeOnly:
+            throw MacPermissionError(.calendar, .denied)
+        default:
+            break
+        }
         let task: Task<Bool, Error>
         if let existing = accessTask {
             task = existing
@@ -64,10 +73,16 @@ public actor CalendarAdapter {
         }
         defer { accessTask = nil }
         guard try await task.value else {
-            throw CalendarError.accessDenied("user denied or system blocked Full Calendar Access")
+            throw MacPermissionError(.calendar, .denied)
         }
         accessGranted = true
     }
+
+    /// How long a tool call waits for someone to answer the macOS prompt.
+    /// The prompt stays on screen after this elapses, and a later grant takes
+    /// effect on the next call, so a remote caller is told to retry rather
+    /// than held for a minute.
+    private static let accessRequestTimeoutSec = 15
 
     private func requestAccess() async throws -> Bool {
         let latch = ResumeLatch()
@@ -77,10 +92,9 @@ public actor CalendarAdapter {
                 if let error { cont.resume(throwing: error) }
                 else { cont.resume(returning: granted) }
             }
-            DispatchQueue.global().asyncAfter(deadline: .now() + 60) {
+            DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(Self.accessRequestTimeoutSec)) {
                 guard latch.tryResume() else { return }
-                cont.resume(throwing: CalendarError.accessDenied(
-                    "Calendar access request timed out; grant Full Calendar Access in System Settings and retry"))
+                cont.resume(throwing: MacPermissionError(.calendar, .promptPending))
             }
         }
     }
@@ -376,11 +390,11 @@ public actor CalendarAdapter {
             calendarId: e.calendar.calendarIdentifier,
             calendarTitle: e.calendar.title,
             title: e.title ?? "",
-            start: fmt.format(e.startDate),
-            end: fmt.format(e.endDate),
+            start: allDay ? fmt.formatAllDay(e.startDate) : fmt.format(e.startDate),
+            end: allDay ? fmt.formatAllDay(e.endDate) : fmt.format(e.endDate),
             isAllDay: allDay,
-            localStartDate: allDay ? fmt.localDateString(e.startDate) : nil,
-            localEndDate:   allDay ? fmt.localDateString(e.endDate) : nil,
+            localStartDate: allDay ? fmt.allDayDateString(e.startDate) : nil,
+            localEndDate:   allDay ? fmt.allDayDateString(e.endDate) : nil,
             location: e.location,
             isRecurring: e.hasRecurrenceRules,
             recurrenceRule: firstRecurrence(of: e),
@@ -402,16 +416,17 @@ public actor CalendarAdapter {
             return name.isEmpty ? email : "\(name) <\(email)>"
         }
         let allDay = e.isAllDay
+        let fmt = CalendarDates.Rendering(tz: tz)
         return CalendarEvent(
             id: e.eventIdentifier ?? "",
             calendarId: e.calendar.calendarIdentifier,
             calendarTitle: e.calendar.title,
             title: e.title ?? "",
-            start: CalendarDates.format(e.startDate, in: tz),
-            end: CalendarDates.format(e.endDate, in: tz),
+            start: allDay ? fmt.formatAllDay(e.startDate) : fmt.format(e.startDate),
+            end: allDay ? fmt.formatAllDay(e.endDate) : fmt.format(e.endDate),
             isAllDay: allDay,
-            localStartDate: allDay ? CalendarDates.localDateString(e.startDate, in: tz) : nil,
-            localEndDate:   allDay ? CalendarDates.localDateString(e.endDate, in: tz) : nil,
+            localStartDate: allDay ? fmt.allDayDateString(e.startDate) : nil,
+            localEndDate:   allDay ? fmt.allDayDateString(e.endDate) : nil,
             location: e.location,
             notes: e.notes,
             url: e.url?.absoluteString,

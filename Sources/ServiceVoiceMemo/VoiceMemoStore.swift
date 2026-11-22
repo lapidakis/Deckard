@@ -1,6 +1,7 @@
 import Foundation
 import SQLite3
 import Logging
+import BridgeCore
 
 /// Read-only SQLite access to Voice Memos' CloudRecordings.db.
 ///
@@ -248,4 +249,17 @@ public enum CoreDataEpoch {
     public static let unixOffset: Double = 978_307_200   // 2001-01-01 UTC
     public static func toUnix(_ coreDataSeconds: Double) -> Double { coreDataSeconds + unixOffset }
     public static func fromUnix(_ unixSeconds: Double) -> Double { unixSeconds - unixOffset }
+}
+
+extension VoiceMemoStore.StoreError: MacPermissionConvertible {
+    /// SQLite reports a privacy block on the Voice Memos container as
+    /// "authorization denied" / "operation not permitted" when opening.
+    public var macPermissionError: MacPermissionError? {
+        guard case .open(let message) = self else { return nil }
+        let m = message.lowercased()
+        if m.contains("authorization denied") || m.contains("not permitted") || m.contains("permission denied") {
+            return MacPermissionError(.voiceMemos, .denied)
+        }
+        return nil
+    }
 }

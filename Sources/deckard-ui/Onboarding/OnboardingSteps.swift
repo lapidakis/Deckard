@@ -110,6 +110,26 @@ struct DaemonStep: View {
     }
 }
 
+// MARK: - Remote access
+
+/// Choose how agents on other machines reach Deckard: Tailscale, Cloudflare,
+/// both, or neither. Skippable — this Mac alone needs none of it.
+struct RemoteAccessStep: View {
+    @ObservedObject var status: BridgeStatusModel
+    @ObservedObject var onboarding: OnboardingState
+    @StateObject private var model = RemoteAccessModel()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Remote access").font(.title2.bold())
+            Text("How should agents reach Deckard? Pick any combination. You can change this later in Settings.")
+                .foregroundStyle(.secondary)
+            RemoteAccessView(model: model, status: status)
+            OnboardingNav(onboarding: onboarding)
+        }
+    }
+}
+
 // MARK: - Token
 
 struct TokenStep: View {
@@ -297,6 +317,26 @@ struct PermissionsStep: View {
     private func openPrefPane(_ id: String) {
         if let url = URL(string: "x-apple.systempreferences:\(id)") {
             NSWorkspace.shared.open(url)
+        }
+    }
+}
+
+// MARK: - Search
+
+/// One decision: Full Disk Access for fast, complete search, or no extra
+/// permission and slower, partial results. Standard is the default.
+struct SearchStep: View {
+    @ObservedObject var status: BridgeStatusModel
+    @ObservedObject var onboarding: OnboardingState
+    @StateObject private var model = SearchAccessModel()
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Search").font(.title2.bold())
+            Text("How should Deckard search your mail? You can change this later in Settings.")
+                .foregroundStyle(.secondary)
+            ScrollView { SearchAccessView(model: model, status: status) }
+            OnboardingNav(onboarding: onboarding)
         }
     }
 }

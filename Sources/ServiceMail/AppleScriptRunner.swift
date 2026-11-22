@@ -1,6 +1,7 @@
 import Foundation
 import Logging
 import BridgeConfig
+import BridgeCore
 
 /// Errors surfaced by `AppleScriptRunner.run`. Translation of osascript exit
 /// signals is best-effort; a timeout or cancellation can occur after a write took effect. Callers must
@@ -15,9 +16,19 @@ public enum AppleScriptError: Error, CustomStringConvertible {
         switch self {
         case .compileFailed(let m):     return "AppleScript compile failed: \(m)"
         case .executionFailed(let c, let m): return "AppleScript execution failed (code \(c?.description ?? "?")): \(m)"
-        case .timeout(let s):           return "AppleScript timed out after \(s)s"
+        case .timeout(let s):
+            // An unanswered Automation prompt blocks osascript until it is
+            // clicked, which looks exactly like a slow Mail.app from here.
+            return "AppleScript timed out after \(s)s. If this is the first Mail request since Deckard was installed or updated, macOS may be showing an Automation permission prompt on the Mac that someone must allow."
         case .tccDenied(let m):         return "AppleScript was blocked by macOS privacy: \(m). Grant Automation access in System Settings → Privacy & Security → Automation."
         }
+    }
+}
+
+extension AppleScriptError: MacPermissionConvertible {
+    public var macPermissionError: MacPermissionError? {
+        if case .tccDenied = self { return MacPermissionError(.mail, .denied) }
+        return nil
     }
 }
 

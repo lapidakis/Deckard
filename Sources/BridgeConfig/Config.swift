@@ -14,6 +14,9 @@ public struct Config: Codable, Sendable, Equatable {
     public var injection: InjectionConfig
     public var drive: DriveConfig
     public var audit: AuditConfig
+    public var cloudflareAccess: CloudflareAccessConfig
+    public var cloudflareTunnel: CloudflareTunnelConfig
+    public var search: SearchConfig
 
     public init(
         server: ServerConfig = .init(),
@@ -23,7 +26,10 @@ public struct Config: Codable, Sendable, Equatable {
         redaction: RedactionConfig = .init(),
         injection: InjectionConfig = .init(),
         drive: DriveConfig = .init(),
-        audit: AuditConfig = .init()
+        audit: AuditConfig = .init(),
+        cloudflareAccess: CloudflareAccessConfig = .init(),
+        cloudflareTunnel: CloudflareTunnelConfig = .init(),
+        search: SearchConfig = .init()
     ) {
         self.server = server
         self.tailscale = tailscale
@@ -33,10 +39,16 @@ public struct Config: Codable, Sendable, Equatable {
         self.injection = injection
         self.drive = drive
         self.audit = audit
+        self.cloudflareAccess = cloudflareAccess
+        self.cloudflareTunnel = cloudflareTunnel
+        self.search = search
     }
 
     enum CodingKeys: String, CodingKey {
         case server, tailscale, auth, acl, redaction, injection, drive, audit
+        case cloudflareAccess = "cloudflare_access"
+        case cloudflareTunnel = "cloudflare_tunnel"
+        case search
     }
 
     public init(from decoder: Decoder) throws {
@@ -49,6 +61,9 @@ public struct Config: Codable, Sendable, Equatable {
         self.injection = try c.decodeIfPresent(InjectionConfig.self, forKey: .injection) ?? .init()
         self.drive = try c.decodeIfPresent(DriveConfig.self, forKey: .drive) ?? .init()
         self.audit = try c.decodeIfPresent(AuditConfig.self, forKey: .audit) ?? .init()
+        self.cloudflareAccess = try c.decodeIfPresent(CloudflareAccessConfig.self, forKey: .cloudflareAccess) ?? .init()
+        self.cloudflareTunnel = try c.decodeIfPresent(CloudflareTunnelConfig.self, forKey: .cloudflareTunnel) ?? .init()
+        self.search = try c.decodeIfPresent(SearchConfig.self, forKey: .search) ?? .init()
     }
 }
 
@@ -222,19 +237,79 @@ public struct AuthConfig: Codable, Sendable, Equatable {
     /// Bearer token enforcement. Default true even on loopback because any local
     /// user/process can connect to 127.0.0.1.
     public var requireToken: Bool
+    /// Whether bearer tokens from tokens.toml are accepted at all. Set false
+    /// to make Cloudflare Access the only way in over HTTP; requires
+    /// `[cloudflare_access] enabled = true`.
+    public var bearerTokens: Bool
 
-    public init(requireToken: Bool = true) {
+    public init(requireToken: Bool = true, bearerTokens: Bool = true) {
         self.requireToken = requireToken
+        self.bearerTokens = bearerTokens
     }
 
     enum CodingKeys: String, CodingKey {
         case requireToken = "require_token"
+        case bearerTokens = "bearer_tokens"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let defaults = AuthConfig()
         self.requireToken = try c.decodeIfPresent(Bool.self, forKey: .requireToken) ?? defaults.requireToken
+        self.bearerTokens = try c.decodeIfPresent(Bool.self, forKey: .bearerTokens) ?? defaults.bearerTokens
+    }
+}
+
+/// Accept callers authenticated by Cloudflare Access (Managed OAuth sign-in or
+/// an Access service token) arriving through a Cloudflare Tunnel.
+///
+/// ```toml
+/// [cloudflare_access]
+/// enabled = true
+/// team_domain = "myteam.cloudflareaccess.com"
+/// audiences = ["<application AUD tag>"]
+/// public_hosts = ["deckard.example.com"]
+///
+/// [cloudflare_access.identities]
+/// "me@example.com" = "claude"          # user email -> ACL profile
+/// "abc123.access" = "triage"           # service token client id -> ACL profile
+/// ```
+///
+/// Identities not listed are refused: an Access policy mistake must not grant
+/// reach into the Mac. Disabled by default.
+public struct CloudflareAccessConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var teamDomain: String
+    /// Application audience (AUD) tags whose assertions are accepted.
+    public var audiences: [String]
+    /// Public hostnames the tunnel forwards, accepted in the Host header.
+    public var publicHosts: [String]
+    /// Verified email or service-token common name -> ACL profile name.
+    public var identities: [String: String]
+
+    public init(enabled: Bool = false, teamDomain: String = "", audiences: [String] = [],
+                publicHosts: [String] = [], identities: [String: String] = [:]) {
+        self.enabled = enabled
+        self.teamDomain = teamDomain
+        self.audiences = audiences
+        self.publicHosts = publicHosts
+        self.identities = identities
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, audiences, identities
+        case teamDomain = "team_domain"
+        case publicHosts = "public_hosts"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = CloudflareAccessConfig()
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        self.teamDomain = try c.decodeIfPresent(String.self, forKey: .teamDomain) ?? d.teamDomain
+        self.audiences = try c.decodeIfPresent([String].self, forKey: .audiences) ?? d.audiences
+        self.publicHosts = try c.decodeIfPresent([String].self, forKey: .publicHosts) ?? d.publicHosts
+        self.identities = try c.decodeIfPresent([String: String].self, forKey: .identities) ?? d.identities
     }
 }
 
@@ -343,5 +418,80 @@ public struct ProfileConfig: Codable, Sendable, Equatable {
         self.default = try c.decodeIfPresent(ACLDecision.self, forKey: .default) ?? d.default
         self.tools = try c.decodeIfPresent([String: ACLDecision].self, forKey: .tools) ?? d.tools
         self.interactiveApproval = try c.decodeIfPresent(InteractiveApprovalMode.self, forKey: .interactiveApproval) ?? d.interactiveApproval
+    }
+}
+
+/// Have the daemon keep a Cloudflare Tunnel connector (`cloudflared`) running
+/// as its own child process, so the public hostname works whenever Deckard
+/// does and stops when it stops. No separate LaunchAgent to manage.
+///
+/// ```toml
+/// [cloudflare_tunnel]
+/// enabled = true
+/// config_file = "~/.cloudflared/deckard.yml"   # written by `deckard cloudflare setup`
+/// binary = ""                                  # empty = find cloudflared automatically
+/// ```
+public struct CloudflareTunnelConfig: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    /// Path to the tunnel's cloudflared config (ingress rules + credentials).
+    public var configFile: String
+    /// Path to `cloudflared`. Empty searches Homebrew locations and PATH.
+    public var binary: String
+
+    public init(enabled: Bool = false, configFile: String = "~/.cloudflared/deckard.yml", binary: String = "") {
+        self.enabled = enabled
+        self.configFile = configFile
+        self.binary = binary
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, binary
+        case configFile = "config_file"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = CloudflareTunnelConfig()
+        self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? d.enabled
+        self.configFile = try c.decodeIfPresent(String.self, forKey: .configFile) ?? d.configFile
+        self.binary = try c.decodeIfPresent(String.self, forKey: .binary) ?? d.binary
+    }
+}
+
+/// How search is served.
+///
+/// ```toml
+/// [search]
+/// fast_search = true   # read Mail's own database; needs Full Disk Access
+/// ```
+///
+/// `fast_search` is the user's *choice*; it only takes effect when macOS has
+/// actually granted the daemon Full Disk Access. With both, mail listing and
+/// search read Mail's message database and message files directly. Without
+/// the grant the bridge keeps using Mail.app scripting (slower; message text
+/// limited to recent mail). Off by default: Full Disk Access reaches far
+/// more than mail, so it is never assumed.
+public struct SearchConfig: Codable, Sendable, Equatable {
+    public var fastSearch: Bool
+
+    public init(fastSearch: Bool = false) {
+        self.fastSearch = fastSearch
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case fastSearch = "fast_search"
+        /// Name used while this was expected to go through Spotlight.
+        case legacyUseSpotlight = "use_spotlight"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.fastSearch = try c.decodeIfPresent(Bool.self, forKey: .fastSearch)
+            ?? c.decodeIfPresent(Bool.self, forKey: .legacyUseSpotlight) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(fastSearch, forKey: .fastSearch)
     }
 }

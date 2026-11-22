@@ -14,6 +14,7 @@ struct Deckard: AsyncParsableCommand {
             Audit.self,
             Auth.self,
             Tailscale.self,
+            Cloudflare.self,
             Install.self,
             Uninstall.self,
             Restart.self,

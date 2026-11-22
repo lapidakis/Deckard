@@ -52,6 +52,13 @@ public actor RemindersAdapter {
 
     private func ensureAccess() async throws {
         if accessGranted { return }
+        switch EKEventStore.authorizationStatus(for: .reminder) {
+        case .denied, .restricted, .writeOnly:
+            // Already refused: asking again shows no prompt, so fail now.
+            throw MacPermissionError(.reminders, .denied)
+        default:
+            break
+        }
         let task: Task<Bool, Error>
         if let existing = accessTask {
             task = existing
@@ -63,9 +70,12 @@ public actor RemindersAdapter {
             let granted = try await task.value
             accessTask = nil
             if !granted {
-                throw AdapterError.accessDenied("user denied or system blocked Full Reminders Access")
+                throw MacPermissionError(.reminders, .denied)
             }
             accessGranted = true
+        } catch let err as MacPermissionError {
+            accessTask = nil
+            throw err
         } catch let err as AdapterError {
             accessTask = nil
             throw err
@@ -108,9 +118,7 @@ public actor RemindersAdapter {
             DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(timeoutNs))) {
                 guard latch.tryResume() else { return }
                 logger.error("Reminders access request timed out after \(timeoutNs / 1_000_000_000)s")
-                cont.resume(throwing: AdapterError.accessDenied(
-                    "Reminders access request timed out — open System Settings → Privacy & Security → Reminders, enable Deckard, then retry"
-                ))
+                cont.resume(throwing: MacPermissionError(.reminders, .promptPending))
             }
         }
     }

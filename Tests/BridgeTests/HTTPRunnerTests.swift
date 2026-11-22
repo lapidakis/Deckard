@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import HTTPTypes
 import Hummingbird
+import MCP
 @testable import BridgeCore
 @testable import BridgeAuth
 

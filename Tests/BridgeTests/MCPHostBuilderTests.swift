@@ -34,7 +34,7 @@ private final class RecordingHandler: ToolHandler, Sendable {
     let counter = CallCounter()
     let mode: Mode
 
-    enum Mode: Sendable { case ok(text: String), throwError(String), errorResult }
+    enum Mode: Sendable { case ok(text: String), throwError(String), errorResult, permission(MacPermissionError) }
 
     init(name: String, mode: Mode = .ok(text: "ok")) {
         self.name = name
@@ -52,6 +52,8 @@ private final class RecordingHandler: ToolHandler, Sendable {
             return CallTool.Result(content: [.text(text: text, annotations: nil, _meta: nil)], isError: false)
         case .errorResult:
             return CallTool.Result(content: [.text(text: "invalid", annotations: nil, _meta: nil)], isError: true)
+        case .permission(let e):
+            throw e
         case .throwError(let m):
             throw NSError(domain: "test", code: 0, userInfo: [NSLocalizedDescriptionKey: m])
         }
@@ -404,4 +406,31 @@ private struct RevokingApprovalGate: ApprovalGate {
     #expect(result.isError == true)
     #expect(await handler.counter.calls.isEmpty)
     #expect(try readAuditLines(url).last?["decision"] as? String == "denied")
+}
+
+@Test func dispatchReturnsActionableMessageWhenMacPermissionIsMissing() async throws {
+    let auditURL = tempAuditURL()
+    defer { try? FileManager.default.removeItem(at: auditURL) }
+    let (policy, _) = makePolicy(decisions: ["calendar.now": .allow], auditURL: auditURL)
+    let handler = RecordingHandler(name: "calendar.now", mode: .permission(MacPermissionError(.calendar, .promptPending)))
+
+    let result = await MCPHostBuilder.dispatch(
+        params: CallTool.Parameters(name: "calendar.now", arguments: [:]),
+        handlers: ["calendar.now": handler],
+        auth: makeAuth(), policy: policy, middleware: [],
+        approval: StubApprovalGate(decision: .approved),
+        logger: Logger(label: "test")
+    )
+    #expect(result.isError == true)
+    guard case .text(text: let text, annotations: _, _meta: _) = result.content.first else {
+        Issue.record("expected text content"); return
+    }
+    #expect(text.hasPrefix("macOS permission required"))
+    #expect(text.contains("someone at the Mac must click Allow"))
+    #expect(!text.contains("Tool error"))
+
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let rows = try readAuditLines(auditURL)
+    #expect(rows.first?["decision"] as? String == "error")
+    #expect(rows.first?["error"] as? String == "macos permission required: calendar (prompt_pending)")
 }

@@ -19,17 +19,22 @@ public struct BridgeServer: Sendable {
     private let config: Config
     private let mode: Mode
     private let providers: [any ToolProvider]
+    /// Which path serves mail search, as decided by whoever built the mail
+    /// provider. Reported in the daemon status file.
+    private let mailSearchBackend: String
     private let logger: Logger
 
     public init(
         config: Config,
         mode: Mode,
         providers: [any ToolProvider],
+        mailSearchBackend: String = "mail_app",
         logger: Logger = Logger(label: "bridge.server")
     ) {
         self.config = config
         self.mode = mode
         self.providers = providers
+        self.mailSearchBackend = mailSearchBackend
         self.logger = logger
     }
 
@@ -68,14 +73,46 @@ public struct BridgeServer: Sendable {
             }
             var allowedHosts = ["127.0.0.1:\(config.server.loopbackPort)", "localhost:\(config.server.loopbackPort)"]
             if let tailnetIP { allowedHosts.append("\(tailnetIP):\(config.tailscale.port)") }
+            // Report what this process is actually allowed to do. The app and
+            // CLI cannot check the daemon's privacy grants themselves.
+            let diskAccess = FullDiskAccess.diagnose()
+            let hasFullDiskAccess = diskAccess.granted
+            logger.info("Full Disk Access check: granted=\(hasFullDiskAccess) \(diskAccess.detail) binary=\(Bundle.main.executablePath ?? "?")")
+            do {
+                try DaemonStatus(
+                    pid: ProcessInfo.processInfo.processIdentifier, startedAt: Date(),
+                    fullDiskAccess: hasFullDiskAccess, fastSearchRequested: config.search.fastSearch,
+                    mailSearchBackend: mailSearchBackend
+                ).write()
+            } catch {
+                logger.warning("Could not write daemon status: \(error)")
+            }
+            if config.search.fastSearch && !hasFullDiskAccess {
+                logger.warning("[search] fast_search is on but the daemon does not have Full Disk Access; mail search stays on Mail.app scripting. Grant it in System Settings > Privacy & Security > Full Disk Access, then restart.")
+            }
+
+            let accessConfig = config.cloudflareAccess
+            if accessConfig.enabled {
+                guard !accessConfig.teamDomain.isEmpty, !accessConfig.audiences.isEmpty else {
+                    throw BridgeStartupError.accessMisconfigured
+                }
+                // Without bind_loopback there is nothing for cloudflared to reach.
+                guard config.server.bindLoopback else { throw BridgeStartupError.accessNeedsLoopback }
+                allowedHosts += accessConfig.publicHosts
+            }
+            guard config.auth.bearerTokens || accessConfig.enabled else {
+                throw BridgeStartupError.noAuthMethod
+            }
             let registry = TokenRegistry(logger: logger)
-            try await registry.ensureLoaded()
+            // With bearer tokens off the registry is never consulted, and
+            // loading it would bootstrap a default token nobody asked for.
+            if config.auth.bearerTokens { try await registry.ensureLoaded() }
 
             // Build per-token SessionHolders. Each token gets:
             //   - AuthContext with `bearer:<label>` so audit shows the agent
             //   - PolicyPipeline scoped to the token's profile (or global ACL
             //     if no profile is set)
-            let entries = await registry.allEntries()
+            let entries = config.auth.bearerTokens ? await registry.allEntries() : []
             var bySecret: [String: TokenSessions.Entry] = [:]
             for (label, entry) in entries {
                 // Fail-closed on unknown profile name. A typo in a token's
@@ -113,6 +150,43 @@ public struct BridgeServer: Sendable {
             }
             let sessions = TokenSessions(bySecret: bySecret)
 
+            // Cloudflare Access identities: one SessionHolder per mapped
+            // identity, each bound to its profile. Unlike tokens there is no
+            // "use the global ACL" fallback — every identity names a profile,
+            // and an unknown name is deny-all.
+            var accessEnforcement: HTTPRunner.AccessEnforcement?
+            if accessConfig.enabled {
+                var bySubject: [String: TokenSessions.Entry] = [:]
+                for (rawSubject, profileName) in accessConfig.identities {
+                    let subject = rawSubject.contains("@") ? rawSubject.lowercased() : rawSubject
+                    let profile: ProfileConfig
+                    if let p = config.acl.profiles[profileName] {
+                        profile = p
+                    } else {
+                        logger.error("Cloudflare Access identity '\(subject)' references unknown profile '\(profileName)' — refusing all tools (deny-all).")
+                        profile = ProfileConfig(default: .deny, tools: [:])
+                    }
+                    let policy = PolicyPipeline(acl: config.acl, profile: profile, audit: audit, logger: logger)
+                    let auth = AuthContext(
+                        transport: .cloudflare,
+                        identity: .cloudflareAccess(subject: subject),
+                        remoteDescription: "cloudflare"
+                    )
+                    let holder = try await SessionHolder(
+                        builder: builder, auth: auth, policy: policy, logger: logger, allowedHosts: allowedHosts
+                    )
+                    bySubject[subject] = TokenSessions.Entry(label: subject, holder: holder)
+                    logger.info("Cloudflare Access identity registered: \(subject) profile=\(profileName)")
+                }
+                if bySubject.isEmpty {
+                    logger.warning("Cloudflare Access is enabled but [cloudflare_access.identities] is empty; every Access caller will be refused.")
+                }
+                accessEnforcement = HTTPRunner.AccessEnforcement(
+                    verifier: AccessJWTVerifier(teamDomain: accessConfig.teamDomain, audiences: accessConfig.audiences, logger: logger),
+                    sessions: bySubject
+                )
+            }
+
             try await withThrowingTaskGroup(of: Void.self) { group in
                 if config.audit.enabled,
                    config.audit.retentionDays > 0,
@@ -132,15 +206,24 @@ public struct BridgeServer: Sendable {
                     }
                 }
 
+                if config.cloudflareTunnel.enabled {
+                    let supervisor = TunnelSupervisor(config: config.cloudflareTunnel, logger: logger)
+                    group.addTask { await supervisor.run() }
+                }
+
                 if config.server.bindLoopback {
                     let bind = HTTPRunner.Bind(
                         host: "127.0.0.1",
                         port: config.server.loopbackPort,
                         transportLabel: .loopback
                     )
+                    // Only the loopback listener accepts Access assertions:
+                    // that is where cloudflared delivers tunnel traffic.
                     let runner = HTTPRunner(
                         bind: bind, sessions: sessions,
-                        requireToken: config.auth.requireToken, logger: logger
+                        requireToken: config.auth.requireToken,
+                        bearerTokens: config.auth.bearerTokens,
+                        access: accessEnforcement, logger: logger
                     )
                     group.addTask { try await runner.run() }
                 }
@@ -155,6 +238,7 @@ public struct BridgeServer: Sendable {
                     let runner = HTTPRunner(
                         bind: bind, sessions: sessions,
                         requireToken: config.auth.requireToken,
+                        bearerTokens: config.auth.bearerTokens,
                         tailscale: enforcement, logger: logger
                     )
                     group.addTask { try await runner.run() }
@@ -169,5 +253,19 @@ public struct BridgeServer: Sendable {
 
 private enum BridgeStartupError: Error, CustomStringConvertible {
     case authenticationRequired
-    var description: String { "HTTP listeners require auth.require_token = true; use stdio for a local child process" }
+    case accessMisconfigured
+    case accessNeedsLoopback
+    case noAuthMethod
+    var description: String {
+        switch self {
+        case .authenticationRequired:
+            return "HTTP listeners require auth.require_token = true; use stdio for a local child process"
+        case .accessMisconfigured:
+            return "[cloudflare_access] enabled = true requires team_domain and at least one entry in audiences"
+        case .accessNeedsLoopback:
+            return "[cloudflare_access] requires server.bind_loopback = true so cloudflared can reach the bridge"
+        case .noAuthMethod:
+            return "auth.bearer_tokens = false requires [cloudflare_access] enabled = true; otherwise nothing could authenticate"
+        }
+    }
 }

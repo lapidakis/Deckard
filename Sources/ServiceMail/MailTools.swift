@@ -73,11 +73,11 @@ struct ListMessagesTool: ToolHandler {
             "type": .string("object"),
             "properties": .object([
                 "account":     .object(["type": .string("string"), "description": .string("Account name; empty = all accounts.")]),
-                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox name; empty = every mailbox in chosen account(s).")]),
+                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox path as mail.list_mailboxes returns it, e.g. \"INBOX\" or \"Bills/Utilities\". A bare name works only when exactly one mailbox has it; if several do, the error lists their full paths. Empty = every mailbox in the chosen account(s). An unknown mailbox is an error.")]),
                 "scope":       .object(["type": .string("string"), "enum": .array([.string("primary"), .string("with_archive"), .string("all")]), "description": .string("Cross-mailbox walk policy when mailbox is empty.")]),
                 "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Inclusive lower bound on date_received.")]),
                 "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Exclusive upper bound on date_received.")]),
-                "tz":          .object(["type": .string("string"), "description": .string("IANA tz id used to interpret bare yyyy-MM-dd dates. Defaults to system local. Full ISO timestamps with offsets are unaffected.")]),
+                "tz":          .object(["type": .string("string"), "description": .string("IANA tz id (e.g. America/Chicago). Used to interpret bare yyyy-MM-dd dates and as the zone for returned date_sent/date_received, which always carry a UTC offset. Defaults to the Mac's zone.")]),
                 "unread_only": .object(["type": .string("boolean"), "description": .string("If true, only return unread messages.")]),
                 "limit":       .object(["type": .string("integer"), "description": .string("Max results (1-200). Defaults to 25.")]),
             ]),
@@ -94,14 +94,15 @@ struct ListMessagesTool: ToolHandler {
         let unread  = arguments?["unread_only"]?.boolValue ?? false
         let scope   = MailboxScope(rawValue: arguments?["scope"]?.stringValue ?? "primary") ?? .primary
         let tz      = arguments?["tz"]?.stringValue
-        let limit   = max(1, min(200, arguments?["limit"]?.intValue ?? 25))
+        let limit = arguments?["limit"]?.intValue ?? 25
+        guard (1...200).contains(limit) else { return errorResult("limit must be between 1 and 200 (got \(limit)).") }
         let result = try await adapter.listMessages(
             account: account, mailbox: mailbox,
             sinceISO: since, beforeISO: before,
             unreadOnly: unread, scope: scope,
             tzID: tz, limit: limit
         )
-        return jsonResult(result)
+        return messageListResult(result)
     }
 }
 
@@ -124,6 +125,14 @@ struct SearchMailTool: ToolHandler {
           - "all"               — include everything
         Explicit `mailbox` filter always wins.
 
+        Speed: `field` "subject" or "sender" is fast. "body" and the default
+        "any" also read message bodies, which is slow: bodies are only
+        searched in messages from the last 30 days unless `since` is given
+        (subject and sender are always searched across all dates), and at
+        most 100 bodies per mailbox. A search that would run long stops
+        after about 25 seconds and returns what it found with a note saying
+        the results may be incomplete.
+
         For listing without a query, use mail.list_messages.
         """,
         inputSchema: .object([
@@ -131,7 +140,7 @@ struct SearchMailTool: ToolHandler {
             "properties": .object([
                 "query":       .object(["type": .string("string"), "description": .string("Substring to match, case-insensitive.")]),
                 "account":     .object(["type": .string("string"), "description": .string("Account name; empty = all accounts.")]),
-                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox name; empty = every mailbox in chosen account(s).")]),
+                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox path as mail.list_mailboxes returns it, e.g. \"INBOX\" or \"Bills/Utilities\". A bare name works only when exactly one mailbox has it; if several do, the error lists their full paths. Empty = every mailbox in the chosen account(s). An unknown mailbox is an error.")]),
                 "scope":       .object(["type": .string("string"), "enum": .array([.string("primary"), .string("with_archive"), .string("all")])]),
                 "field":       .object([
                     "type": .string("string"),
@@ -140,7 +149,7 @@ struct SearchMailTool: ToolHandler {
                 ]),
                 "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Inclusive lower bound on date_received.")]),
                 "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Exclusive upper bound on date_received.")]),
-                "tz":          .object(["type": .string("string"), "description": .string("IANA tz id used to interpret bare yyyy-MM-dd dates. Defaults to system local.")]),
+                "tz":          .object(["type": .string("string"), "description": .string("IANA tz id (e.g. America/Chicago). Used to interpret bare yyyy-MM-dd dates and as the zone for returned date_sent/date_received, which always carry a UTC offset. Defaults to the Mac's zone.")]),
                 "unread_only": .object(["type": .string("boolean"), "description": .string("If true, only return unread messages.")]),
                 "limit":       .object(["type": .string("integer"), "description": .string("Max results (1-200). Defaults to 25.")]),
             ]),
@@ -163,7 +172,8 @@ struct SearchMailTool: ToolHandler {
         let before = arguments?["before"]?.stringValue
         let tz = arguments?["tz"]?.stringValue
         let unread = arguments?["unread_only"]?.boolValue ?? false
-        let limit = max(1, min(200, arguments?["limit"]?.intValue ?? 25))
+        let limit = arguments?["limit"]?.intValue ?? 25
+        guard (1...200).contains(limit) else { return errorResult("limit must be between 1 and 200 (got \(limit)).") }
 
         let results = try await adapter.search(
             account: account, mailbox: mailbox,
@@ -172,7 +182,7 @@ struct SearchMailTool: ToolHandler {
             unreadOnly: unread, scope: scope,
             tzID: tz, limit: limit
         )
-        return jsonResult(results)
+        return messageListResult(results)
     }
 }
 
@@ -216,6 +226,16 @@ struct GetMessageTool: ToolHandler {
 }
 
 // MARK: - helpers
+
+/// The message array as before, plus a second text item when the search
+/// stopped early so the caller knows not to treat the list as exhaustive.
+func messageListResult(_ list: MailAdapter.MessageList) -> CallTool.Result {
+    let base = jsonResult(list.messages)
+    guard let note = list.incomplete, base.isError != true else { return base }
+    return CallTool.Result(
+        content: base.content + [.text(text: "Note from Deckard: \(note)", annotations: nil, _meta: nil)],
+        isError: false)
+}
 
 func jsonResult<T: Encodable>(_ value: T) -> CallTool.Result {
     do {

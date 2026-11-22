@@ -20,6 +20,12 @@ struct SettingsView: View {
             PermissionsTab()
                 .tabItem { Label("Permissions", systemImage: "hand.raised.fill") }
 
+            RemoteAccessTab(status: status)
+                .tabItem { Label("Remote Access", systemImage: "globe") }
+
+            SearchAccessTab(status: status)
+                .tabItem { Label("Search", systemImage: "magnifyingglass") }
+
             TailscaleTab(status: status)
                 .tabItem { Label("Tailscale", systemImage: "network") }
 
@@ -27,5 +33,16 @@ struct SettingsView: View {
                 .tabItem { Label("Logs", systemImage: "doc.text") }
         }
         .frame(minWidth: 620, minHeight: 460)
+    }
+}
+
+/// Settings home for the same chooser onboarding shows.
+struct RemoteAccessTab: View {
+    @ObservedObject var status: BridgeStatusModel
+    @StateObject private var model = RemoteAccessModel()
+
+    var body: some View {
+        RemoteAccessView(model: model, status: status)
+            .padding(16)
     }
 }
