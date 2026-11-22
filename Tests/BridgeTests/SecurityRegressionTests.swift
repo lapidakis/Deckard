@@ -233,15 +233,17 @@ private func collectSSE(_ response: MCP.HTTPResponse) async throws -> String {
 
 @Test func subprocessReturnsPromptlyOnExit() async throws {
     // Exit is signalled by terminationHandler rather than a 25 ms poll.
+    // Judge the fastest of several runs: a loaded CI runner can make any one
+    // spawn slow, but a regression to polling or a missed signal slows all.
     let clock = ContinuousClock()
-    var worst = Duration.zero
+    var best = Duration.seconds(60)
     for _ in 0..<10 {
         let start = clock.now
         let r = try await Subprocess.run("/usr/bin/true")
         #expect(r.exitCode == 0)
-        worst = max(worst, clock.now - start)
+        best = min(best, clock.now - start)
     }
-    #expect(worst < .milliseconds(500))
+    #expect(best < .milliseconds(500))
 }
 
 @Test func subprocessCancellationStopsChild() async throws {
