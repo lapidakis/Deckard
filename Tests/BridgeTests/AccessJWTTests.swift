@@ -383,14 +383,18 @@ private func status(_ result: Result<HTTPRunner.Caller, HTTPRunner.Rejection>) -
     let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
     #expect(mode?.intValue == 0o600)
 
-    // A home with no TCC database reads as "not granted"; one with a
-    // readable file reads as granted. Nothing is created or modified.
+    // No protected location exists: cannot be confirmed, so not granted.
     #expect(!FullDiskAccess.isGranted(home: dir))
-    let tcc = dir.appendingPathComponent("Library/Application Support/com.apple.TCC")
-    try FileManager.default.createDirectory(at: tcc, withIntermediateDirectories: true)
-    try Data("x".utf8).write(to: tcc.appendingPathComponent("TCC.db"))
+    // A protected folder that opens means granted, whichever one it is.
+    try FileManager.default.createDirectory(at: dir.appendingPathComponent("Library/Safari"), withIntermediateDirectories: true)
     #expect(FullDiskAccess.isGranted(home: dir))
-    #expect(try Data(contentsOf: tcc.appendingPathComponent("TCC.db")) == Data("x".utf8))
+    #expect(FullDiskAccess.diagnose(home: dir).detail == "Library/Safari=ok")
+    // A refusal on the first location is decisive even if later ones exist.
+    let mail = dir.appendingPathComponent("Library/Mail")
+    try FileManager.default.createDirectory(at: mail, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: mail.path)
+    defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: mail.path) }
+    #expect(!FullDiskAccess.isGranted(home: dir))
 }
 
 @Test func spotlightProbeLogsShapeWithoutNamesOrContent() {

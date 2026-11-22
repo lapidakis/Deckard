@@ -22,7 +22,10 @@ public struct SpotlightProbe: Sendable {
             let count = try await Subprocess.run("/usr/bin/mdfind", arguments: ["-count", Self.mailQuery], timeoutSeconds: 30)
             let total = count.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             logger.info("Spotlight probe: mail messages visible=\(total)")
-            guard let n = Int(total), n > 0 else { return }
+            guard let n = Int(total), n > 0 else {
+                await exploreStore()
+                return
+            }
 
             // mdfind has no result limit and can list hundreds of thousands
             // of paths; the output cap bounds it and one path is enough.
@@ -41,6 +44,57 @@ public struct SpotlightProbe: Sendable {
             logger.info("Spotlight probe: message attributes=\(Self.attributeNames(mdls: attributes.stdout).joined(separator: ","))")
         } catch {
             logger.warning("Spotlight probe failed: \(error)")
+        }
+    }
+
+    /// Spotlight showed nothing: describe Mail's on-disk store instead, so the
+    /// search backend can be designed for what this macOS version really has.
+    /// Structure only: directory names that are not Apple's own are masked,
+    /// and for the message database only table and column names are listed.
+    private func exploreStore() async {
+        let fm = FileManager.default
+        let mailDir = fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Mail")
+        let top = ((try? fm.contentsOfDirectory(atPath: mailDir.path)) ?? []).sorted()
+        logger.info("Mail store probe: top level=\(top.map { Self.maskedShape(of: $0, home: "") }.joined(separator: ","))")
+        guard let version = top.filter({ $0.range(of: #"^V\d+$"#, options: .regularExpression) != nil }).last else { return }
+        let versionDir = mailDir.appendingPathComponent(version)
+        let entries = ((try? fm.contentsOfDirectory(atPath: versionDir.path)) ?? []).sorted()
+        logger.info("Mail store probe: \(version) entries=\(entries.map { Self.maskedShape(of: $0, home: "") }.joined(separator: ","))")
+
+        let mailData = versionDir.appendingPathComponent("MailData")
+        let dataFiles = ((try? fm.contentsOfDirectory(atPath: mailData.path)) ?? []).sorted()
+        logger.info("Mail store probe: MailData files=\(dataFiles.joined(separator: ","))")
+
+        // First message file found by a bounded walk, to learn the layout.
+        var emlxCount = 0
+        var sample: String?
+        if let walker = fm.enumerator(at: versionDir, includingPropertiesForKeys: nil) {
+            while let url = walker.nextObject() as? URL {
+                if url.pathExtension == "emlx" {
+                    emlxCount += 1
+                    if sample == nil { sample = url.path }
+                    if emlxCount >= 5000 { break }
+                }
+            }
+        }
+        logger.info("Mail store probe: emlx files found=\(emlxCount)\(emlxCount >= 5000 ? "+" : "") sample shape=\(sample.map { Self.maskedShape(of: $0) } ?? "none")")
+        if let sample, let mdls = try? await Subprocess.run("/usr/bin/mdls", arguments: [sample], timeoutSeconds: 20) {
+            logger.info("Mail store probe: sample attributes=\(Self.attributeNames(mdls: mdls.stdout).joined(separator: ","))")
+        }
+
+        let index = mailData.appendingPathComponent("Envelope Index").path
+        guard fm.fileExists(atPath: index) else { return }
+        for (label, sql) in [
+            ("tables", "SELECT group_concat(name, ',') FROM sqlite_master WHERE type IN ('table','view') ORDER BY name"),
+            ("messages columns", "SELECT group_concat(name, ',') FROM pragma_table_info('messages')"),
+            ("mailboxes columns", "SELECT group_concat(name, ',') FROM pragma_table_info('mailboxes')"),
+            ("message count", "SELECT count(*) FROM messages"),
+            ("fts tables", "SELECT group_concat(name, ',') FROM sqlite_master WHERE sql LIKE '%fts%'"),
+        ] {
+            if let r = try? await Subprocess.run("/usr/bin/sqlite3", arguments: ["-readonly", "file:\(index)?mode=ro", sql], timeoutSeconds: 20) {
+                let out = r.exitCode == 0 ? r.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : "error: " + r.stderr.prefix(120)
+                logger.info("Mail store probe: index \(label)=\(out)")
+            }
         }
     }
 

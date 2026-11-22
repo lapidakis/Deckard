@@ -3,16 +3,45 @@ import Darwin
 
 /// Whether this process has macOS Full Disk Access.
 ///
-/// macOS has no API for this. The reliable test is to open a file that only
-/// Full Disk Access unlocks: the user's TCC database exists on every account
-/// and is unreadable without it. The file is opened and closed, never read.
+/// macOS has no API for this. The test is to open a location that only Full
+/// Disk Access unlocks and look at the error: "Operation not permitted" means
+/// the privacy system refused, success means it is granted, and "No such
+/// file" says nothing (the user may not use that app), so the next location
+/// is tried. Nothing is read.
+///
+/// Do not rely on the per-user TCC database alone: on macOS 27 it is not at
+/// `~/Library/Application Support/com.apple.TCC/TCC.db`, so that check
+/// reported "not granted" for a daemon that could read Mail.
 public enum FullDiskAccess {
+    /// Protected locations, most relevant first. (path under home, is directory)
+    static let probes: [(String, Bool)] = [
+        ("Library/Mail", true),
+        ("Library/Safari", true),
+        ("Library/Messages", true),
+        ("Library/Application Support/com.apple.TCC/TCC.db", false),
+    ]
+
     public static func isGranted(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
-        let path = home.appendingPathComponent("Library/Application Support/com.apple.TCC/TCC.db").path
-        let fd = open(path, O_RDONLY)
-        guard fd >= 0 else { return false }
-        close(fd)
-        return true
+        diagnose(home: home).granted
+    }
+
+    /// The same check with the reason attached, for the startup log.
+    public static func diagnose(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> (granted: Bool, detail: String) {
+        var notes: [String] = []
+        for (relative, isDirectory) in probes {
+            let path = home.appendingPathComponent(relative).path
+            let fd = open(path, isDirectory ? (O_RDONLY | O_DIRECTORY) : O_RDONLY)
+            if fd >= 0 {
+                close(fd)
+                return (true, "\(relative)=ok")
+            }
+            let code = errno
+            notes.append("\(relative)=\(String(cString: strerror(code)))")
+            // Refused by the privacy system: definitely not granted.
+            if code == EPERM || code == EACCES { return (false, notes.joined(separator: " ")) }
+        }
+        // Nothing protected exists to test against; assume not granted.
+        return (false, notes.joined(separator: " "))
     }
 }
 

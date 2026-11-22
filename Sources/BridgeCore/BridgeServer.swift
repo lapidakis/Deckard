@@ -70,7 +70,9 @@ public struct BridgeServer: Sendable {
             if let tailnetIP { allowedHosts.append("\(tailnetIP):\(config.tailscale.port)") }
             // Report what this process is actually allowed to do. The app and
             // CLI cannot check the daemon's privacy grants themselves.
-            let hasFullDiskAccess = FullDiskAccess.isGranted()
+            let diskAccess = FullDiskAccess.diagnose()
+            let hasFullDiskAccess = diskAccess.granted
+            logger.info("Full Disk Access check: granted=\(hasFullDiskAccess) \(diskAccess.detail) binary=\(Bundle.main.executablePath ?? "?")")
             let spotlightActive = config.search.useSpotlight && hasFullDiskAccess
             do {
                 try DaemonStatus(
