@@ -9,6 +9,7 @@ public actor MailAdapter {
         case invalidDate(field: String, value: String)
         case emptyDateRange(since: String, before: String)
         case unknownMailbox(String)
+        case ambiguousMailbox(String, paths: [String])
         case unknownAccount(String)
 
         public var description: String {
@@ -19,6 +20,8 @@ public actor MailAdapter {
                 return "since (\(since)) is later than before (\(before)); no message can match. Swap them or drop one."
             case .unknownMailbox(let name):
                 return "No mailbox named '\(name)'. Use mail.list_mailboxes for the exact names; nested mailboxes use a path such as 'Parent/Child'."
+            case .ambiguousMailbox(let name, let paths):
+                return "Several mailboxes are named '\(name)': \(paths.sorted().joined(separator: ", ")). Use one of these full paths."
             case .unknownAccount(let name):
                 return "No mail account named '\(name)'. Use mail.list_mailboxes to see account names."
             }
@@ -30,7 +33,7 @@ public actor MailAdapter {
     /// Direct reader for Mail's database and message files. Present only
     /// when the user chose fast search and the daemon has Full Disk Access.
     private let store: MailStore?
-    private var accountNames: (names: [String: String], fetched: ContinuousClock.Instant)?
+    private var directoryCache: (directory: MailDirectory, fetched: ContinuousClock.Instant)?
 
     public init(
         runner: AppleScriptRunner = AppleScriptRunner(),
@@ -75,7 +78,7 @@ public actor MailAdapter {
         filter.bareDateTz = Self.resolveTz(tzID)
         filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
-        if out.hasPrefix("!nomailbox") { throw AdapterError.unknownMailbox(mailbox) }
+        try Self.throwIfMailboxMarker(out, mailbox: mailbox)
         let raw = parseSummaries(out)
         // Sort on Mail's raw local timestamps first (uniform, so lexical
         // order is chronological), then attach the offset for output.
@@ -116,7 +119,7 @@ public actor MailAdapter {
         filter.bareDateTz = Self.resolveTz(tzID)
         filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
-        if out.hasPrefix("!nomailbox") { throw AdapterError.unknownMailbox(mailbox) }
+        try Self.throwIfMailboxMarker(out, mailbox: mailbox)
         let raw = parseSummaries(out)
         // Sort on Mail's raw local timestamps first (uniform, so lexical
         // order is chronological), then attach the offset for output.
@@ -207,6 +210,30 @@ public actor MailAdapter {
             Int(d.components.attoseconds / 1_000_000_000_000_000)
     }
 
+    /// The script reports a mailbox filter it could not honour with a marker
+    /// record instead of results.
+    static func throwIfMailboxMarker(_ out: String, mailbox: String) throws {
+        if out.hasPrefix("!nomailbox") { throw AdapterError.unknownMailbox(mailbox) }
+        guard out.hasPrefix("!ambiguous") else { return }
+        let record = out.split(separator: Character(MailScripts.recordSeparator)).first.map(String.init) ?? ""
+        let paths = record.split(separator: Character(MailScripts.fieldSeparator)).dropFirst().map(String.init)
+        throw AdapterError.ambiguousMailbox(mailbox, paths: paths)
+    }
+
+    /// Picks the mailboxes a `mailbox` filter means. An exact path always
+    /// wins, so a top-level "Utilities" stays addressable even when nested
+    /// mailboxes share the name. Otherwise a bare name must be unique.
+    static func resolveMailboxFilter<Box>(
+        _ mailbox: String, in boxes: [Box], path: (Box) -> String
+    ) throws -> [Box] {
+        let exact = boxes.filter { path($0) == mailbox }
+        if !exact.isEmpty { return exact }
+        let byName = boxes.filter { path($0).split(separator: "/").last.map(String.init) == mailbox }
+        if byName.count == 1 { return byName }
+        if byName.isEmpty { throw AdapterError.unknownMailbox(mailbox) }
+        throw AdapterError.ambiguousMailbox(mailbox, paths: Array(Set(byName.map(path))))
+    }
+
     // MARK: - Direct store path
 
     /// How long a message-text search may read message files before it
@@ -228,23 +255,40 @@ public actor MailAdapter {
         guard let store else { return nil }
         do {
             let tz = Self.resolveTz(tzID)
-            let names = try await accountNamesByID()
-            let skip = Set(MailScripts.skipNamesForScope(scope).map { $0.lowercased() })
-            if !account.isEmpty, !names.values.contains(account) {
+            var directory = try await mailDirectory()
+            if !account.isEmpty, !directory.names.values.contains(account) {
                 throw AdapterError.unknownAccount(account)
             }
-            let targets = try await store.mailboxes().filter { box in
-                // Accounts Mail does not list (disabled, removed) are left out.
-                guard let name = names[box.accountID] else { return false }
-                if !account.isEmpty && name != account { return false }
-                // Mailbox names are full paths ("Bills/Utilities"). Scope
-                // skips and bare-name filters go by the last component, as
-                // the scripting path does.
-                let leaf = box.name.split(separator: "/").last.map(String.init) ?? box.name
-                if mailbox.isEmpty { return !skip.contains(leaf.lowercased()) }
-                return box.name == mailbox || leaf == mailbox
+            let names = directory.names
+            let skip = Set(MailScripts.skipNamesForScope(scope).map { $0.lowercased() })
+            let stored = try await store.mailboxes()
+            func candidates() -> [MailStore.Mailbox] {
+                stored.filter { box in
+                    // Only mailboxes Mail itself lists: the database can
+                    // hold trees Mail no longer shows or can open.
+                    guard let name = names[box.accountID],
+                          directory.mailboxes.contains(Self.directoryKey(box.accountID, box.name)) else { return false }
+                    return account.isEmpty || name == account
+                }
             }
-            if !mailbox.isEmpty, targets.isEmpty { throw AdapterError.unknownMailbox(mailbox) }
+            var visible = candidates()
+            let targets: [MailStore.Mailbox]
+            if mailbox.isEmpty {
+                // Scope skips go by the mailbox's own name, as in scripting.
+                targets = visible.filter { box in
+                    let leaf = box.name.split(separator: "/").last.map(String.init) ?? box.name
+                    return !skip.contains(leaf.lowercased())
+                }
+            } else {
+                do {
+                    targets = try Self.resolveMailboxFilter(mailbox, in: visible) { $0.name }
+                } catch AdapterError.unknownMailbox {
+                    // It may have been created since the directory was cached.
+                    directory = try await mailDirectory(forceRefresh: true)
+                    visible = candidates()
+                    targets = try Self.resolveMailboxFilter(mailbox, in: visible) { $0.name }
+                }
+            }
             var base = MailStore.Query(mailboxRowIDs: targets.map(\.rowID))
             base.since = sinceISO.flatMap { MailScripts.parseDate(iso: $0, bareDateTz: tz) }
             base.before = beforeISO.flatMap { MailScripts.parseDate(iso: $0, bareDateTz: tz) }
@@ -325,19 +369,37 @@ public actor MailAdapter {
         return out
     }
 
-    /// Account id -> name, from Mail itself, cached briefly: the database
-    /// identifies accounts by id, the tools by name.
-    private func accountNamesByID() async throws -> [String: String] {
-        if let cached = accountNames, ContinuousClock.now - cached.fetched < .seconds(600) {
-            return cached.names
-        }
-        let out = try await runner.run(source: MailScripts.listAccounts, timeoutSeconds: 15)
+    struct MailDirectory: Sendable {
+        /// Account id -> name.
         var names: [String: String] = [:]
-        for fields in records(out) where fields.count == 2 && !fields[0].isEmpty {
-            names[fields[0]] = fields[1]
+        /// `directoryKey(accountID, path)` for every mailbox Mail lists.
+        var mailboxes: Set<String> = []
+    }
+
+    static func directoryKey(_ accountID: String, _ path: String) -> String {
+        accountID + MailScripts.fieldSeparator + path
+    }
+
+    static func parseDirectory(_ records: [[String]]) -> MailDirectory {
+        var directory = MailDirectory()
+        for fields in records where fields.count == 3 && !fields[0].isEmpty {
+            directory.names[fields[0]] = fields[1]
+            if !fields[2].isEmpty { directory.mailboxes.insert(directoryKey(fields[0], fields[2])) }
         }
-        accountNames = (names, ContinuousClock.now)
-        return names
+        return directory
+    }
+
+    /// Accounts and the mailboxes Mail lists for them, from Mail itself,
+    /// cached for ten minutes: the database knows accounts by id and may
+    /// hold mailboxes Mail does not expose.
+    private func mailDirectory(forceRefresh: Bool = false) async throws -> MailDirectory {
+        if !forceRefresh, let cached = directoryCache, ContinuousClock.now - cached.fetched < .seconds(600) {
+            return cached.directory
+        }
+        let out = try await runner.run(source: MailScripts.listAccountMailboxes, timeoutSeconds: 30)
+        let directory = Self.parseDirectory(records(out))
+        directoryCache = (directory, ContinuousClock.now)
+        return directory
     }
 
     /// Messages plus, when the script stopped early, why.

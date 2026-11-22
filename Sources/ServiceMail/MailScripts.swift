@@ -88,7 +88,8 @@ enum MailScripts {
     ///   - `mboxPath` builds the path by walking containers up to the account.
     ///   - `findMailbox` resolves a path with Mail's own path-style specifier,
     ///     then falls back to a bare-name match so callers that pass a nested
-    ///     mailbox's own name keep working.
+    ///     mailbox's own name keep working, but only when exactly one mailbox
+    ///     has that name; otherwise it errors rather than pick one.
     static let mailboxHandlers = """
     on findMailbox(acct, mboxName)
         tell application "Mail"
@@ -97,9 +98,12 @@ enum MailScripts {
                 set probe to name of mb
                 return mb
             end try
+            set hits to {}
             repeat with mbRef in mailboxes of acct
-                if (name of mbRef as string) = mboxName then return contents of mbRef
+                if (name of mbRef as string) = mboxName then set end of hits to contents of mbRef
             end repeat
+            if (count of hits) = 1 then return item 1 of hits
+            if (count of hits) > 1 then error "ambiguous_mailbox: several mailboxes are named '" & mboxName & "'; use a full path from mail.list_mailboxes"
         end tell
         return missing value
     end findMailbox
@@ -123,19 +127,31 @@ enum MailScripts {
     end mboxPath
     """
 
-    /// Account id and name pairs. The id is what Mail's own database uses in
-    /// mailbox URLs; the name is what the mail tools show and accept.
-    static let listAccounts: String = """
+    /// Every account (id and name) with the paths of the mailboxes Mail
+    /// itself lists for it. One record per mailbox: id, name, path.
+    ///
+    /// Mail's database identifies accounts by id and can hold mailboxes that
+    /// Mail no longer shows or scripts (an old tree left by a previous
+    /// account setup). The fast path only searches mailboxes that appear
+    /// here, so search can never reach a mailbox `mail.list_mailboxes` hides
+    /// and `mail.get_message` cannot open.
+    static let listAccountMailboxes: String = """
     set out to ""
     set RS to "\u{1E}"
     set FS to "\u{1F}"
     tell application "Mail"
         repeat with a in accounts
-            set out to out & (id of a as string) & FS & my clean(name of a as string) & RS
+            set acctID to (id of a as string)
+            set acctName to my clean(name of a as string)
+            set out to out & acctID & FS & acctName & FS & "" & RS
+            repeat with mbox in mailboxes of a
+                set out to out & acctID & FS & acctName & FS & my clean(my mboxPath(contents of mbox)) & RS
+            end repeat
         end repeat
     end tell
     return out
     \(cleanHandler)
+    \(mailboxHandlers)
     """
 
     /// Lists every mailbox across every Mail.app account.
@@ -360,6 +376,8 @@ enum MailScripts {
             -- Collect the mailboxes to walk, inbox first, so the most useful
             -- results are in hand if the time budget runs out.
             set targets to {}
+            set exactTargets to {}
+            set leafTargets to {}
             repeat with a in accounts
                 set acctName to (name of a as string)
                 if theAcct = "" or acctName = theAcct then
@@ -379,11 +397,11 @@ enum MailScripts {
                                     end if
                                 end repeat
                             end ignoring
-                        else if mboxName = theMbox or leafName = theMbox then
+                        else if mboxName = theMbox then
                             -- Explicit mailbox filter wins regardless of scope.
-                            -- A full path names one mailbox; a bare name
-                            -- matches every mailbox with that name.
-                            set walkThis to true
+                            set end of exactTargets to {mbox, acctName, mboxName}
+                        else if leafName = theMbox then
+                            set end of leafTargets to {mbox, acctName, mboxName}
                         end if
                         if walkThis then
                             set isInbox to false
@@ -400,8 +418,23 @@ enum MailScripts {
                 end if
             end repeat
 
-            if theMbox is not "" and (count of targets) = 0 then
-                return "!nomailbox" & RS
+            if theMbox is not "" then
+                -- A full path names exactly one mailbox. A bare name is
+                -- accepted only when one mailbox has it; several is an
+                -- error listing the paths, never a silent multi-folder search.
+                if (count of exactTargets) > 0 then
+                    set targets to exactTargets
+                else if (count of leafTargets) = 1 then
+                    set targets to leafTargets
+                else if (count of leafTargets) > 1 then
+                    set amb to "!ambiguous"
+                    repeat with t in leafTargets
+                        set amb to amb & FS & my clean(item 3 of t)
+                    end repeat
+                    return amb & RS
+                else
+                    return "!nomailbox" & RS
+                end if
             end if
 
             repeat with target in targets

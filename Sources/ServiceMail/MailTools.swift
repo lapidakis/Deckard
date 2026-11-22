@@ -73,7 +73,7 @@ struct ListMessagesTool: ToolHandler {
             "type": .string("object"),
             "properties": .object([
                 "account":     .object(["type": .string("string"), "description": .string("Account name; empty = all accounts.")]),
-                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox path as mail.list_mailboxes returns it, e.g. \"INBOX\" or \"Bills/Utilities\". A bare name matches every mailbox with that name. Empty = every mailbox in the chosen account(s). An unknown mailbox is an error.")]),
+                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox path as mail.list_mailboxes returns it, e.g. \"INBOX\" or \"Bills/Utilities\". A bare name works only when exactly one mailbox has it; if several do, the error lists their full paths. Empty = every mailbox in the chosen account(s). An unknown mailbox is an error.")]),
                 "scope":       .object(["type": .string("string"), "enum": .array([.string("primary"), .string("with_archive"), .string("all")]), "description": .string("Cross-mailbox walk policy when mailbox is empty.")]),
                 "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Inclusive lower bound on date_received.")]),
                 "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Exclusive upper bound on date_received.")]),
@@ -140,7 +140,7 @@ struct SearchMailTool: ToolHandler {
             "properties": .object([
                 "query":       .object(["type": .string("string"), "description": .string("Substring to match, case-insensitive.")]),
                 "account":     .object(["type": .string("string"), "description": .string("Account name; empty = all accounts.")]),
-                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox path as mail.list_mailboxes returns it, e.g. \"INBOX\" or \"Bills/Utilities\". A bare name matches every mailbox with that name. Empty = every mailbox in the chosen account(s). An unknown mailbox is an error.")]),
+                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox path as mail.list_mailboxes returns it, e.g. \"INBOX\" or \"Bills/Utilities\". A bare name works only when exactly one mailbox has it; if several do, the error lists their full paths. Empty = every mailbox in the chosen account(s). An unknown mailbox is an error.")]),
                 "scope":       .object(["type": .string("string"), "enum": .array([.string("primary"), .string("with_archive"), .string("all")])]),
                 "field":       .object([
                     "type": .string("string"),

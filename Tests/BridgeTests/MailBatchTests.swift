@@ -208,7 +208,7 @@ private func filter(_ field: MailSearchField, query: String = "invoice", since: 
         ("subject", MailScripts.listMessages(filter(.subject, since: "2026-11-20T15:30:00-06:00"))),
         ("mailboxes", MailScripts.listMailboxes),
         ("get", MailScripts.getMessage(account: "a", mailbox: "INBOX", id: "1")),
-        ("accounts", MailScripts.listAccounts),
+        ("directory", MailScripts.listAccountMailboxes),
         ("mark", MailScripts.batchSetReadState(account: "a", mailbox: "Bills/Utilities", ids: ["1", "2"], read: true)),
         ("move", MailScripts.batchMoveMessages(account: "a", mailbox: "INBOX", ids: ["1"], targetAccount: "a", targetMailbox: "Archive")),
     ]
@@ -261,6 +261,7 @@ private func filter(_ field: MailSearchField, query: String = "invoice", since: 
     let list = MailScripts.listMessages(MailScripts.MessageFilter())
     #expect(list.contains("set mboxName to my mboxPath(mbox)"))
     #expect(list.contains(#"return "!nomailbox" & RS"#))
+    #expect(list.contains(#"set amb to "!ambiguous""#))
     for script in [MailScripts.getMessage(account: "a", mailbox: "Bills/Utilities", id: "1"),
                    MailScripts.batchSetReadState(account: "a", mailbox: "m", ids: ["1"], read: true),
                    MailScripts.batchMoveMessages(account: "a", mailbox: "m", ids: ["1"], targetAccount: "a", targetMailbox: "t")] {
@@ -269,4 +270,49 @@ private func filter(_ field: MailSearchField, query: String = "invoice", since: 
     }
     let unknown = MailAdapter.AdapterError.unknownMailbox("NoSuchMailbox").description
     #expect(unknown.contains("NoSuchMailbox") && unknown.contains("mail.list_mailboxes"))
+}
+
+@Test func mailboxFilterPrefersExactPathAndRefusesAmbiguousNames() throws {
+    let boxes = ["INBOX", "Utilities", "Home/Utilities", "Family/Elliot", "Archive"]
+    func resolve(_ name: String) throws -> [String] {
+        try MailAdapter.resolveMailboxFilter(name, in: boxes) { $0 }
+    }
+    // A full path names one mailbox; a top-level mailbox's path is its name,
+    // so it stays addressable even though a nested one shares the name.
+    #expect(try resolve("Home/Utilities") == ["Home/Utilities"])
+    #expect(try resolve("Utilities") == ["Utilities"])
+    // A bare name that is unique resolves to its nested mailbox.
+    #expect(try resolve("Elliot") == ["Family/Elliot"])
+    #expect(throws: MailAdapter.AdapterError.self) { _ = try resolve("NoSuchMailbox") }
+
+    // No exact path, several by name: an error that lists the paths.
+    let nestedOnly = ["Home/Utilities", "Work/Utilities", "INBOX"]
+    do {
+        _ = try MailAdapter.resolveMailboxFilter("Utilities", in: nestedOnly) { $0 }
+        Issue.record("expected an ambiguity error")
+    } catch let error as MailAdapter.AdapterError {
+        #expect(error.description.contains("Home/Utilities, Work/Utilities"))
+    }
+}
+
+@Test func mailDirectoryLimitsSearchToMailboxesMailLists() {
+    // Mail's database can hold a tree Mail no longer shows; only mailboxes in
+    // the directory Mail itself reports may be searched.
+    let directory = MailAdapter.parseDirectory([
+        ["ACCT-1", "iCloud", ""],
+        ["ACCT-1", "iCloud", "INBOX"],
+        ["ACCT-1", "iCloud", "Home/Utilities"],
+        ["malformed"],
+    ])
+    #expect(directory.names == ["ACCT-1": "iCloud"])
+    #expect(directory.mailboxes.contains(MailAdapter.directoryKey("ACCT-1", "Home/Utilities")))
+    #expect(!directory.mailboxes.contains(MailAdapter.directoryKey("ACCT-1", "old-tree/Utilities")))
+    #expect(!directory.mailboxes.contains(MailAdapter.directoryKey("ACCT-2", "INBOX")))
+
+    let fs = MailScripts.fieldSeparator, rs = MailScripts.recordSeparator
+    #expect(throws: MailAdapter.AdapterError.self) {
+        try MailAdapter.throwIfMailboxMarker("!ambiguous\(fs)Home/Utilities\(fs)Utilities\(rs)", mailbox: "Utilities")
+    }
+    #expect(throws: MailAdapter.AdapterError.self) { try MailAdapter.throwIfMailboxMarker("!nomailbox\(rs)", mailbox: "x") }
+    #expect(throws: Never.self) { try MailAdapter.throwIfMailboxMarker("12\(fs)a\(rs)", mailbox: "x") }
 }
