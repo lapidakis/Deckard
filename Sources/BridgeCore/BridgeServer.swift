@@ -19,17 +19,22 @@ public struct BridgeServer: Sendable {
     private let config: Config
     private let mode: Mode
     private let providers: [any ToolProvider]
+    /// Which path serves mail search, as decided by whoever built the mail
+    /// provider. Reported in the daemon status file.
+    private let mailSearchBackend: String
     private let logger: Logger
 
     public init(
         config: Config,
         mode: Mode,
         providers: [any ToolProvider],
+        mailSearchBackend: String = "mail_app",
         logger: Logger = Logger(label: "bridge.server")
     ) {
         self.config = config
         self.mode = mode
         self.providers = providers
+        self.mailSearchBackend = mailSearchBackend
         self.logger = logger
     }
 
@@ -73,22 +78,18 @@ public struct BridgeServer: Sendable {
             let diskAccess = FullDiskAccess.diagnose()
             let hasFullDiskAccess = diskAccess.granted
             logger.info("Full Disk Access check: granted=\(hasFullDiskAccess) \(diskAccess.detail) binary=\(Bundle.main.executablePath ?? "?")")
-            let spotlightActive = config.search.useSpotlight && hasFullDiskAccess
             do {
                 try DaemonStatus(
                     pid: ProcessInfo.processInfo.processIdentifier, startedAt: Date(),
-                    fullDiskAccess: hasFullDiskAccess, spotlightRequested: config.search.useSpotlight,
-                    // The Spotlight mail backend is not wired in yet; report
-                    // the path that really serves mail.search.
-                    mailSearchBackend: "mail_app"
+                    fullDiskAccess: hasFullDiskAccess, fastSearchRequested: config.search.fastSearch,
+                    mailSearchBackend: mailSearchBackend
                 ).write()
             } catch {
                 logger.warning("Could not write daemon status: \(error)")
             }
-            if config.search.useSpotlight && !hasFullDiskAccess {
-                logger.warning("[search] use_spotlight is on but the daemon does not have Full Disk Access; mail search stays on Mail.app scripting. Grant it in System Settings > Privacy & Security > Full Disk Access, then restart.")
+            if config.search.fastSearch && !hasFullDiskAccess {
+                logger.warning("[search] fast_search is on but the daemon does not have Full Disk Access; mail search stays on Mail.app scripting. Grant it in System Settings > Privacy & Security > Full Disk Access, then restart.")
             }
-            let spotlightProbe = spotlightActive ? SpotlightProbe(logger: logger) : nil
 
             let accessConfig = config.cloudflareAccess
             if accessConfig.enabled {
@@ -205,9 +206,6 @@ public struct BridgeServer: Sendable {
                     }
                 }
 
-                if let spotlightProbe {
-                    group.addTask { await spotlightProbe.run() }
-                }
                 if config.cloudflareTunnel.enabled {
                     let supervisor = TunnelSupervisor(config: config.cloudflareTunnel, logger: logger)
                     group.addTask { await supervisor.run() }

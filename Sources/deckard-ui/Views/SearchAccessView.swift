@@ -3,7 +3,7 @@ import AppKit
 import BridgeConfig
 
 /// The search trade-off: grant the daemon Full Disk Access for fast, complete
-/// mail search through the Mac's own index, or grant nothing and accept
+/// mail search by reading Mail's own database, or grant nothing and accept
 /// slower, partial results.
 ///
 /// The app cannot test the daemon's grant itself (privacy grants are per
@@ -25,7 +25,7 @@ final class SearchAccessModel: ObservableObject {
     }
 
     func load() {
-        if let cfg = try? store.loadOrInit() { useSpotlight = cfg.search.useSpotlight }
+        if let cfg = try? store.loadOrInit() { useSpotlight = cfg.search.fastSearch }
         daemonStatus = DaemonStatus.read()
         daemonBinaryPath = Self.launchAgentBinaryPath()
     }
@@ -33,8 +33,8 @@ final class SearchAccessModel: ObservableObject {
     func choose(spotlight: Bool) {
         do {
             var cfg = try store.loadOrInit()
-            guard cfg.search.useSpotlight != spotlight else { return }
-            cfg.search.useSpotlight = spotlight
+            guard cfg.search.fastSearch != spotlight else { return }
+            cfg.search.fastSearch = spotlight
             try store.write(cfg)
             useSpotlight = spotlight
             needsRestart = true
@@ -74,7 +74,7 @@ struct SearchAccessView: View {
             option(
                 selected: model.useSpotlight,
                 title: "Fast, complete search",
-                detail: "Uses the Mac's own search index, so all mail is searchable in well under a second and Deckard keeps no copy of it. Requires Full Disk Access for the Deckard daemon."
+                detail: "Reads Mail's own message database and message files directly. Finding mail by subject, sender or date is instant, message text is searched across all your mail, and Deckard keeps no copy. Requires Full Disk Access for the Deckard daemon."
             ) { model.choose(spotlight: true) }
 
             if model.useSpotlight { fullDiskAccessBox }
@@ -112,7 +112,7 @@ struct SearchAccessView: View {
                     Text(granted ? "The daemon has Full Disk Access." : "The daemon does not have Full Disk Access yet.")
                         .font(.callout.bold())
                 }
-                Text("Full Disk Access is broad: it lets the daemon read other protected data on this Mac too, such as Messages and Safari history. Deckard only uses it to search Mail. Until it is granted, standard search is used.")
+                Text("Full Disk Access is broad: it lets the daemon read other protected data on this Mac too, such as Messages and Safari history. Deckard only uses it to read Mail's message database and message files. Until it is granted, standard search is used.")
                     .font(.caption).foregroundStyle(.secondary)
 
                 if !granted {

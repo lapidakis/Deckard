@@ -117,9 +117,11 @@ A missing binary or config is logged and skipped; it never stops the bridge. Ena
 
 | Key | Default | Notes |
 |---|---|---|
-| `use_spotlight` | `false` | Ask for fast, complete mail search through the Mac's own index. Only takes effect once the daemon has Full Disk Access (System Settings > Privacy & Security > Full Disk Access, add the `deckard` binary, restart). Without the grant, Mail.app scripting is used. |
+| `fast_search` | `false` | Read Mail's own message database and message files directly for `mail.list_messages` and `mail.search`. Only takes effect once the daemon has Full Disk Access (System Settings > Privacy & Security > Full Disk Access, add the `deckard` binary, restart). |
 
-Full Disk Access reaches much more than mail, so it is never assumed. The daemon writes what it was actually granted to `~/Library/Application Support/Deckard/daemon-status.json` at startup.
+With fast search, finding mail by subject, sender, date, mailbox or read state is answered from Mail's database in milliseconds, and message text is searched across all mail by reading the message files. Without it, Mail.app scripting is used: slower, and message text is only searched 30 days back unless `since` is given.
+
+Full Disk Access reaches much more than mail, so it is never assumed. The daemon writes what it was actually granted, and which path is serving mail search, to `~/Library/Application Support/Deckard/daemon-status.json` at startup. Mail's database is Apple's private format; if its layout is not what Deckard expects, the daemon logs a warning and uses Mail.app scripting. `use_spotlight` is accepted as an older name for this key.
 
 ### `[acl]` and `[acl.profiles.<name>]`
 

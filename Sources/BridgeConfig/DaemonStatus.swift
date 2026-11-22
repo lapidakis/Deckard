@@ -56,16 +56,16 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
     public var pid: Int32
     public var startedAt: Date
     public var fullDiskAccess: Bool
-    /// What the user asked for in `[search] use_spotlight`.
-    public var spotlightRequested: Bool
+    /// What the user asked for in `[search] fast_search`.
+    public var fastSearchRequested: Bool
     /// The mail search path actually in effect.
     public var mailSearchBackend: String
 
-    public init(pid: Int32, startedAt: Date, fullDiskAccess: Bool, spotlightRequested: Bool, mailSearchBackend: String) {
+    public init(pid: Int32, startedAt: Date, fullDiskAccess: Bool, fastSearchRequested: Bool, mailSearchBackend: String) {
         self.pid = pid
         self.startedAt = startedAt
         self.fullDiskAccess = fullDiskAccess
-        self.spotlightRequested = spotlightRequested
+        self.fastSearchRequested = fastSearchRequested
         self.mailSearchBackend = mailSearchBackend
     }
 
@@ -73,7 +73,7 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
         case pid
         case startedAt = "started_at"
         case fullDiskAccess = "full_disk_access"
-        case spotlightRequested = "spotlight_requested"
+        case fastSearchRequested = "fast_search_requested"
         case mailSearchBackend = "mail_search_backend"
     }
 

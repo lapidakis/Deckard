@@ -462,27 +462,36 @@ public struct CloudflareTunnelConfig: Codable, Sendable, Equatable {
 ///
 /// ```toml
 /// [search]
-/// use_spotlight = true   # fast, complete mail search; needs Full Disk Access
+/// fast_search = true   # read Mail's own database; needs Full Disk Access
 /// ```
 ///
-/// `use_spotlight` is the user's *choice*; it only takes effect when macOS has
-/// actually granted the daemon Full Disk Access. Without the grant the bridge
-/// keeps using Mail.app scripting (slower; body text limited to recent mail).
-/// Off by default: Full Disk Access reaches far more than mail, so it is
-/// never assumed.
+/// `fast_search` is the user's *choice*; it only takes effect when macOS has
+/// actually granted the daemon Full Disk Access. With both, mail listing and
+/// search read Mail's message database and message files directly. Without
+/// the grant the bridge keeps using Mail.app scripting (slower; message text
+/// limited to recent mail). Off by default: Full Disk Access reaches far
+/// more than mail, so it is never assumed.
 public struct SearchConfig: Codable, Sendable, Equatable {
-    public var useSpotlight: Bool
+    public var fastSearch: Bool
 
-    public init(useSpotlight: Bool = false) {
-        self.useSpotlight = useSpotlight
+    public init(fastSearch: Bool = false) {
+        self.fastSearch = fastSearch
     }
 
     enum CodingKeys: String, CodingKey {
-        case useSpotlight = "use_spotlight"
+        case fastSearch = "fast_search"
+        /// Name used while this was expected to go through Spotlight.
+        case legacyUseSpotlight = "use_spotlight"
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.useSpotlight = try c.decodeIfPresent(Bool.self, forKey: .useSpotlight) ?? false
+        self.fastSearch = try c.decodeIfPresent(Bool.self, forKey: .fastSearch)
+            ?? c.decodeIfPresent(Bool.self, forKey: .legacyUseSpotlight) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(fastSearch, forKey: .fastSearch)
     }
 }

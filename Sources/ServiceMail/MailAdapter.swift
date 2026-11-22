@@ -7,23 +7,38 @@ public actor MailAdapter {
 
     public enum AdapterError: Error, CustomStringConvertible {
         case invalidDate(field: String, value: String)
+        case emptyDateRange(since: String, before: String)
+        case unknownMailbox(String)
+        case unknownAccount(String)
 
         public var description: String {
             switch self {
             case .invalidDate(let field, let value):
                 return "\(field) is not a parseable ISO 8601 timestamp: '\(value)'"
+            case .emptyDateRange(let since, let before):
+                return "since (\(since)) is later than before (\(before)); no message can match. Swap them or drop one."
+            case .unknownMailbox(let name):
+                return "No mailbox named '\(name)'. Use mail.list_mailboxes for the exact names; nested mailboxes use a path such as 'Parent/Child'."
+            case .unknownAccount(let name):
+                return "No mail account named '\(name)'. Use mail.list_mailboxes to see account names."
             }
         }
     }
 
     private let runner: AppleScriptRunner
     private let logger: Logger
+    /// Direct reader for Mail's database and message files. Present only
+    /// when the user chose fast search and the daemon has Full Disk Access.
+    private let store: MailStore?
+    private var accountNames: (names: [String: String], fetched: ContinuousClock.Instant)?
 
     public init(
         runner: AppleScriptRunner = AppleScriptRunner(),
+        store: MailStore? = nil,
         logger: Logger = Logger(label: "bridge.mail")
     ) {
         self.runner = runner
+        self.store = store
         self.logger = logger
     }
 
@@ -44,6 +59,11 @@ public actor MailAdapter {
         limit: Int = 25
     ) async throws -> MessageList {
         try validateDates(since: sinceISO, before: beforeISO, tzID: tzID)
+        if let fast = try await viaStore(account: account, mailbox: mailbox, field: .any, query: "",
+                                     sinceISO: sinceISO, beforeISO: beforeISO, unreadOnly: unreadOnly,
+                                     scope: scope, tzID: tzID, limit: limit) {
+            return fast
+        }
         var filter = MailScripts.MessageFilter()
         filter.account = account
         filter.mailbox = mailbox
@@ -55,6 +75,7 @@ public actor MailAdapter {
         filter.bareDateTz = Self.resolveTz(tzID)
         filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
+        if out.hasPrefix("!nomailbox") { throw AdapterError.unknownMailbox(mailbox) }
         let raw = parseSummaries(out)
         // Sort on Mail's raw local timestamps first (uniform, so lexical
         // order is chronological), then attach the offset for output.
@@ -78,6 +99,11 @@ public actor MailAdapter {
         limit: Int = 25
     ) async throws -> MessageList {
         try validateDates(since: sinceISO, before: beforeISO, tzID: tzID)
+        if let fast = try await viaStore(account: account, mailbox: mailbox, field: field, query: query,
+                                     sinceISO: sinceISO, beforeISO: beforeISO, unreadOnly: unreadOnly,
+                                     scope: scope, tzID: tzID, limit: limit) {
+            return fast
+        }
         var filter = MailScripts.MessageFilter()
         filter.account = account
         filter.mailbox = mailbox
@@ -90,6 +116,7 @@ public actor MailAdapter {
         filter.bareDateTz = Self.resolveTz(tzID)
         filter.perMailboxCap = perMailboxCapFor(limit: limit, mailbox: mailbox)
         let out = try await runner.run(source: MailScripts.listMessages(filter), timeoutSeconds: 60)
+        if out.hasPrefix("!nomailbox") { throw AdapterError.unknownMailbox(mailbox) }
         let raw = parseSummaries(out)
         // Sort on Mail's raw local timestamps first (uniform, so lexical
         // order is chronological), then attach the offset for output.
@@ -178,6 +205,139 @@ public actor MailAdapter {
         let d = ContinuousClock().now - start
         return Int(d.components.seconds * 1000) +
             Int(d.components.attoseconds / 1_000_000_000_000_000)
+    }
+
+    // MARK: - Direct store path
+
+    /// How long a message-text search may read message files before it
+    /// returns what it has. Files are local, so this covers thousands.
+    static let bodyScanBudget: Duration = .seconds(10)
+    /// Most candidate messages whose text is read in one search.
+    static let bodyScanCandidates = 5000
+
+    /// Answers from Mail's database and message files. Returns nil when the
+    /// store is unavailable or anything goes wrong inside it, so the caller
+    /// falls back to Mail.app scripting; a search never fails because of this
+    /// path. The only errors thrown are the caller's own mistakes (an unknown
+    /// mailbox or account), which must not be hidden by a fallback.
+    private func viaStore(
+        account: String, mailbox: String, field: SearchField, query: String,
+        sinceISO: String?, beforeISO: String?, unreadOnly: Bool,
+        scope: MailboxScope, tzID: String?, limit: Int
+    ) async throws -> MessageList? {
+        guard let store else { return nil }
+        do {
+            let tz = Self.resolveTz(tzID)
+            let names = try await accountNamesByID()
+            let skip = Set(MailScripts.skipNamesForScope(scope).map { $0.lowercased() })
+            if !account.isEmpty, !names.values.contains(account) {
+                throw AdapterError.unknownAccount(account)
+            }
+            let targets = try await store.mailboxes().filter { box in
+                // Accounts Mail does not list (disabled, removed) are left out.
+                guard let name = names[box.accountID] else { return false }
+                if !account.isEmpty && name != account { return false }
+                // Mailbox names are full paths ("Bills/Utilities"). Scope
+                // skips and bare-name filters go by the last component, as
+                // the scripting path does.
+                let leaf = box.name.split(separator: "/").last.map(String.init) ?? box.name
+                if mailbox.isEmpty { return !skip.contains(leaf.lowercased()) }
+                return box.name == mailbox || leaf == mailbox
+            }
+            if !mailbox.isEmpty, targets.isEmpty { throw AdapterError.unknownMailbox(mailbox) }
+            var base = MailStore.Query(mailboxRowIDs: targets.map(\.rowID))
+            base.since = sinceISO.flatMap { MailScripts.parseDate(iso: $0, bareDateTz: tz) }
+            base.before = beforeISO.flatMap { MailScripts.parseDate(iso: $0, bareDateTz: tz) }
+            base.unreadOnly = unreadOnly
+
+            let hasText = !query.isEmpty
+            var matched: [MailStore.Row] = []
+            if !hasText || field != .body {
+                var header = base
+                header.limit = limit
+                if hasText {
+                    header.headerText = query
+                    header.matchSubject = field == .subject || field == .any
+                    header.matchSender = field == .sender || field == .any
+                }
+                matched = try await store.messages(header)
+            }
+
+            var incomplete: String?
+            if hasText && (field == .body || field == .any) {
+                var candidates = base
+                candidates.limit = Self.bodyScanCandidates
+                let rows = try await store.messages(candidates)
+                var seen = Set(matched.map(\.id))
+                var bodyMatches = 0
+                let deadline = ContinuousClock.now.advanced(by: Self.bodyScanBudget)
+                var examined = 0
+                for row in rows where !seen.contains(row.id) {
+                    if bodyMatches >= limit { break }
+                    if ContinuousClock.now >= deadline {
+                        incomplete = "Results may be incomplete: message text was checked in the \(examined) most recent of \(rows.count) candidate messages before the time limit. Subject and sender matches are complete. Narrow it with `mailbox`, `since` or `before`."
+                        break
+                    }
+                    examined += 1
+                    if let text = await store.bodyText(of: row),
+                       text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+                        matched.append(row)
+                        seen.insert(row.id)
+                        bodyMatches += 1
+                    }
+                }
+                if incomplete == nil, rows.count == Self.bodyScanCandidates, bodyMatches < limit {
+                    incomplete = "Results may be incomplete: message text was checked in the \(rows.count) most recent candidate messages only. Narrow it with `mailbox`, `since` or `before`."
+                }
+            }
+
+            let sorted = matched.sorted {
+                ($0.dateReceived ?? $0.dateSent ?? .distantPast) > ($1.dateReceived ?? $1.dateSent ?? .distantPast)
+            }
+            let formatter = Self.offsetFormatter(tz: tz)
+            let messages = sorted.prefix(limit).map { row in
+                MessageSummary(
+                    id: String(row.id),
+                    account: names[row.mailbox.accountID] ?? row.mailbox.accountID,
+                    mailbox: row.mailbox.name,
+                    subject: row.subject,
+                    sender: row.sender,
+                    dateSent: row.dateSent.map(formatter.string(from:)),
+                    dateReceived: row.dateReceived.map(formatter.string(from:)),
+                    isRead: row.isRead)
+            }
+            return MessageList(messages: Array(messages), incomplete: incomplete)
+        } catch let callerError as AdapterError {
+            throw callerError
+        } catch {
+            logger.warning("Mail database path failed (\(error)); using Mail.app scripting for this request")
+            return nil
+        }
+    }
+
+    /// Same timestamp shape `attachOffset` produces for the scripting path.
+    static func offsetFormatter(tz: TimeZone) -> DateFormatter {
+        let out = DateFormatter()
+        out.locale = Locale(identifier: "en_US_POSIX")
+        out.calendar = Calendar(identifier: .gregorian)
+        out.timeZone = tz
+        out.dateFormat = "yyyy-MM-dd'T'HH:mm:ssxxx"
+        return out
+    }
+
+    /// Account id -> name, from Mail itself, cached briefly: the database
+    /// identifies accounts by id, the tools by name.
+    private func accountNamesByID() async throws -> [String: String] {
+        if let cached = accountNames, ContinuousClock.now - cached.fetched < .seconds(600) {
+            return cached.names
+        }
+        let out = try await runner.run(source: MailScripts.listAccounts, timeoutSeconds: 15)
+        var names: [String: String] = [:]
+        for fields in records(out) where fields.count == 2 && !fields[0].isEmpty {
+            names[fields[0]] = fields[1]
+        }
+        accountNames = (names, ContinuousClock.now)
+        return names
     }
 
     /// Messages plus, when the script stopped early, why.
@@ -293,6 +453,13 @@ public actor MailAdapter {
         if let b = before, MailScripts.asDateSetup(varName: "_", iso: b, bareDateTz: tz) == nil {
             throw AdapterError.invalidDate(field: "before", value: b)
         }
+        // An inverted range silently returned nothing, which reads as "no
+        // such mail" rather than "the question was malformed".
+        if let s = since, let b = before,
+           let sinceDate = MailScripts.parseDate(iso: s, bareDateTz: tz),
+           let beforeDate = MailScripts.parseDate(iso: b, bareDateTz: tz), sinceDate > beforeDate {
+            throw AdapterError.emptyDateRange(since: s, before: b)
+        }
     }
 
     // MARK: - Parsing
@@ -327,8 +494,8 @@ public actor MailAdapter {
     private func parseMessage(_ out: String) -> Message? {
         let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let fields = trimmed.split(separator: MailScripts.fieldSeparator.first!, maxSplits: 7, omittingEmptySubsequences: false).map(String.init)
-        guard fields.count == 8, Int(fields[0]) != nil else { return nil }
+        let fields = trimmed.split(separator: MailScripts.fieldSeparator.first!, maxSplits: 9, omittingEmptySubsequences: false).map(String.init)
+        guard fields.count == 10, Int(fields[0]) != nil else { return nil }
         let recipients = fields[5].isEmpty ? [] : fields[5].split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
         return Message(
             id: fields[0],
@@ -338,7 +505,11 @@ public actor MailAdapter {
             sender: fields[4],
             recipients: recipients,
             dateSent: fields[6].isEmpty ? nil : fields[6],
-            body: fields[7]
+            dateReceived: fields[7].isEmpty ? nil : fields[7],
+            isRead: fields[8].lowercased() == "true",
+            // U+FFFC is the placeholder Mail leaves where an inline image or
+            // attachment sat; it carries nothing for a reader of the text.
+            body: fields[9].replacingOccurrences(of: "\u{FFFC}", with: "")
         )
     }
 

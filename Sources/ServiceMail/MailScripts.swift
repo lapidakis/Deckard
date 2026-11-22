@@ -79,6 +79,65 @@ enum MailScripts {
     end clean
     """
 
+    /// Mailbox helpers shared by every script.
+    ///
+    /// Mail's scripting reports only a mailbox's own name, so two nested
+    /// mailboxes called "Utilities" look identical, while Mail's database (and
+    /// the fast search path) identifies a mailbox by its full path. Every tool
+    /// therefore speaks full paths ("Bills/Utilities"):
+    ///   - `mboxPath` builds the path by walking containers up to the account.
+    ///   - `findMailbox` resolves a path with Mail's own path-style specifier,
+    ///     then falls back to a bare-name match so callers that pass a nested
+    ///     mailbox's own name keep working.
+    static let mailboxHandlers = """
+    on findMailbox(acct, mboxName)
+        tell application "Mail"
+            try
+                set mb to mailbox mboxName of acct
+                set probe to name of mb
+                return mb
+            end try
+            repeat with mbRef in mailboxes of acct
+                if (name of mbRef as string) = mboxName then return contents of mbRef
+            end repeat
+        end tell
+        return missing value
+    end findMailbox
+
+    on mboxPath(mb)
+        tell application "Mail"
+            set p to (name of mb as string)
+            set c to container of mb
+            repeat 8 times
+                try
+                    set upper to container of c
+                on error
+                    -- c is the account: the path is complete.
+                    exit repeat
+                end try
+                set p to ((name of c) as string) & "/" & p
+                set c to upper
+            end repeat
+        end tell
+        return p
+    end mboxPath
+    """
+
+    /// Account id and name pairs. The id is what Mail's own database uses in
+    /// mailbox URLs; the name is what the mail tools show and accept.
+    static let listAccounts: String = """
+    set out to ""
+    set RS to "\u{1E}"
+    set FS to "\u{1F}"
+    tell application "Mail"
+        repeat with a in accounts
+            set out to out & (id of a as string) & FS & my clean(name of a as string) & RS
+        end repeat
+    end tell
+    return out
+    \(cleanHandler)
+    """
+
     /// Lists every mailbox across every Mail.app account.
     static let listMailboxes: String = """
     set out to ""
@@ -88,7 +147,8 @@ enum MailScripts {
         repeat with a in accounts
             set acctName to name of a as string
             repeat with mbox in mailboxes of a
-                set mboxName to name of mbox as string
+                set leafName to name of mbox as string
+                set mboxName to my mboxPath(contents of mbox)
                 set unreadN to (unread count of mbox) as integer
                 -- Mail reports `unread count` as 0 for an account's INBOX
                 -- reached through `mailboxes of account`, even when it holds
@@ -97,7 +157,7 @@ enum MailScripts {
                 -- directly. Limited to INBOX because the query is slow on
                 -- large mailboxes such as Junk.
                 ignoring case
-                    set isInbox to (mboxName is "INBOX")
+                    set isInbox to (leafName is "INBOX")
                 end ignoring
                 if isInbox then
                     try
@@ -110,6 +170,7 @@ enum MailScripts {
     end tell
     return out
     \(cleanHandler)
+    \(mailboxHandlers)
     """
 
     /// Builds a list/search script. If `filter.textQuery` is empty, no text
@@ -304,27 +365,30 @@ enum MailScripts {
                 if theAcct = "" or acctName = theAcct then
                     repeat with mboxRef in mailboxes of a
                         set mbox to contents of mboxRef
-                        set mboxName to (name of mbox as string)
+                        set leafName to (name of mbox as string)
+                        set mboxName to my mboxPath(mbox)
                         set walkThis to false
                         if theMbox = "" then
                             -- Cross-mailbox: respect scope skip list (case-insensitive).
                             set walkThis to true
                             ignoring case
                                 repeat with skipName in skipList
-                                    if mboxName is (skipName as string) then
+                                    if leafName is (skipName as string) then
                                         set walkThis to false
                                         exit repeat
                                     end if
                                 end repeat
                             end ignoring
-                        else if mboxName = theMbox then
+                        else if mboxName = theMbox or leafName = theMbox then
                             -- Explicit mailbox filter wins regardless of scope.
+                            -- A full path names one mailbox; a bare name
+                            -- matches every mailbox with that name.
                             set walkThis to true
                         end if
                         if walkThis then
                             set isInbox to false
                             ignoring case
-                                set isInbox to (mboxName is "INBOX")
+                                set isInbox to (leafName is "INBOX")
                             end ignoring
                             if isInbox then
                                 set beginning of targets to {mbox, acctName, mboxName}
@@ -335,6 +399,10 @@ enum MailScripts {
                     end repeat
                 end if
             end repeat
+
+            if theMbox is not "" and (count of targets) = 0 then
+                return "!nomailbox" & RS
+            end if
 
             repeat with target in targets
                 if partialReason is "time" or ((current date) - startedAt) > budgetSecs then
@@ -356,6 +424,7 @@ enum MailScripts {
         end if
         return out
         \(cleanHandler)
+        \(mailboxHandlers)
         """
     }
 
@@ -375,14 +444,12 @@ enum MailScripts {
             set found to missing value
             repeat with a in accounts
                 if (name of a as string) = theAcct then
-                    repeat with mbox in mailboxes of a
-                        if (name of mbox as string) = theMbox then
-                            try
-                                set found to (first message of mbox whose id is (theID as integer))
-                            end try
-                            exit repeat
-                        end if
-                    end repeat
+                    set mbox to my findMailbox(contents of a, theMbox)
+                    if mbox is not missing value then
+                        try
+                            set found to (first message of mbox whose id is (theID as integer))
+                        end try
+                    end if
                     exit repeat
                 end if
             end repeat
@@ -406,10 +473,20 @@ enum MailScripts {
                     end if
                 end repeat
             end try
+            try
+                set msgDateRecv to ((date received of found) as «class isot» as string)
+            on error
+                set msgDateRecv to ""
+            end try
+            set msgRead to false
+            try
+                set msgRead to read status of found
+            end try
             set msgBody to (content of found as string)
-            return theID & FS & theAcct & FS & theMbox & FS & my clean(msgSubj) & FS & my clean(msgFrom) & FS & my clean(toRecips) & FS & msgDate & FS & my clean(msgBody)
+            return theID & FS & theAcct & FS & theMbox & FS & my clean(msgSubj) & FS & my clean(msgFrom) & FS & my clean(toRecips) & FS & msgDate & FS & msgDateRecv & FS & (msgRead as string) & FS & my clean(msgBody)
         end tell
         \(cleanHandler)
+        \(mailboxHandlers)
         """
     }
 
@@ -534,22 +611,25 @@ enum MailScripts {
     /// Components are then extracted in the SYSTEM timezone (where AppleScript
     /// dates live), so the AppleScript date object represents the same absolute
     /// moment as the input.
-    static func asDateSetup(varName: String, iso: String, bareDateTz: TimeZone = .current) -> String? {
+    /// Parses the `since`/`before` forms the mail tools accept: a full ISO
+    /// 8601 timestamp (with or without fractional seconds), or a bare
+    /// `yyyy-MM-dd` meaning midnight in `bareDateTz`.
+    static func parseDate(iso: String, bareDateTz: TimeZone = .current) -> Date? {
         let formatter1 = ISO8601DateFormatter()
         formatter1.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        var date = formatter1.date(from: iso)
-        if date == nil {
-            let formatter2 = ISO8601DateFormatter()
-            formatter2.formatOptions = [.withInternetDateTime]
-            date = formatter2.date(from: iso)
-        }
-        if date == nil {
-            // bare yyyy-MM-dd → midnight in the caller's tz (default: system local)
-            let dayFmt = DateFormatter()
-            dayFmt.dateFormat = "yyyy-MM-dd"
-            dayFmt.timeZone = bareDateTz
-            date = dayFmt.date(from: iso)
-        }
+        if let date = formatter1.date(from: iso) { return date }
+        let formatter2 = ISO8601DateFormatter()
+        formatter2.formatOptions = [.withInternetDateTime]
+        if let date = formatter2.date(from: iso) { return date }
+        // bare yyyy-MM-dd → midnight in the caller's tz (default: system local)
+        let dayFmt = DateFormatter()
+        dayFmt.dateFormat = "yyyy-MM-dd"
+        dayFmt.timeZone = bareDateTz
+        return dayFmt.date(from: iso)
+    }
+
+    static func asDateSetup(varName: String, iso: String, bareDateTz: TimeZone = .current) -> String? {
+        let date = parseDate(iso: iso, bareDateTz: bareDateTz)
         guard let date else { return nil }
         let cal = Calendar(identifier: .gregorian)
         let comps = cal.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
@@ -593,12 +673,7 @@ enum MailScripts {
             set srcMbox to missing value
             repeat with a in accounts
                 if (name of a as string) = theAcct then
-                    repeat with mbox in mailboxes of a
-                        if (name of mbox as string) = theMbox then
-                            set srcMbox to mbox
-                            exit repeat
-                        end if
-                    end repeat
+                    set srcMbox to my findMailbox(contents of a, theMbox)
                     exit repeat
                 end if
             end repeat
@@ -607,12 +682,7 @@ enum MailScripts {
             set destMbox to missing value
             repeat with a in accounts
                 if (name of a as string) = tgtAcct then
-                    repeat with mbox in mailboxes of a
-                        if (name of mbox as string) = tgtMbox then
-                            set destMbox to mbox
-                            exit repeat
-                        end if
-                    end repeat
+                    set destMbox to my findMailbox(contents of a, tgtMbox)
                     exit repeat
                 end if
             end repeat
@@ -659,6 +729,7 @@ enum MailScripts {
             end repeat
             return outputText
         end tell
+        \(mailboxHandlers)
         """
     }
 
@@ -679,12 +750,7 @@ enum MailScripts {
             set srcMbox to missing value
             repeat with a in accounts
                 if (name of a as string) = theAcct then
-                    repeat with mbox in mailboxes of a
-                        if (name of mbox as string) = theMbox then
-                            set srcMbox to mbox
-                            exit repeat
-                        end if
-                    end repeat
+                    set srcMbox to my findMailbox(contents of a, theMbox)
                     exit repeat
                 end if
             end repeat
@@ -726,6 +792,7 @@ enum MailScripts {
             end repeat
             return outputText
         end tell
+        \(mailboxHandlers)
         """
     }
 

@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 @testable import ServiceMail
+import MCP
 @testable import BridgeCore
 
 @Test func appleScriptListEscapesQuotesAndBackslashes() {
@@ -109,7 +110,7 @@ import Foundation
     // Mail's `unread count` is 0 for an account INBOX even with unread mail;
     // the script must count unread messages for INBOX instead.
     let script = MailScripts.listMailboxes
-    #expect(script.contains(#"mboxName is "INBOX""#))
+    #expect(script.contains(#"leafName is "INBOX""#))
     #expect(script.contains("count of (messages of mbox whose read status is false)"))
 }
 
@@ -207,6 +208,9 @@ private func filter(_ field: MailSearchField, query: String = "invoice", since: 
         ("subject", MailScripts.listMessages(filter(.subject, since: "2026-11-20T15:30:00-06:00"))),
         ("mailboxes", MailScripts.listMailboxes),
         ("get", MailScripts.getMessage(account: "a", mailbox: "INBOX", id: "1")),
+        ("accounts", MailScripts.listAccounts),
+        ("mark", MailScripts.batchSetReadState(account: "a", mailbox: "Bills/Utilities", ids: ["1", "2"], read: true)),
+        ("move", MailScripts.batchMoveMessages(account: "a", mailbox: "INBOX", ids: ["1"], targetAccount: "a", targetMailbox: "Archive")),
     ]
     let dir = FileManager.default.temporaryDirectory.appendingPathComponent("deckard-osa-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -222,4 +226,47 @@ private func filter(_ field: MailSearchField, query: String = "invoice", since: 
         let message = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         #expect(p.terminationStatus == 0, "\(name) does not compile: \(message)")
     }
+}
+
+// MARK: - Input errors and mailbox paths (2026-11 review)
+
+@Test func mailRejectsAnInvertedDateRangeBeforeTouchingMail() async {
+    // validateDates runs first, so this never reaches Mail.app.
+    let adapter = MailAdapter()
+    await #expect(throws: MailAdapter.AdapterError.self) {
+        _ = try await adapter.listMessages(sinceISO: "2026-11-22", beforeISO: "2026-11-20")
+    }
+    await #expect(throws: MailAdapter.AdapterError.self) {
+        _ = try await adapter.search(query: "x", sinceISO: "2026-11-21T10:00:00-06:00", beforeISO: "2026-11-21T08:30:00-07:00")
+    }
+    let message = MailAdapter.AdapterError.emptyDateRange(since: "a", before: "b").description
+    #expect(message.contains("later than"))
+}
+
+@Test func mailToolsRejectOutOfRangeLimits() async throws {
+    for tool in [ListMessagesTool(adapter: MailAdapter()) as any ToolHandler, SearchMailTool(adapter: MailAdapter())] {
+        for bad in [0, -5, 201] {
+            let result = try await tool.call(arguments: ["limit": .int(bad), "query": .string("x")])
+            #expect(result.isError == true, "\(tool.name) limit=\(bad)")
+            guard case .text(text: let text, annotations: _, _meta: _) = result.content.first else { continue }
+            #expect(text.contains("between 1 and 200"))
+        }
+    }
+}
+
+@Test func mailScriptsResolveMailboxesByFullPath() {
+    // Two nested mailboxes can share a name; every script identifies a
+    // mailbox by path and reports paths back.
+    #expect(MailScripts.listMailboxes.contains("my mboxPath(contents of mbox)"))
+    let list = MailScripts.listMessages(MailScripts.MessageFilter())
+    #expect(list.contains("set mboxName to my mboxPath(mbox)"))
+    #expect(list.contains(#"return "!nomailbox" & RS"#))
+    for script in [MailScripts.getMessage(account: "a", mailbox: "Bills/Utilities", id: "1"),
+                   MailScripts.batchSetReadState(account: "a", mailbox: "m", ids: ["1"], read: true),
+                   MailScripts.batchMoveMessages(account: "a", mailbox: "m", ids: ["1"], targetAccount: "a", targetMailbox: "t")] {
+        #expect(script.contains("my findMailbox(contents of a, "))
+        #expect(script.contains("on findMailbox(acct, mboxName)"))
+    }
+    let unknown = MailAdapter.AdapterError.unknownMailbox("NoSuchMailbox").description
+    #expect(unknown.contains("NoSuchMailbox") && unknown.contains("mail.list_mailboxes"))
 }

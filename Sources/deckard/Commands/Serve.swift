@@ -38,9 +38,27 @@ struct Serve: AsyncParsableCommand {
         let store = ConfigStore(url: url, logger: logger)
         let cfg = try store.loadOrInit()
 
+        // Fast mail search reads Mail's own database, which needs both the
+        // user's choice and a Full Disk Access grant macOS has really given.
+        var mailStore: MailStore?
+        if cfg.search.fastSearch, FullDiskAccess.isGranted() {
+            if let found = MailStore.locate() {
+                let candidate = MailStore(indexPath: found.index, versionDir: found.versionDir, logger: logger)
+                do {
+                    try await candidate.validateSchema()
+                    mailStore = candidate
+                    logger.info("Mail search: using Mail's database directly (\(found.versionDir.lastPathComponent))")
+                } catch {
+                    logger.warning("Mail search: \(error); using Mail.app scripting")
+                }
+            } else {
+                logger.warning("Mail search: Mail's database was not found; using Mail.app scripting")
+            }
+        }
+
         let providers: [any ToolProvider] = [
             BuiltinTools(),
-            MailTools(),
+            MailTools(adapter: MailAdapter(store: mailStore, logger: logger)),
             CalendarTools(),
             DriveTools(adapter: DriveAdapter(settings: cfg.drive, logger: logger)),
             VoiceMemoTools(),
@@ -49,7 +67,9 @@ struct Serve: AsyncParsableCommand {
         ]
 
         let mode: BridgeServer.Mode = stdio ? .stdio : .daemon
-        let server = BridgeServer(config: cfg, mode: mode, providers: providers, logger: logger)
+        let server = BridgeServer(
+            config: cfg, mode: mode, providers: providers,
+            mailSearchBackend: mailStore == nil ? "mail_app" : "mail_database", logger: logger)
         try await server.run()
     }
 }

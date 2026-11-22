@@ -361,13 +361,18 @@ private func status(_ result: Result<HTTPRunner.Caller, HTTPRunner.Rejection>) -
     supervisor.stopLeftoverConnector(binary: "/bin/sleep")
 }
 
-// MARK: - Search choice, daemon status, Spotlight probe
+// MARK: - Search choice and daemon status
 
 @Test func searchConfigDefaultsToNoFullDiskAccess() throws {
-    #expect(Config().search.useSpotlight == false)
-    let on = try TOMLDecoder().decode(Config.self, from: "[search]\nuse_spotlight = true\n")
-    #expect(on.search.useSpotlight)
-    #expect(try TOMLDecoder().decode(Config.self, from: try TOMLEncoder().encode(on)) == on)
+    #expect(Config().search.fastSearch == false)
+    let on = try TOMLDecoder().decode(Config.self, from: "[search]\nfast_search = true\n")
+    #expect(on.search.fastSearch)
+    // The earlier key name is still read, and rewritten under the new name.
+    let legacy = try TOMLDecoder().decode(Config.self, from: "[search]\nuse_spotlight = true\n")
+    #expect(legacy.search.fastSearch)
+    let reencoded = try TOMLEncoder().encode(legacy)
+    #expect(reencoded.contains("fast_search") && !reencoded.contains("use_spotlight"))
+    #expect(try TOMLDecoder().decode(Config.self, from: reencoded) == on)
 }
 
 @Test func daemonStatusRoundTripsAndFullDiskAccessCheckIsReadOnly() throws {
@@ -377,7 +382,7 @@ private func status(_ result: Result<HTTPRunner.Caller, HTTPRunner.Rejection>) -
     let url = dir.appendingPathComponent("daemon-status.json")
     #expect(DaemonStatus.read(from: url) == nil)
     let status = DaemonStatus(pid: 4242, startedAt: Date(timeIntervalSince1970: 1_800_000_000),
-                              fullDiskAccess: false, spotlightRequested: true, mailSearchBackend: "mail_app")
+                              fullDiskAccess: false, fastSearchRequested: true, mailSearchBackend: "mail_app")
     try status.write(to: url)
     #expect(DaemonStatus.read(from: url) == status)
     let mode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
@@ -395,24 +400,4 @@ private func status(_ result: Result<HTTPRunner.Caller, HTTPRunner.Rejection>) -
     try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: mail.path)
     defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: mail.path) }
     #expect(!FullDiskAccess.isGranted(home: dir))
-}
-
-@Test func spotlightProbeLogsShapeWithoutNamesOrContent() {
-    let path = "/Users/someone/Library/Mail/V10/1A2B3C4D-1111-2222-3333-444455556666/Tax Receipts.mbox/9F8E7D6C-AAAA-BBBB-CCCC-DDDDEEEEFFFF/Data/3/1/Messages/831686.emlx"
-    let shape = SpotlightProbe.maskedShape(of: path, home: "/Users/someone")
-    #expect(shape == "~/Library/Mail/V10/<uuid>/<name>.mbox/<uuid>/Data/<n>/<n>/Messages/<n>.emlx")
-    #expect(!shape.contains("Tax") && !shape.contains("831686") && !shape.contains("someone"))
-    #expect(SpotlightProbe.maskedShape(of: "/Users/someone/Library/Mail/V10/x/INBOX.mbox/Messages/12.partial.emlx", home: "/Users/someone")
-        .hasSuffix("/Messages/<n>.<part>.emlx"))
-
-    let mdls = """
-    kMDItemSubject                 = "Quarterly numbers, do not forward"
-    kMDItemAuthors                 = (
-        "Someone Private"
-    )
-    com_apple_mail_read            = 1
-    """
-    let names = SpotlightProbe.attributeNames(mdls: mdls)
-    #expect(names == ["com_apple_mail_read", "kMDItemAuthors", "kMDItemSubject"])
-    #expect(!names.joined().contains("Quarterly") && !names.joined().contains("Private"))
 }

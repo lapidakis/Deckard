@@ -73,7 +73,7 @@ struct ListMessagesTool: ToolHandler {
             "type": .string("object"),
             "properties": .object([
                 "account":     .object(["type": .string("string"), "description": .string("Account name; empty = all accounts.")]),
-                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox name; empty = every mailbox in chosen account(s).")]),
+                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox path as mail.list_mailboxes returns it, e.g. \"INBOX\" or \"Bills/Utilities\". A bare name matches every mailbox with that name. Empty = every mailbox in the chosen account(s). An unknown mailbox is an error.")]),
                 "scope":       .object(["type": .string("string"), "enum": .array([.string("primary"), .string("with_archive"), .string("all")]), "description": .string("Cross-mailbox walk policy when mailbox is empty.")]),
                 "since":       .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Inclusive lower bound on date_received.")]),
                 "before":      .object(["type": .string("string"), "description": .string("ISO 8601 timestamp (or yyyy-MM-dd). Exclusive upper bound on date_received.")]),
@@ -94,7 +94,8 @@ struct ListMessagesTool: ToolHandler {
         let unread  = arguments?["unread_only"]?.boolValue ?? false
         let scope   = MailboxScope(rawValue: arguments?["scope"]?.stringValue ?? "primary") ?? .primary
         let tz      = arguments?["tz"]?.stringValue
-        let limit   = max(1, min(200, arguments?["limit"]?.intValue ?? 25))
+        let limit = arguments?["limit"]?.intValue ?? 25
+        guard (1...200).contains(limit) else { return errorResult("limit must be between 1 and 200 (got \(limit)).") }
         let result = try await adapter.listMessages(
             account: account, mailbox: mailbox,
             sinceISO: since, beforeISO: before,
@@ -139,7 +140,7 @@ struct SearchMailTool: ToolHandler {
             "properties": .object([
                 "query":       .object(["type": .string("string"), "description": .string("Substring to match, case-insensitive.")]),
                 "account":     .object(["type": .string("string"), "description": .string("Account name; empty = all accounts.")]),
-                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox name; empty = every mailbox in chosen account(s).")]),
+                "mailbox":     .object(["type": .string("string"), "description": .string("Mailbox path as mail.list_mailboxes returns it, e.g. \"INBOX\" or \"Bills/Utilities\". A bare name matches every mailbox with that name. Empty = every mailbox in the chosen account(s). An unknown mailbox is an error.")]),
                 "scope":       .object(["type": .string("string"), "enum": .array([.string("primary"), .string("with_archive"), .string("all")])]),
                 "field":       .object([
                     "type": .string("string"),
@@ -171,7 +172,8 @@ struct SearchMailTool: ToolHandler {
         let before = arguments?["before"]?.stringValue
         let tz = arguments?["tz"]?.stringValue
         let unread = arguments?["unread_only"]?.boolValue ?? false
-        let limit = max(1, min(200, arguments?["limit"]?.intValue ?? 25))
+        let limit = arguments?["limit"]?.intValue ?? 25
+        guard (1...200).contains(limit) else { return errorResult("limit must be between 1 and 200 (got \(limit)).") }
 
         let results = try await adapter.search(
             account: account, mailbox: mailbox,

@@ -77,11 +77,13 @@ public struct Message: Codable, Sendable {
     public let sender: String
     public let recipients: [String]
     public let dateSent: String?
+    public let dateReceived: String?
+    public let isRead: Bool
     public let body: String
     public init(
         id: String, account: String, mailbox: String,
         subject: String, sender: String, recipients: [String],
-        dateSent: String?, body: String
+        dateSent: String?, dateReceived: String? = nil, isRead: Bool = false, body: String
     ) {
         self.id = id
         self.account = account
@@ -90,11 +92,15 @@ public struct Message: Codable, Sendable {
         self.sender = sender
         self.recipients = recipients
         self.dateSent = dateSent
+        self.dateReceived = dateReceived
+        self.isRead = isRead
         self.body = body
     }
     enum CodingKeys: String, CodingKey {
         case id, account, mailbox, subject, sender, recipients, body
         case dateSent = "date_sent"
+        case dateReceived = "date_received"
+        case isRead = "is_read"
     }
 }
 
@@ -115,6 +121,8 @@ extension Message {
             id: id, account: account, mailbox: mailbox, subject: subject, sender: sender,
             recipients: recipients,
             dateSent: dateSent.map { MailAdapter.attachOffset($0, outputTz: tz) },
+            dateReceived: dateReceived.map { MailAdapter.attachOffset($0, outputTz: tz) },
+            isRead: isRead,
             body: body)
     }
 }
