@@ -19,7 +19,7 @@ import BridgePolicy
 /// stateful transport held one in-memory session per identity: every other
 /// client's `initialize` was rejected with 400, the tear-down-and-rebuild
 /// self-heal that worked around it could be driven into a storm by a client
-/// re-initializing per request (Hermes, 2026-05), and a daemon restart left
+/// re-initializing per request (2026-05), and a daemon restart left
 /// clients holding dead session IDs. With the stateless transport plus the
 /// idempotent `initialize` override there is nothing to heal, so the
 /// recreate/throttle/lifecycle-gate machinery is gone.

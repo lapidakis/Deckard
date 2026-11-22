@@ -33,7 +33,7 @@ private struct Fixture {
         try Self.sqlite(index, sql)
         if dropColumn != "read" {
             try Self.sqlite(index, """
-            INSERT INTO messages VALUES (831688, 1, '',     1, 1795300000, 1795300100, 1, 0, 0);
+            INSERT INTO messages VALUES (654321, 1, '',     1, 1795300000, 1795300100, 1, 0, 0);
             INSERT INTO messages VALUES (2001,   2, 'Re: ', 3, 1795200000, 1795200100, 1, 0, 1);
             INSERT INTO messages VALUES (2002,   1, '',     2, 1795100000, 1795100100, 2, 0, 1);
             INSERT INTO messages VALUES (2003,   2, '',     3, 1795000000, 1795000100, 3, 0, 0);
@@ -96,7 +96,7 @@ private struct Fixture {
     let f = try Fixture(); defer { f.cleanup() }
     var q = MailStore.Query(mailboxRowIDs: [1, 2, 3])
     let all = try await f.store.messages(q)
-    #expect(all.map(\.id) == [831688, 2001, 2002, 2003], "newest first; the deleted row is excluded")
+    #expect(all.map(\.id) == [654321, 2001, 2002, 2003], "newest first; the deleted row is excluded")
     #expect(all[0].subject == "Quarterly invoice")
     #expect(all[0].sender == "Example Billing <billing@example.com>")
     #expect(all[1].subject == "Re: Lunch?")
@@ -105,12 +105,12 @@ private struct Fixture {
     #expect(all[0].dateReceived == Date(timeIntervalSince1970: 1795300100))
 
     q.unreadOnly = true
-    #expect(try await f.store.messages(q).map(\.id) == [831688, 2003])
+    #expect(try await f.store.messages(q).map(\.id) == [654321, 2003])
     q.unreadOnly = false
 
     // `since` is inclusive, `before` exclusive, to the second.
     q.since = Date(timeIntervalSince1970: 1795200100)
-    #expect(try await f.store.messages(q).map(\.id) == [831688, 2001])
+    #expect(try await f.store.messages(q).map(\.id) == [654321, 2001])
     q.since = nil
     q.before = Date(timeIntervalSince1970: 1795200100)
     #expect(try await f.store.messages(q).map(\.id) == [2002, 2003])
@@ -129,11 +129,11 @@ private struct Fixture {
     let f = try Fixture(); defer { f.cleanup() }
     var q = MailStore.Query(mailboxRowIDs: [1, 2, 3])
     q.headerText = "INVOICE"
-    #expect(try await f.store.messages(q).map(\.id) == [831688])
+    #expect(try await f.store.messages(q).map(\.id) == [654321])
     q.headerText = "re: lunch"      // prefix + subject are matched together
     #expect(try await f.store.messages(q).map(\.id) == [2001])
     q.headerText = "example billing"   // display name
-    #expect(try await f.store.messages(q).map(\.id) == [831688, 2002])
+    #expect(try await f.store.messages(q).map(\.id) == [654321, 2002])
     q.matchSender = false
     #expect(try await f.store.messages(q).isEmpty)
     q.matchSender = true; q.matchSubject = false
@@ -153,16 +153,16 @@ private struct Fixture {
 }
 
 @Test func mailStoreFindsMessageFilesFromTheirID() async throws {
-    #expect(MailStore.dataSubdirectories(forID: 831688) == ["1", "3", "8"])
+    #expect(MailStore.dataSubdirectories(forID: 654321) == ["4", "5", "6"])
     #expect(MailStore.dataSubdirectories(forID: 2001) == ["2"])
     #expect(MailStore.dataSubdirectories(forID: 999) == [])
     #expect(MailStore.dataSubdirectories(forID: 120_000) == ["0", "2", "1"])
 
     let f = try Fixture(); defer { f.cleanup() }
-    try f.writeMessage(id: 831688, mailboxDirs: ["INBOX"], raw: "Subject: x\nContent-Type: text/plain\n\nThe roof estimate is attached.\n")
+    try f.writeMessage(id: 654321, mailboxDirs: ["INBOX"], raw: "Subject: x\nContent-Type: text/plain\n\nThe roof estimate is attached.\n")
     try f.writeMessage(id: 2003, mailboxDirs: ["Work", "Client A"], raw: "Subject: y\n\nNested mailbox body.\n", partial: true)
     let rows = try await f.store.messages(MailStore.Query(mailboxRowIDs: [1, 3]))
-    let inbox = try #require(rows.first { $0.id == 831688 })
+    let inbox = try #require(rows.first { $0.id == 654321 })
     let nested = try #require(rows.first { $0.id == 2003 })
     #expect(await f.store.bodyText(of: inbox)?.contains("roof estimate") == true)
     #expect(await f.store.bodyText(of: nested)?.contains("Nested mailbox body") == true)

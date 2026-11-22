@@ -230,7 +230,7 @@ public actor MailStore {
     // MARK: - Message files
 
     /// Directories under `Data` for a message id: `id / 1000`, digits reversed.
-    /// 831688 -> ["1", "3", "8"]; ids below 1000 sit directly in `Data`.
+    /// 654321 -> ["4", "5", "6"]; ids below 1000 sit directly in `Data`.
     static func dataSubdirectories(forID id: Int64) -> [String] {
         var q = id / 1000
         var digits: [String] = []

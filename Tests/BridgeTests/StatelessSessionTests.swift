@@ -8,7 +8,7 @@ import MCP
 @testable import BridgePolicy
 
 // Regression guards for the stateless-transport migration (successor to the
-// Hermes 2026-05 session storm). The contract: a long-lived per-token Server
+// 2026-05 session storm). The contract: a long-lived per-token Server
 // behind StatelessHTTPServerTransport must serve `initialize` any number of
 // times — a client that re-initializes on every request (or several workers
 // sharing one token) gets a fresh, valid initialize result instead of the
