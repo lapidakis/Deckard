@@ -4,7 +4,7 @@ A Mac-resident MCP server that proxies Apple-native services — Mail, Calendar,
 
 The bridge is built around a simple premise: an LLM agent talking to your iCloud should look more like a service account with scoped permissions than a fully-trusted user. Every call passes through the same policy pipeline (auth → ACL → redaction → injection-tagging → approval-gate → audit), and every layer is configurable per token.
 
-**Status:** **v1.0.0-beta.3 (public beta).** 43 tools across 6 services, codesigned + notarized Developer ID build, **149 automated tests** (incl. a schema validator that walks every registered tool), daemon + menubar UI with first-launch onboarding, auto-update via Sparkle (UI) and `deckard self-update` (CLI), CI on every push. Designed for personal homelab use; security model documented in [`docs/security-model.md`](docs/security-model.md). Known beta issues + roadmap in [`CHANGELOG.md`](CHANGELOG.md).
+**Status:** **v1.0.0-beta.4 (public beta).** 43 tools across 6 services, codesigned + notarized Developer ID build, **208 automated tests** (incl. a schema validator that walks every registered tool), daemon + menubar UI with first-launch onboarding, auto-update via Sparkle (UI) and `deckard self-update` (CLI), CI on every push. Designed for personal homelab use; security model documented in [`docs/security-model.md`](docs/security-model.md). Known beta issues + roadmap in [`CHANGELOG.md`](CHANGELOG.md).
 
 ---
 
@@ -72,7 +72,7 @@ Updates: `brew upgrade deckard`. `deckard self-update` refuses on Homebrew-manag
 If brew isn't an option (offline install, locked-down server), grab the tarball asset directly:
 
 ```sh
-TAG="v1.0.0-beta.3"   # latest tag from the Releases page
+TAG="v1.0.0-beta.4"   # latest tag from the Releases page
 curl -L -o deckard.tar.gz \
   "https://github.com/lapidakis/Deckard/releases/download/${TAG}/deckard-${TAG}-arm64.tar.gz"
 curl -L -o deckard.tar.gz.sha256 \
@@ -147,7 +147,7 @@ Verify in any Claude Code session with `/mcp` — should show `deckard  ✓ conn
 
 ---
 
-## What's in the box (43 tools, v1.0.0-beta.3)
+## What's in the box (43 tools, v1.0.0-beta.4)
 
 **Built-in**
 - `health.ping` — liveness probe; tiny payload, useful diagnostic

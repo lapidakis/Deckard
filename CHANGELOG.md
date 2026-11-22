@@ -1,6 +1,19 @@
 # Changelog
 
-## Unreleased — Cloudflare Access
+## v1.0.0-beta.4 — Cloudflare access, fast mail search, stateless transport
+
+Public access through Cloudflare (Tunnel + Access with OAuth sign-in), mail search that reads Mail's own database when Full Disk Access is granted, a stateless HTTP transport, and a security and correctness pass across the tools.
+
+**Upgrade notes**
+
+- `GET /mcp` and `DELETE /mcp` now return 405: the HTTP transport is stateless. Clients that only POST are unaffected.
+- Mail tools return and accept full mailbox paths (`Parent/Child`). A bare name still works when it is unambiguous.
+- `mail.search` and `mail.list_messages` return errors for an unknown mailbox, an inverted date range, or a `limit` outside 1 to 200, where they used to return an empty list or clamp.
+- Mail timestamps carry a UTC offset; all-day calendar events are anchored to the requested `tz`.
+- Tailscale needs an authoritative CLI address; calendar writes require strict dates and recurrence selectors; Drive rejects symlink aliases.
+- Everything new is off by default: `[cloudflare_access]`, `[cloudflare_tunnel]`, `[search] fast_search`.
+
+### Cloudflare, search and transport
 
 - **HTTP transport is now stateless.** No `Mcp-Session-Id`; any number of clients can share one identity, and a daemon restart no longer strands clients. `initialize` is idempotent. The stale-session self-heal, its throttle and the lifecycle gate are removed. Each request gets a unique id through the transport so concurrent clients reusing the same JSON-RPC id cannot collide. Compatibility: `GET /mcp` and `DELETE /mcp` return 405; client cancellation notifications are not honoured.
 - **Permanent Cloudflare Tunnel.** `[cloudflare_tunnel] enabled = true` has the daemon run and supervise `cloudflared` (restart with backoff, log at `~/Library/Logs/Deckard/cloudflared.log`, leftover connector cleaned up after a daemon restart). New `deckard cloudflare setup` creates the tunnel, writes a config that forwards only `/mcp`, routes DNS and updates `config.toml`; `deckard cloudflare status` reports the state.
@@ -19,7 +32,7 @@
 - Fix `mail.list_mailboxes` reporting 0 unread for an account's INBOX: Mail's `unread count` is wrong for that mailbox, so the inbox's unread messages are now counted directly.
 - Tool calls blocked by a missing macOS privacy grant (Calendar, Reminders, Contacts, Mail automation, iCloud Drive, Voice Memos) now return a fixed "macOS permission required" message saying what to enable and that it must be done at the Mac, with `_meta.error_kind = macos_permission_required`. Already-denied access fails immediately instead of waiting; the Calendar prompt wait drops from 60s to 15s.
 
-## Unreleased — calendar and security review
+### Security and calendar review
 
 - Harden token revocation, private atomic persistence, cross-process audit/token writes, error redaction, and per-request identity propagation through the MCP SDK.
 - Fence session recovery against executing tools and approvals; enforce HTTP bearer auth and exact Host/Origin checks.
